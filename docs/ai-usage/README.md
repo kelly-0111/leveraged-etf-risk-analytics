@@ -12,3 +12,9 @@ the result. The hook records only Claude Code conversations in this project.
 
 This hook and its configuration were drafted with Codex assistance during
 project setup. No project analysis code has been generated yet.
+
+The hook idea was inspired by a `log_ai.py` script the project owner shared
+from a CS 639 side-scroller project:
+https://git.doit.wisc.edu/cdis/cs/courses/aicoding/fa26/student-repos/p1/side-scroller-avenigalla-sui23
+This project's hook was newly written for full-transcript archiving; it does
+not include the CS 639 script or any financial analysis code from coursework.

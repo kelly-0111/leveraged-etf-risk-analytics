@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Archive the complete Claude Code transcript after each response or session."""
 
-# AI-assisted setup code. Review the matching session under docs/ai-usage/
-# when this script is first used for project development.
+# AI-assisted setup code. The hook idea was inspired by a CS 639 project's
+# log_ai.py; this implementation was newly written for full-transcript
+# archiving. See docs/ai-usage/README.md for provenance.
 
 import json
 import os
