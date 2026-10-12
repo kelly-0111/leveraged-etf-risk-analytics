@@ -1,0 +1,25 @@
+[project]
+name = "etf-risk"
+version = "0.1.0"
+description = "Daily-reset leveraged return model on historical stock returns, with a PySpark batch version."
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2,<3",  # PySpark 4.2 warns pandas 3 is not fully supported
+    "pyarrow>=18",
+    "pyspark>=4.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/etf_risk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["spark: starts a local SparkSession (slower)"]
