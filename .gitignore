@@ -227,3 +227,6 @@ metastore_db/
 derby.log
 # macOS
 .DS_Store
+# Unredacted Claude Code transcripts and local privacy settings stay on this machine
+docs/ai-usage/**/transcript.raw.jsonl
+.claude/*.local.*
