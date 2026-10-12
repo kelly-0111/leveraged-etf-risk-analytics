@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""Archive Claude Code transcripts: a local original plus redacted JSONL and Markdown.
+"""Archive Claude Code transcripts as one log per message (prompt + response).
 
-Per session folder (docs/ai-usage/<start time>_<id prefix>/):
-  transcript.raw.jsonl  exact copy, gitignored, never shared
+Per message folder (docs/ai-usage/<prompt time>_<session id prefix>-<NN>/):
+  transcript.raw.jsonl  exact records of this message, gitignored, never shared
   transcript.jsonl      redacted by transcript_privacy.py, for submission
   transcript.md         readable view rendered from the redacted JSONL
+
+A message starts at a prompt the user typed and ends at the last user /
+assistant record before the next prompt. Metadata written after that (hook
+records, context for the next prompt) belongs to the next message, so a
+finished message's files do not change once the next one starts.
 """
 
 # AI-assisted setup code. The hook idea was inspired by a CS 639 project's
 # log_ai.py; this implementation was newly written for full-transcript
-# archiving. See docs/ai-usage/README.md for provenance. Per-session folders
-# named by start time and the redacted copies were added with Claude Code
-# (Opus 5.5) and checked by running the hook on a real transcript in a
-# scratch project directory and re-scanning the output for personal data.
+# archiving. See docs/ai-usage/README.md for provenance. Per-message folders
+# and the redacted copies were added with Claude Code (Opus 5.5) and checked
+# with tests/test_save_transcript.py, by running the hook on a real session
+# transcript, and by re-scanning the output for personal data.
 
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from collections import Counter
@@ -72,67 +76,104 @@ def atomic_write_text(destination: Path, text: str) -> None:
     temp_name.replace(destination)
 
 
-def write_markdown(source: Path, destination: Path, session_id: str, redactions: Counter) -> int:
-    """Render conversation and tool messages from the redacted JSONL."""
+def write_if_changed(destination: Path, text: str) -> None:
+    """Leave finished messages untouched so their mtimes stay meaningful."""
+    if destination.is_file() and destination.read_text(encoding="utf-8") == text:
+        return
+    atomic_write_text(destination, text)
+
+
+def render_markdown(redacted_jsonl: str, session_id: str, number: int, sent: datetime, redactions: Counter) -> str:
+    """Readable view of one message, from its redacted JSONL."""
     summary = ", ".join(f"{k} ×{v}" for k, v in sorted(redactions.items())) or "none"
     parts = [
-        "# Claude Code conversation transcript",
-        f"Session: `{session_id}`",
-        f"Redacted record: [{source.name}]({source.name})",
+        f"# Claude Code message {number}",
+        f"Session: `{session_id}` · prompt sent {sent:%Y-%m-%d %H:%M} (local time)",
+        "Redacted record: [transcript.jsonl](transcript.jsonl)",
         "This readable view includes user/assistant messages and tool calls/results. "
         "Internal reasoning and session metadata are omitted.",
         f"Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): {summary}. "
         "Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.",
     ]
-    messages = 0
-    with source.open(encoding="utf-8") as transcript:
-        for line in transcript:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            if record.get("type") not in {"user", "assistant"}:
-                continue
-            message = record.get("message", {})
-            content = message.get("content", "")
-            blocks = content if isinstance(content, list) else [content]
-            body = "\n\n".join(filter(None, (render_block(block) for block in blocks)))
-            if not body:
-                continue
-            role = message.get("role", record["type"]).capitalize()
-            timestamp = record.get("timestamp", "")
-            messages += 1
-            parts.extend([f"## {messages}. {role} — {timestamp}", body])
-    atomic_write_text(destination, "\n\n".join(parts) + "\n")
+    entries = 0
+    for line in redacted_jsonl.splitlines():
+        record = json.loads(line)
+        if not is_message(record):
+            continue
+        message = record.get("message", {})
+        content = message.get("content", "")
+        blocks = content if isinstance(content, list) else [content]
+        body = "\n\n".join(filter(None, (render_block(block) for block in blocks)))
+        if not body:
+            continue
+        role = message.get("role", record["type"]).capitalize()
+        entries += 1
+        parts.extend([f"## {entries}. {role} — {record.get('timestamp', '')}", body])
+    return "\n\n".join(parts) + "\n"
+
+
+def is_message(record: dict) -> bool:
+    return record.get("type") in {"user", "assistant"}
+
+
+def is_prompt(record: dict) -> bool:
+    """A prompt the user typed (not a tool result or injected meta message)."""
+    if record.get("type") != "user" or record.get("isMeta"):
+        return False
+    origin = record.get("origin")
+    if isinstance(origin, dict) and "kind" in origin:
+        return origin["kind"] == "human"
+    # Older transcripts without "origin": any user record that is not a tool result.
+    content = record.get("message", {}).get("content")
+    blocks = content if isinstance(content, list) else [content]
+    return not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks)
+
+
+def split_messages(lines: list[str]) -> list[tuple[dict, list[str]]]:
+    """(prompt record, raw lines) for each message, in file order."""
+    records = [json.loads(line) for line in lines]
+    prompts = [i for i, r in enumerate(records) if is_prompt(r)]
+    messages = []
+    start = 0
+    for k, p in enumerate(prompts):
+        stop = prompts[k + 1] if k + 1 < len(prompts) else len(records)
+        last = max(i for i in range(p, stop) if is_message(records[i]))
+        messages.append((records[p], lines[start:last + 1]))
+        start = last + 1
     return messages
 
 
-def session_started_at(source: Path) -> datetime:
-    """Earliest record timestamp; records are not always in time order."""
-    earliest = None
-    with source.open(encoding="utf-8") as transcript:
-        for line in transcript:
-            try:
-                stamp = json.loads(line).get("timestamp")
-                parsed = datetime.fromisoformat(stamp) if isinstance(stamp, str) else None
-            except ValueError:
-                continue
-            if parsed and (earliest is None or parsed < earliest):
-                earliest = parsed
-    return earliest or datetime.now(timezone.utc)
+def message_folder(root: Path, session_id: str, number: int, sent: datetime) -> Path:
+    """e.g. 2026-10-11_2244_c6117488-03; an existing folder for the message is reused."""
+    suffix = f"_{session_id[:8]}-{number:02d}"
+    existing = sorted(p for p in root.glob(f"*{suffix}") if p.is_dir())
+    return existing[0] if existing else root / f"{sent:%Y-%m-%d_%H%M}{suffix}"
 
 
-def session_folder(root: Path, session_id: str, source: Path) -> Path:
-    """One folder per session, e.g. 2026-10-11_2139_c6117488 (local start time).
+def prompt_time(prompt: dict) -> datetime:
+    try:
+        return datetime.fromisoformat(prompt["timestamp"]).astimezone()
+    except (KeyError, TypeError, ValueError):
+        return datetime.now(timezone.utc).astimezone()
 
-    The hook runs after every response, so the name must not change within a
-    session: it uses the session start, and an existing folder is reused.
-    """
-    short_id = session_id[:8]
-    existing = sorted(p for p in root.glob(f"*_{short_id}") if p.is_dir())
-    if existing:
-        return existing[0]
-    started = session_started_at(source).astimezone()
-    return root / f"{started:%Y-%m-%d_%H%M}_{short_id}"
+
+def archive(source: Path, session_id: str, project_dir: Path) -> list[Path]:
+    root = project_dir / "docs" / "ai-usage"
+    lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+    redactor = Redactor.for_project(project_dir)
+    folders = []
+    for number, (prompt, raw_lines) in enumerate(split_messages(lines), start=1):
+        sent = prompt_time(prompt)
+        folder = message_folder(root, session_id, number, sent)
+        folder.mkdir(parents=True, exist_ok=True)
+        raw = "\n".join(raw_lines) + "\n"
+        redactor.counts = Counter()  # per-message redaction summary
+        shared = redactor.jsonl(raw)
+        write_if_changed(folder / "transcript.raw.jsonl", raw)  # gitignored
+        write_if_changed(folder / "transcript.jsonl", shared)
+        write_if_changed(folder / "transcript.md", render_markdown(shared, session_id, number, sent, redactor.counts))
+        folders.append(folder)
+    return folders
 
 
 def main() -> None:
@@ -149,27 +190,7 @@ def main() -> None:
         raise FileNotFoundError(source)
 
     project_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path(__file__).resolve().parents[2])
-    destination_dir = session_folder(project_dir / "docs" / "ai-usage", session_id, source)
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    raw = destination_dir / "transcript.raw.jsonl"  # gitignored
-    shared = destination_dir / "transcript.jsonl"
-
-    # A temporary file and atomic rename avoid leaving a partial archive.
-    with tempfile.NamedTemporaryFile(dir=destination_dir, prefix=".transcript-", delete=False) as temp:
-        temp_name = Path(temp.name)
-        try:
-            with source.open("rb") as transcript:
-                shutil.copyfileobj(transcript, temp)
-            temp.flush()
-            os.fsync(temp.fileno())
-        except BaseException:
-            temp_name.unlink(missing_ok=True)
-            raise
-    temp_name.replace(raw)
-
-    redactor = Redactor.for_project(project_dir)
-    atomic_write_text(shared, redactor.jsonl(raw.read_text(encoding="utf-8")))
-    write_markdown(shared, shared.with_suffix(".md"), session_id, redactor.counts)
+    archive(source, session_id, project_dir)
 
 
 if __name__ == "__main__":

@@ -1,22 +1,26 @@
 # Claude Code conversation records
 
-The project hook in `.claude/settings.json` saves the complete Claude Code
-JSONL transcript after each response and when a session ends, together with
-a readable Markdown version. Each session gets its own folder named by its
-local start time and the first 8 characters of the session id, so folders
-sort chronologically:
+The project hook in `.claude/settings.json` runs after each response and
+when a session ends. It saves one log per message: a prompt typed by the
+user plus everything Claude did in response (replies, tool calls and
+results). Each message gets its own folder named by the local time the
+prompt was sent, the first 8 characters of the session id, and the
+message's number in that session, so folders sort chronologically:
 
 ```text
 docs/ai-usage/
-  2026-10-11_2139_c6117488/
-    transcript.raw.jsonl   # exact original; gitignored, stays on this machine
-    transcript.jsonl       # redacted record, for submission
-    transcript.md          # readable view of the redacted record
+  2026-10-11_2242_c6117488-03/
+    transcript.raw.jsonl   # exact records; gitignored, stays on this machine
+    transcript.jsonl       # redacted records, for submission
+    transcript.md          # readable view of the redacted records
 ```
 
-The full session id is at the top of `transcript.md` and in every JSONL
-record. Later saves in the same session replace that folder's files. The
-hook does not commit or push files.
+A message ends at the last user/assistant record before the next prompt;
+records written after it (hook output, context for the next prompt) go to
+the next message. So once the next prompt is sent, a message's folder no
+longer changes and can be committed. The full session id is at the top of
+each `transcript.md` and in every JSONL record. The hook does not commit or
+push files.
 
 ## Redaction
 
