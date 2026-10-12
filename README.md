@@ -51,15 +51,21 @@ The repository includes a hook configured to archive Claude Code session
 transcripts in `docs/ai-usage/`. It does not automatically commit or push
 files and does not capture conversations from other AI tools. The hook was
 drafted with Codex assistance, inspired by a `log_ai.py` script from a CS639
-project. Before development, I will verify it in a real Claude Code session.
+project. The hook has been checked against a real Claude Code session.
 AI-generated code will include clear comments describing the contribution
 and how I checked the result.
 
 ## Running the Current Prototype
 
 Requires Python 3.12, Java 17, and [uv](https://docs.astral.sh/uv/). Raw CSVs
-are expected in `data/raw/yahoo/` (not committed; see
-`docs/implementation-plan.md` for the download settings).
+are expected in `data/raw/yahoo/` and are not committed. They were downloaded
+from Yahoo Finance using yfinance for NVDA, AAPL, MSFT, and TSLA, with daily
+data from `2020-01-01` through `2025-12-31` (`end=2026-01-01`, exclusive),
+`auto_adjust=False`, and `actions=True`. The ingestion step uses `Adj Close`
+for returns. Place each ticker's CSV at
+`data/raw/yahoo/<TICKER>-2020-2025.csv`, along with a local
+`data/raw/yahoo/verification.json` manifest containing its SHA-256 checksum,
+before running the prototype.
 
 ```bash
 uv sync                                                    # create .venv from uv.lock
