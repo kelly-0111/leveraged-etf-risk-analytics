@@ -1,6 +1,6 @@
 """Reference (sequential, single-path) daily-reset leveraged return model.
 
-Model and assumptions: docs/implementation-plan.md §4.2. With r_t the
+Model, assumptions and breach rule: docs/spec.md, section 3. With r_t the
 underlying simple daily return, L the daily target leverage and V_(t-1) the
 start-of-day NAV:
 

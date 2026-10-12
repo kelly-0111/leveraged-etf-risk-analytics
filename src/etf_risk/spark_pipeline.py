@@ -3,13 +3,14 @@
 Usage:
     uv run python -m etf_risk.spark_pipeline --leverages 1 2
 
-Input:  data/processed/daily_returns/*.parquet (from etf_risk.ingest)
+Input:  data/processed/<snapshot>/daily_returns/*.parquet (from etf_risk.ingest)
 Output: data/outputs/historical_full/path_days/     one row per (path, day)
         data/outputs/historical_full/path_summary/  one row per path
         stdout: Spark SQL comparison and a Python-vs-Spark consistency check
 
-A path is currently (ticker, leverage) over the full 2020-2025 history.
-Rolling holding windows are the next step (implementation plan, latest update).
+A path is currently (ticker, leverage) over the full period of the input (by
+default the 2020-2025 prototype snapshot). Fixed 252-trading-day holding
+windows are planned for Stage 2: docs/spec.md, sections 7 and 10.
 
 How the work is split:
   - per-path model: groupBy(path keys).applyInPandas -> model.simulate_path,
@@ -180,7 +181,7 @@ def compare_summaries(spark_pdf: pd.DataFrame, python_pdf: pd.DataFrame, rtol: f
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--returns", type=Path, default=Path("data/processed/daily_returns"))
+    parser.add_argument("--returns", type=Path, default=Path("data/processed/yahoo/daily_returns"))
     parser.add_argument("--out-dir", type=Path, default=Path("data/outputs/historical_full"))
     parser.add_argument("--leverages", type=float, nargs="+", default=[1.0, 2.0])
     parser.add_argument("--initial-nav", type=float, default=100.0)
