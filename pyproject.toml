@@ -16,6 +16,9 @@ dev = ["pytest>=8"]
 download = [
     "yfinance==1.7.0",
 ]
+measure = [
+    "psutil==7.2.2",  # exact: peak-memory measurements depend on it
+]
 
 [build-system]
 requires = ["hatchling"]
