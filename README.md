@@ -82,18 +82,30 @@ are computed from `Adj Close`.
 
 ```bash
 uv sync                                                    # create .venv from uv.lock
-uv run pytest                                              # tests (no network)
+uv run --group measure pytest                              # tests (no network)
 
 # Full-history data: needs network and creates a new snapshot folder
 uv run --group download python -m etf_risk.download \
     --tickers NVDA AAPL MSFT TSLA QQQ --out data/raw/yahoo/full-<YYYY-MM-DD>
 uv run python -m etf_risk.ingest --raw-dir data/raw/yahoo/full-<YYYY-MM-DD>    # -> data/processed/full-<YYYY-MM-DD>/
 
-# Prototype: 2020-2025 CSVs and verification.json in data/raw/yahoo/
+# Window definitions -> data/windows/<snapshot>/<name>/ (strides below 21 need --allow-dense-stride)
+uv run python -m etf_risk.windows --snapshot full-2026-10-12 --kind rolling --stride 21
+uv run python -m etf_risk.windows --snapshot full-2026-10-12 --kind calendar-year
+
+# Spark run: verifies the recorded SHA-256s, then writes data/outputs/windows/<snapshot>/<name>/<run id>/
+uv run python -m etf_risk.spark_pipeline --windows data/windows/full-2026-10-12/rolling-252-s21
+# Timed runs with peak memory (fresh process per run, stop rule at 60% of RAM)
+uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/windows/full-2026-10-12/rolling-252-s21
+# Independent Python check of a sample (never inside timed runs)
+uv run python -m etf_risk.verify --run data/outputs/windows/full-2026-10-12/rolling-252-s21/<run id>
+
+# Prototype: 2020-2025 CSVs and verification.json in data/raw/yahoo/, one full-period window per ticker
 uv run python -m etf_risk.ingest --raw-dir data/raw/yahoo --tickers NVDA AAPL MSFT TSLA   # -> data/processed/yahoo/
-uv run python -m etf_risk.spark_pipeline --leverages 1 2    # Spark model + SQL summary + Python check
+uv run python -m etf_risk.windows --snapshot yahoo --kind full-period
+uv run python -m etf_risk.spark_pipeline --windows data/windows/yahoo/full-period
 ```
 
-Status: the Spark pipeline still runs one full-period path per ticker on the
-prototype snapshot. Fixed 252-trading-day holding windows on the full-history
-snapshot come next.
+Status: Stage 2 runs fixed 252-trading-day windows on the full-history
+snapshot at a sparse stride (21); see [docs/spec.md](docs/spec.md) for what is
+implemented and what is still planned.
