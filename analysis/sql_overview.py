@@ -33,6 +33,7 @@ try:
         ORDER BY CASE WHEN ticker = 'QQQ' THEN 1 ELSE 0 END, ticker
     """)
 
+    result.explain("formatted")
     result.show(truncate=False)
 
 finally:
