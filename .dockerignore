@@ -1,0 +1,12 @@
+# Allowlist: the image gets only what it needs. Docker does not read .gitignore or
+# .git/info/exclude, so everything else (data/, docs/, .claude/, .env, transcripts) stays out.
+*
+!pyproject.toml
+!uv.lock
+!src
+!tests
+**/__pycache__
+**/*.pyc
+# These test the transcript hook in .claude/hooks/, which is project tooling, not part of the image.
+tests/test_transcript_privacy.py
+tests/test_save_transcript.py
