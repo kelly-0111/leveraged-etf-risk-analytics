@@ -10,7 +10,7 @@ is reviewed.
 | Prototype | Reference model; Spark run over one full-period path per ticker and leverage; Python/Spark consistency checks; 2020–2025 data | **Implemented** (now expressed as full-period windows) |
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run under review |
-| Stage 3 | Reproducible environment (Docker) and performance experiments | Planned |
+| Stage 3 | Reproducible environment (Docker) and performance experiments | In progress: Docker image for the pipeline implemented; performance experiments planned |
 | Stage 4 | Figures, final documentation and demo | Planned |
 
 ## 1. Purpose and scope
@@ -28,8 +28,8 @@ tickers.
 
 Course concepts applied: a Python reference implementation with tests; Parquet
 with explicit schemas (PyArrow); PySpark batch processing with grouped pandas
-functions; Spark DataFrame and SQL aggregation; performance measurement and a
-Docker environment (both planned).
+functions; Spark DataFrame and SQL aggregation; performance measurement (one
+configuration measured, experiments planned); a Docker image for the pipeline.
 
 ## 2. Research questions
 
@@ -146,6 +146,7 @@ src/etf_risk/
 tests/               implemented  model, validation, ingest, download, windows, Spark consistency and failure
                                   injection, sample check, measurement, AI-log tooling
 .claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
+Dockerfile, docker/  implemented  pipeline image and its build and run scripts (data mounted, never copied in)
 ```
 
 Names of planned modules are provisional.
@@ -206,7 +207,9 @@ per window.
   `verify.py` refuse to run if any of them changed. Window configs, run records,
   protocol files and `verify.json` record the code that produced them: the git
   commit, whether the worktree was clean, and the SHA-256 of every source file
-  and of `uv.lock`, so results from uncommitted code remain identifiable.
+  and of `uv.lock`, so results from uncommitted code remain identifiable. The
+  Docker image has no `.git`: there the commit and clean flag come from the
+  build (`code_source: "build"`) and the image ID is recorded as well.
 - **Definition self-check (`windows.py`)**: before writing, every window is
   re-derived from the returns: the dates at its entry, first-return and exit
   rows, the start grid and 21-session spacing, complete coverage of all grid
@@ -418,14 +421,14 @@ checksums in every record).
 
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stage 1 and Stage 2) | Planned (Stage 3 and later) |
+| Area | Implemented (prototype, Stages 1–2, Docker image) | Planned (Stage 3 and later) |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
 | Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance | smaller strides, after review of the stride-21 measurements |
 | Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check | Spark SQL analysis of the paired results (project author) |
 | Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; one configuration measured (stride 21, Spark defaults) | stride, partition-count and optional caching experiments; a single-process pandas baseline |
-| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly | Docker; a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
+| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
 | Documentation | README, [data-sources.md](data-sources.md), this specification, [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
 
 ## 10. Known issues and open items after the Stage 2 cleanup

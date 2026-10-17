@@ -109,3 +109,27 @@ uv run python -m etf_risk.spark_pipeline --windows data/windows/yahoo/full-perio
 Status: Stage 2 runs fixed 252-trading-day windows on the full-history
 snapshot at a sparse stride (21); see [docs/spec.md](docs/spec.md) for what is
 implemented and what is still planned.
+
+### Docker
+
+The image holds the code, Python 3.12, Java 17 and the locked dependencies. Data
+is never copied into it: `docker/run.sh` mounts `data/processed` and
+`data/windows` read-only and writes container results to `data/outputs-docker`
+and `data/windows-docker`, apart from native results. Keep the image local; do
+not push it.
+
+```bash
+docker/build.sh            # builds etf-risk:dev; records the commit and whether src/, pyproject.toml, uv.lock were clean
+docker/run.sh              # the test suite in the container (the transcript-hook tests stay native)
+# Spark run on the current stride-21 definitions (-r2) -> data/outputs-docker/windows/full-2026-10-12/rolling-252-s21-r2/<run id>/
+docker/run.sh python -m etf_risk.spark_pipeline \
+    --windows data/windows/full-2026-10-12/rolling-252-s21-r2 --out-root data/outputs-docker/windows
+```
+
+The image has no `.git`, so run records take the commit and clean flag from the
+build (`code_source: "build"`) and the image ID from `docker/run.sh`;
+`source_sha256` still identifies the code. `docker/run.sh` sets a memory limit
+(`ETF_RISK_MEMORY`, default `2.5g`, a budget to validate) with no swap and
+prints the container's cgroup memory peak, which includes page cache. Timings in
+the container (a Linux VM on macOS, data on bind mounts) are a separate
+configuration, not comparable with native measurements.
