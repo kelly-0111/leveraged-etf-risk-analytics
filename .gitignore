@@ -219,7 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Project data and run outputs (Yahoo data license not yet verified; see docs/implementation-plan.md §4.1)
+# Project data and run outputs (the Yahoo data's terms of use are not reviewed; see docs/data-sources.md)
 /data/
 # Spark local-mode artifacts
 spark-warehouse/

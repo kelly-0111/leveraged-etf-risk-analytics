@@ -55,24 +55,57 @@ project. The hook has been checked against a real Claude Code session.
 AI-generated code will include clear comments describing the contribution
 and how I checked the result.
 
-## Running the Current Prototype
+## Data
 
-Requires Python 3.12, Java 17, and [uv](https://docs.astral.sh/uv/). Raw CSVs
-are expected in `data/raw/yahoo/` and are not committed. They were downloaded
-from Yahoo Finance using yfinance for NVDA, AAPL, MSFT, and TSLA, with daily
-data from `2020-01-01` through `2025-12-31` (`end=2026-01-01`, exclusive),
-`auto_adjust=False`, and `actions=True`. The ingestion step uses `Adj Close`
-for returns. Place each ticker's CSV at
-`data/raw/yahoo/<TICKER>-2020-2025.csv`, along with a local
-`data/raw/yahoo/verification.json` manifest containing its SHA-256 checksum,
-before running the prototype.
+Daily prices come from Yahoo Finance through yfinance and are not committed
+(`data/` is gitignored; the data's terms of use have not been reviewed). The
+main analysis uses the full history of NVDA, AAPL, MSFT, TSLA, and QQQ through
+2025-12-31 (snapshot `full-2026-10-12`); a 2020–2025 snapshot of the four
+stocks was used for the prototype. Download settings, dates, checksums, the
+checks run, and open limitations are in [docs/data-sources.md](docs/data-sources.md).
+
+**Data status: partially checked, not fully verified.** Trading dates match
+the NYSE schedule, and Adj Close is consistent with Yahoo's own dividend
+records. For splits, none of the 23 split-day returns resembles an unadjusted
+split; this does not independently prove that every split adjustment is
+correct. A second-source comparison and a terms-of-use review have not been
+done, and 36 extreme price moves, including AAPL on 2000-09-29, are
+**unverified**.
+
+The research questions, model, data flow, validation approach, and what is
+implemented versus planned are described in [docs/spec.md](docs/spec.md).
+
+## Running
+
+Requires Python 3.12, Java 17, and [uv](https://docs.astral.sh/uv/). Returns
+are computed from `Adj Close`.
 
 ```bash
 uv sync                                                    # create .venv from uv.lock
-uv run python -m etf_risk.ingest --tickers NVDA AAPL MSFT TSLA   # clean -> Parquet + quality report
-uv run python -m etf_risk.spark_pipeline --leverages 1 2         # Spark model + SQL summary + Python check
-uv run pytest                                              # model, validation, Spark consistency tests
+uv run --group measure pytest                              # tests (no network)
+
+# Full-history data: needs network and creates a new snapshot folder
+uv run --group download python -m etf_risk.download \
+    --tickers NVDA AAPL MSFT TSLA QQQ --out data/raw/yahoo/full-<YYYY-MM-DD>
+uv run python -m etf_risk.ingest --raw-dir data/raw/yahoo/full-<YYYY-MM-DD>    # -> data/processed/full-<YYYY-MM-DD>/
+
+# Window definitions -> data/windows/<snapshot>/<name>/ (strides below 21 need --allow-dense-stride)
+uv run python -m etf_risk.windows --snapshot full-2026-10-12 --kind rolling --stride 21
+uv run python -m etf_risk.windows --snapshot full-2026-10-12 --kind calendar-year
+
+# Spark run: verifies the recorded SHA-256s, then writes data/outputs/windows/<snapshot>/<name>/<run id>/
+uv run python -m etf_risk.spark_pipeline --windows data/windows/full-2026-10-12/rolling-252-s21
+# Timed runs with peak memory (fresh process per run, stop rule at 60% of RAM)
+uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/windows/full-2026-10-12/rolling-252-s21
+# Independent Python check of a sample (never inside timed runs)
+uv run python -m etf_risk.verify --run data/outputs/windows/full-2026-10-12/rolling-252-s21/<run id>
+
+# Prototype: 2020-2025 CSVs and verification.json in data/raw/yahoo/, one full-period window per ticker
+uv run python -m etf_risk.ingest --raw-dir data/raw/yahoo --tickers NVDA AAPL MSFT TSLA   # -> data/processed/yahoo/
+uv run python -m etf_risk.windows --snapshot yahoo --kind full-period
+uv run python -m etf_risk.spark_pipeline --windows data/windows/yahoo/full-period
 ```
 
-Status: all tests pass. Paths are currently one full 2020–2025 history per
-ticker; rolling holding windows come next.
+Status: Stage 2 runs fixed 252-trading-day windows on the full-history
+snapshot at a sparse stride (21); see [docs/spec.md](docs/spec.md) for what is
+implemented and what is still planned.

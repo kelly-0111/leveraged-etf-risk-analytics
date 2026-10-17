@@ -1,4 +1,4 @@
-"""Hand-calculated checks for the reference model (implementation plan §4.2).
+"""Hand-calculated checks for the reference model (docs/spec.md, section 3).
 
 Each case's expected numbers are worked out in its comment so they can be
 re-derived by hand. AI contribution: drafted with Claude Code (Opus 5.5);

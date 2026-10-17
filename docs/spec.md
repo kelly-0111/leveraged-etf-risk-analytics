@@ -1,0 +1,454 @@
+# Leveraged ETF Risk Analytics — specification
+
+Last updated 2026-10-13, after the Stage 2 cleanup (stride 21, under review).
+Every section separates what is **implemented** from what is **planned**.
+Planned parts describe intentions, not results, and may change when each stage
+is reviewed.
+
+| Stage | Scope | Status |
+|---|---|---|
+| Prototype | Reference model; Spark run over one full-period path per ticker and leverage; Python/Spark consistency checks; 2020–2025 data | **Implemented** (now expressed as full-period windows) |
+| Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
+| Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run under review |
+| Stage 3 | Reproducible environment (Docker) and performance experiments | Planned |
+| Stage 4 | Figures, final documentation and demo | Planned |
+
+## 1. Purpose and scope
+
+This independent project studies how a fund that resets to a fixed multiple of
+its underlying every trading day behaves over a holding period: its return
+compared with the underlying, its drawdowns, and the rebalancing the daily
+reset implies. It replays the model on historical daily returns of NVDA, AAPL,
+MSFT, TSLA and QQQ, and uses Spark to run many holding windows in batch.
+
+Out of scope: forecasting any real ETF's NAV (fees, financing and execution are
+ignored), estimating the market impact of rebalancing, and probability
+statements about future returns. Results describe historical windows of a few
+tickers.
+
+Course concepts applied: a Python reference implementation with tests; Parquet
+with explicit schemas (PyArrow); PySpark batch processing with grouped pandas
+functions; Spark DataFrame and SQL aggregation; performance measurement and a
+Docker environment (both planned).
+
+## 2. Research questions
+
+1. **Path dependence.** Over the same fixed holding period, how does the path of
+   the underlying's daily returns shape the result of a daily-reset 2x model,
+   compared with the underlying itself and with twice its return?
+2. **Rebalancing.** Under the model's assumptions, how large is the exposure
+   adjustment the daily reset requires, relative to NAV, and how does it depend
+   on leverage and the day's return? Dollar amounts scale linearly with NAV, so
+   results are given per unit of NAV; a hypothetical fund size only rescales them.
+3. **Spark performance.** How do workload size, partitioning and caching affect
+   Spark runtime and memory for this workload on one machine, and why?
+
+## 3. Model — implemented (`src/etf_risk/model.py`)
+
+With `r_t` the underlying's simple return on day `t`, `L` the daily target
+leverage and `V_(t-1)` the NAV at the start of day `t`:
+
+```text
+V_t               = V_(t-1) × (1 + L × r_t)
+exposure_before_t = L × V_(t-1) × (1 + r_t)     end of day, before the reset
+exposure_target_t = L × V_t                     after the reset
+rebalance_t       = exposure_target_t − exposure_before_t = L × (L − 1) × V_(t-1) × r_t
+```
+
+A positive rebalance adds exposure, a negative one cuts it. It is a
+model-implied amount, not observed trading.
+
+**Assumptions**
+
+- The fund holds exposure `L × V_(t-1)` during day `t`, does not trade intraday,
+  and resets to `L × V_t` at the close.
+- Underlying returns are total returns (computed from Adj Close, so dividends
+  are reinvested).
+- No fees, financing costs, interest on cash, creations or redemptions, taxes,
+  tracking error or trading costs, so the NAV is not a forecast of any real ETF.
+- `L > 0` (no inverse funds). Every path starts at NAV 100, and NAV carries over
+  from day to day.
+- Invalid input raises an error and is never treated as a breach: returns must
+  be finite and at least −100%, and `L` and the starting NAV must be finite and
+  positive.
+
+**Breach rule.** If `1 + L × r_t ≤ 0`, the NAV would reach zero or go negative,
+which the model cannot represent. Day `t` is recorded with status `breach`, NaN
+NAV, NaN target exposure and NaN rebalance, and the path stops; later days are
+not output, so a breached path is shorter than its input. The path summary
+reports `breached`, `breach_day`, and NaN `final_nav` and `total_return`;
+drawdown and rebalance metrics cover the days before the breach. A breach is a
+model boundary, not a modeled liquidation of a real product. For `L = 2` it
+requires a daily return of −50% or worse.
+
+**Per-day output**: `day, daily_return, nav_start, nav, exposure_before,
+exposure_target, rebalance, status, running_peak, drawdown`. The running peak
+includes the starting NAV, and `drawdown_t = 1 − V_t / running_peak_t`.
+
+**Path summary** (`summarize_path`): `days_ok, breached, breach_day, final_nav,
+total_return, max_drawdown, total_abs_rebalance, max_abs_rebalance`.
+
+**Normalized rebalancing (implemented in Stage 2, computed in Spark; `model.py`
+unchanged)**: daily turnover `|rebalance_t| / V_(t-1)`, a fraction of that day's
+starting NAV and so not biased by NAV growth (model identity `L(L−1)|r_t|`, exactly
+0 at 1x). Per path, over the days before any breach: mean, maximum (with the
+earliest date of the maximum) and total turnover, each stored with its day
+count. Per window, from the returns alone: realized variance `Σ r_t²` and the
+exact gap `Σ log(1 − (r_t/(1+r_t))²)`, both null unless every term is valid.
+Dollar rebalance sums stay only for the reference comparison.
+
+## 4. Data inputs and outputs
+
+### Implemented
+
+| Artifact | Location (gitignored) | Produced by | Contents |
+|---|---|---|---|
+| Raw snapshot | `data/raw/yahoo/<snapshot>/` | `download.py` | one CSV per ticker (Date, Open, High, Low, Close, Adj Close, Volume, Dividends, Stock Splits; QQQ also has Capital Gains, all zero in `full-2026-10-12` and unused) and `manifest.json` (download time, tool versions, request settings, rows, dates, SHA-256 per file); the prototype snapshot sits in `data/raw/yahoo/` with `verification.json` |
+| Daily returns | `data/processed/<snapshot>/daily_returns/<TICKER>.parquet` | `ingest.py` | `ticker` string, `date` date32, `adjusted_price` double, `daily_return` double (null on the first row); schema metadata naming the source, snapshot and checksums |
+| Quality report | `data/processed/<snapshot>/quality_report.json` | `ingest.py` | per-ticker check results, a verification-status block, and the list of unverified extreme days |
+| Window definitions | `data/windows/<snapshot>/<name>/` (`windows.parquet`, `config.json`) | `windows.py` | one row per window: `window_kind, ticker, window_days, entry_date, first_return_date, exit_date, entry_row, stride, calendar_year, contains_unverified_day, unverified_day_count, entry_on_unverified_day`; the config records the SHA-256 of every return file, of `quality_report.json` and of `windows.parquet`, the self-check results, the flag rule, each return file's raw-manifest hash, and the code that built it (commit, whether the worktree was clean, SHA-256 of every source file and of `uv.lock`) |
+| Run output | `data/outputs/windows/<snapshot>/<name>/<run id>/` | `spark_pipeline.py`, `verify.py` | `window_stats/` (one row per window, no model), `path_days/` (per window, leverage and day; partitioned by ticker), `path_summary/` (per window and leverage), `paired/` (per window, 1x and 2x; for a breached 2x path the full-window 2x drawdown and turnover columns are null and the partial values sit in `*_pre_breach` columns with `days_ok_2x`), `checks.json`, `run.json` (including the code provenance and the JVM's measured maximum heap), and `verify.json` from the sample check |
+| Measurement records | `data/outputs/windows/<snapshot>/<name>/protocol-<UTC time>.json`, `<run id>.log` | `measure.py` | per run: wall time, in-process phase timings, peak summed RSS in total and per process type, stop-rule status and its limits |
+
+Snapshots: `full-2026-10-12` (five tickers, each from its first trading day to
+2025-12-31; used for the main analysis) and the 2020–2025 snapshot of the four
+stocks (prototype only). Settings, checksums and limitations are recorded in
+[data-sources.md](data-sources.md).
+
+**Data status: partially checked, not fully verified.** Trading dates match the
+NYSE schedule from pandas_market_calendars; Adj Close is consistent with Yahoo's
+own dividend records; none of the 23 split-day returns resembles an unadjusted
+split, which does not prove that every split adjustment is correct. No second
+source has been compared, the terms of use have not been reviewed, and **36
+extreme days are unverified**, including AAPL 2000-09-29 (−51.9%).
+
+### Planned
+
+- **Measurements** (Stage 3): a CSV of performance-experiment runs
+  (configuration, input size, partitions, runtime, peak memory, status, repeat),
+  built from the run records that `measure.py` already writes.
+- **Figures** (Stage 4): generated from the result files, never edited by hand.
+
+## 5. Module hierarchy and data flow
+
+```text
+src/etf_risk/
+  download.py        implemented  Yahoo Finance -> raw snapshot + manifest (network; "download" dependency group)
+  ingest.py          implemented  raw snapshot -> validated daily returns (Parquet) + quality report
+  validate.py        implemented  data checks used by ingest (pure functions)
+  model.py           implemented  sequential reference model for one path
+  windows.py         implemented  window definitions and their checksums; verify_checksums() for later steps
+  spark_pipeline.py  implemented  window members, model per window, Spark summaries, 1x/2x pairing, full-scale checks
+  verify.py          implemented  sample check against an independent Python slicing of each window
+  measure.py         implemented  fresh-process timed runs, process-tree memory sampling, stop rule
+  provenance.py      implemented  code state for every record (commit, worktree state, SHA-256 of sources and uv.lock); repo-relative paths
+  plots.py           planned      figures from result files (Stage 4)
+tests/               implemented  model, validation, ingest, download, windows, Spark consistency and failure
+                                  injection, sample check, measurement, AI-log tooling
+.claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
+```
+
+Names of planned modules are provisional.
+
+```mermaid
+flowchart TD
+    Y[Yahoo Finance] -->|download.py| R[Raw snapshot<br/>CSV + manifest]
+    R -->|ingest.py + validate.py| P[Daily returns Parquet<br/>+ quality report]
+    P -->|windows.py| W[Window definitions<br/>+ config with SHA-256]
+    W -->|checksums verified first| S[spark_pipeline.py]
+    P --> S
+    M[model.py<br/>reference model] --> S
+    S --> O[window_stats, path_days,<br/>path_summary, paired, checks]
+    O --> V[verify.py<br/>independent sample check]
+    M --> V
+    S -.->|started by| B[measure.py<br/>runtime and peak memory]
+    O -.-> E[Stage 3: performance<br/>experiments]
+    O -.-> F[plots.py<br/>figures]
+    classDef planned stroke-dasharray: 5 5
+    class E,F planned
+```
+
+Boxes with solid borders are implemented; dashed boxes are planned.
+`measure.py` starts each timed `spark_pipeline.py` run as a fresh process.
+
+Inside `spark_pipeline.py`: every SHA-256 in the window config is verified
+before Spark starts. Each definition is exploded into its member rows
+(`entry_row + 1 … entry_row + window_days`) and joined to a broadcast of the
+returns (about 39k rows). `groupBy(window key).applyInPandas` sorts each window
+by date, raises if it does not have exactly `window_days` rows with unique
+dates, and runs `model.simulate_path` for every leverage on the same returns,
+so 1x and 2x always share their input. Path summaries are computed with Spark
+aggregations rather than by calling `summarize_path`, so comparing the two
+(`verify.py`) is a real check; 1x and 2x are paired by conditional aggregation
+on the window key. Each table is written and read back, so the model runs once
+per window.
+
+## 6. Validation approach
+
+### Implemented
+
+- **Data (Stage 1)**: checksum of every raw file against its manifest; duplicate
+  dates and invalid prices or volumes are errors; trading calendar compared with
+  the NYSE schedule, each ticker only within its own date range, where a session
+  without a row or a row on a non-session day is an error and market closures
+  are listed; split-day returns compared with what an unadjusted split would
+  show; dividend steps compared with Yahoo's reported dividends; zero-volume rows
+  and rows without an intraday range reported; extreme days listed as
+  unverified. What each check does not establish is stated in
+  [data-sources.md](data-sources.md).
+- **Model**: hand-calculated cases in `tests/test_model.py` (zero returns, a
+  single up or down day, two up days, a round trip that loses value at 2x, the
+  starting NAV as a drawdown peak, the rebalance closed form, no rebalancing at
+  1x, a breach on day 2, exactly −50% at 2x as a breach, invalid inputs).
+- **Provenance**: ingest refuses a raw file whose SHA-256 differs from its
+  manifest; the window config records the SHA-256 of every return file, of
+  `quality_report.json` and of `windows.parquet`, and `spark_pipeline.py` and
+  `verify.py` refuse to run if any of them changed. Window configs, run records,
+  protocol files and `verify.json` record the code that produced them: the git
+  commit, whether the worktree was clean, and the SHA-256 of every source file
+  and of `uv.lock`, so results from uncommitted code remain identifiable.
+- **Definition self-check (`windows.py`)**: before writing, every window is
+  re-derived from the returns: the dates at its entry, first-return and exit
+  rows, the start grid and 21-session spacing, complete coverage of all grid
+  starts, calendar-year sessions, and the unverified flags. Any violation stops
+  the build; the counts are stored in the config.
+- **Full-scale checks in Spark (Stage 2, every run)**, written to `checks.json`;
+  any violation gives exit code 1:
+  1. window construction: member rows per window equal `window_days`; first and
+     last member dates equal `first_return_date` and `exit_date`; the price rows
+     at `entry_row` and `entry_row + window_days` carry `entry_date` and
+     `exit_date` (checked before the model runs; a violation stops the run);
+  2. complete paths: rows equal `window_days`, or `breach_day` for a breached
+     path; days numbered 1 to rows; `days_ok` consistent;
+  3. pairing: exactly one summary row per window and leverage, and every
+     definition present in `paired`;
+  4. 1x identity: the model's 1x total return equals exit price ÷ entry price − 1
+     (rtol 1e−9);
+  5. exact log gap: for every 2x window without a breach, the model's gap
+     `log(1 + R_2x) − 2 log(1 + R_1x)` equals `Σ log(1 − (r/(1+r))²)` computed
+     from the returns alone (abs tol 1e−9);
+  6. drawdown bound: `MDD_2x ≥ 1 − (1 − MDD_1x)²` for every 2x window without a
+     breach;
+  7. NAV sanity: no negative NAV; NaN NAV only on breach rows;
+  8. turnover identity: daily turnover equals `L(L−1)|r|` before any breach, and
+     is exactly 0 at 1x;
+  9. every breached window is flagged as containing an unverified day;
+  10. null rule, in both directions: every count-guarded value is null exactly
+      when its count of valid terms is short (26 tests across `window_stats`,
+      `path_summary` and `paired`), so `exact_gap`, `log_gap`, `return_2x`,
+      `mdd_bound` and the full-window 2x drawdown and turnover are null exactly
+      for breached windows, and the `*_pre_breach` values exist only for them.
+- **Sample check (`verify.py`)**, a separate command never run inside timed
+  runs: every window of one ticker (default AAPL), every breached window as
+  found by Spark or by Python, and the first and last window of each ticker.
+  Spark filters to the sample before collecting; Python slices each window from
+  its own sorted returns by locating `entry_date` (not through `entry_row`) and
+  compares summaries, dates and paired values (`rtol = atol = 1e−9`).
+- **Tests**: shuffled input and 1, 3 or 7 partitions give the same summaries;
+  every synthetic window matches the independent Python slicing; a breached
+  window keeps its scheduled `exit_date`; full-period windows reproduce the
+  prototype. Failure injection: a dropped return row stops the run before the
+  model, a changed price breaks the 1x identity, a duplicated leverage row
+  breaks pairing, a changed input file stops the run before Spark starts, and a
+  day with `1 + 2r ≤ 0` gives a null `exact_gap`, never a partial sum.
+- **Limits of these checks**: Spark and the Python reference share
+  `simulate_path`, so their agreement cannot reveal an error in the model
+  itself; the hand-calculated cases and the model identities (checks 5, 6 and 8)
+  cover that. The identities compare the model's output with formulas over the
+  **same** member rows, so they cannot show that a window holds the right dates
+  or that the data is right: a window holding the wrong days would still satisfy
+  them, and the 1x identity also holds when prices and returns are shifted
+  together. Window dates are checked only by the construction check (check 1),
+  the definition self-check and the independent slicing in `verify.py`. Data
+  errors that are internally consistent are not detected without a second
+  source.
+
+The tests in `tests/` cover the model, data validation, ingest, download (with
+a fake fetch function), window definitions, Python/Spark consistency and
+failure injection, the sample check, measurement, and the AI-log tooling; none
+uses the network. Run them with `uv run --group measure pytest`.
+
+## 7. Fixed 252-trading-day windows — implemented (Stage 2)
+
+- **Definition.** A window is 252 consecutive daily returns of one ticker (253
+  prices). The entry is the close on `entry_date`, the price date before the
+  first return; the exit is the close on `exit_date`, the last return date.
+  Fixing the number of trading days keeps holding periods comparable; the
+  calendar length is about one year and varies with holidays and closures.
+- **Rolling windows** (main analysis). A window starts where its first return
+  date is an NYSE session whose index, counted from the anchor session
+  1980-01-02, is a multiple of `stride`, so all tickers' windows start on the
+  same dates. Only complete windows are kept. Strides below 21 are refused
+  unless `--allow-dense-stride` is given; daily-start windows (stride 1) wait
+  for the review of the stride-21 measurements.
+
+  | Stride | Windows (5 tickers) | Path-day rows at 1x and 2x | Status |
+  |---|---|---|---|
+  | 21 | 1,790 (AAPL 529, MSFT 466, NVDA 311, QQQ 310, TSLA 174) | 900,714 (breached 2x paths stop early) | run and measured (section 8) |
+  | 1 | 37,550 | at most 18,925,200 | not attempted; memory and runtime not inferred from these counts |
+
+  **Unverified-day flag (conservative rule change in the Stage 2 cleanup).** A
+  window is flagged when any date whose closing price it uses, `entry_date`
+  through `exit_date`, is an unverified extreme day. The first rule counted only
+  return dates (`first_return_date` to `exit_date`) and missed windows entered at
+  the close of an unverified day, although their entry price comes from that
+  close; `entry_on_unverified_day` marks those. At stride 21 this flags 239 of
+  1,790 windows (AAPL 78, MSFT 12, NVDA 92, QQQ 0, TSLA 57), one more than the
+  first rule (TSLA, entered 2012-01-17). The flag is used for a sensitivity
+  analysis; it does not mean the data is wrong.
+- **Calendar-year windows** (labeled supplement). Entry at the ticker's close on
+  the previous year's last session; complete years only: 151 ticker-years
+  (AAPL 45, MSFT 39, NVDA 26, QQQ 26, TSLA 15; each ticker's first, partial year
+  is skipped and recorded). Their lengths vary (2001, for example, lost four
+  sessions after 9/11), so they are kept in a separate table and never mixed
+  with the fixed-length windows.
+- **Keys and pairing.** Window key `(window_kind, ticker, window_days,
+  entry_date)`, and path key that plus `leverage`; `window_kind` keeps the
+  rolling, calendar-year and full-period tables from ever colliding. 1x and 2x
+  use the same window definitions and are compared in one row per window by
+  conditional aggregation on the window key, replacing the prototype's
+  ticker-only join.
+- **End dates.** The scheduled `exit_date` comes from the window definition. A
+  breached path ends early, so its `last_ok_date` and `breach_date` are reported
+  separately; pairing and joins never use the actual end dates.
+- **Null rule.** Spark's `sum`, `avg`, `min` and `max` skip nulls, so every
+  aggregate is stored with the count of terms it used and is null unless that
+  count is complete. For breached paths, `final_nav`, `total_return`, `log_gap`
+  and `exact_gap` are null. Their drawdown and turnover cover only the days
+  before the breach: in `paired` they are stored only in `*_pre_breach` columns,
+  with `days_ok_2x`, while the full-window columns are null, so they cannot enter
+  distribution statistics by accident.
+- **Reporting rules.** Results are reported per ticker; any pooled figure is
+  labeled as pooled, and QQQ, which holds the other four tickers, is not pooled
+  with them. Overlapping rolling windows are described as overlapping, and the
+  non-overlapping windows are descriptive observations, not independent
+  samples. No probability or confidence statements are based on window counts.
+
+## 8. Expected results
+
+These are expectations derived from the model, written down before the Stage 2
+runs so the results can be checked against them rather than fitted afterwards.
+
+1. **Path dependence (question 1).** Each day, `(1 + r)² − (1 + 2r) = r²`, so for
+   a 2x window without a breach the log-return gap is exactly
+
+   ```text
+   log(1 + R_2x) − 2 × log(1 + R_1x) = Σ log(1 − (r_t / (1 + r_t))²)  ≤ 0
+                                      ≈ −Σ r_t²   (realized variance; error of order Σ r_t³)
+   ```
+
+   In log terms the 2x model always falls short of twice the underlying, by about
+   the window's realized variance. In simple returns it can still beat twice the
+   underlying's return in strong, steady trends, because compounding adds
+   `R_1x²`, and it falls short in volatile windows without a trend. Checked so
+   far only outside the pipeline, on the 2020–2025 prototype data: the exact
+   identity matches the model output to about 1e−15 on all four full-period
+   paths, and the approximation is within 5% of the exact gap in 18 of 20
+   non-overlapping 252-day blocks; the largest difference, 13.8% for NVDA in
+   2023, comes from a block with a +24.4% day.
+2. **Drawdowns.** Each day `1 + L r ≤ (1 + r)^L` for `L ≥ 1` (Bernoulli's
+   inequality). Over the interval from the 1x path's peak to its trough, the
+   leveraged NAV therefore ends at no more than `(1 − MDD_1x)^L` times its value
+   at the start of that interval. For every window without a breach,
+   `MDD_2x ≥ 1 − (1 − MDD_1x)²`: a 30% drawdown at 1x implies at least 51% at 2x.
+   The four prototype paths satisfy this (NVDA: 1x 66.3%, bound 88.7%, 2x 92.1%).
+3. **Breaches.** At 2x only a day of −50% or worse causes a breach. In
+   `full-2026-10-12` the only such day is AAPL 2000-09-29 (−51.9%, unverified),
+   so breached 2x windows are expected only among AAPL windows that include it,
+   and every result about them will be labeled unverified.
+4. **Rebalancing (question 2).** Under the model, the rebalance as a fraction of
+   that day's starting NAV is exactly `L(L − 1) r_t`: for 2x, twice the day's
+   return, adding exposure after up days and cutting it after down days. Daily
+   turnover is therefore `2 |r_t|`, and its distribution per ticker is that of
+   `|r_t|` rescaled. The results will report magnitudes, not market impact. The
+   largest values fall on extreme days, which are unverified.
+5. **Spark performance (question 3).** These are hypotheses to test, not
+   findings. At sparse strides, fixed costs (starting the Spark session and the
+   Python workers) should dominate. Larger workloads should take longer roughly
+   in proportion to the number of windows. Expanding returns into windows
+   multiplies the rows Spark has to shuffle by about `252 / stride`, and running
+   one grouped pandas call per window adds a per-window Python cost. Spark's
+   adaptive execution may merge shuffle partitions, so requested and actual
+   partition counts will both be recorded. A single-process pandas run may be
+   faster at these sizes. Memory will be measured, not estimated. The only
+   timing so far is one informal prototype run (8 paths, about 12 seconds end to
+   end), which is not a benchmark.
+
+### What the stride-21 run showed (`full-2026-10-12`, after the cleanup)
+
+Descriptive facts from one configuration, not findings about markets. The rolling
+windows overlap. Run of record: `rolling-252-s21-r2`, protocol
+`20261013T043848Z` (code with uncommitted changes, identified by its source
+checksums in every record).
+
+- **Checks.** All 46 check tests (ten checks) passed with no violation on 1,790
+  windows, so the exact log-gap identity (expectation 1) and the drawdown bound
+  (expectation 2) held in every one of the 1,778 windows without a breach. These
+  identities test the model against the same member rows; window dates rest on
+  check 1, the definition self-check (no violation) and `verify.py`. The sample
+  check compared 1,074 paths in 537 windows with no mismatch, and Python and Spark
+  found the same 12 breached windows. The calendar-year supplement (151 windows)
+  and the full-period regression on the prototype snapshot also passed; the
+  regression reproduced the prototype's results exactly.
+- **Breaches (expectation 3).** Exactly 12 rolling windows breach at 2x, all AAPL
+  windows containing 2000-09-29, plus the calendar year AAPL 2000; all are
+  flagged unverified and listed separately with their pre-breach values.
+- **Approximation.** Over each ticker's windows without a breach (flagged windows
+  included), the median relative error of `−Σr²` against the exact gap lies
+  between −1.2% (NVDA) and +0.3% (TSLA), with interquartile ranges between −4.3%
+  and +2.5%.
+- **Turnover (expectation 4).** The median of the 2x mean daily turnover per
+  window ranges from 1.8% of NAV (QQQ) to 5.0% (TSLA); breached windows excluded.
+- **Sensitivity to unverified days.** Leaving out the 239 flagged windows moves
+  some medians noticeably (TSLA 2x return +13.5% across all 174 windows, −12.3%
+  across the 117 unflagged ones). This shows how much results depend on periods
+  with extreme market days; it is not evidence that those days are data errors.
+- **Runtime and memory (expectation 5).** 900,714 path-day rows from 451,080
+  window-member rows. Over three measured fresh-process runs after one warm-up:
+  median wall time 44.7 s (40.2–47.0 s), of which Spark start-up took about 4 s,
+  the model and `path_days` write 12–16 s, and summaries and pairing 10–12 s;
+  median peak summed RSS 1.27 GiB (1.24–1.45 GiB) against a 4.8 GiB stop threshold,
+  which no run reached; the driver JVM's measured maximum heap was 1.0 GiB. Only
+  1.3–1.6 GiB of memory was free before each run. Sampling every 0.25 s can miss
+  shorter peaks, summed RSS can overstate shared pages, per-process-type peaks
+  occur at different moments, and the 60% threshold is an experimental limit
+  for this machine, not a measured safe bound. Adaptive execution was on with
+  Spark's defaults (200 shuffle partitions, partition merging enabled); no other
+  configuration has been compared yet.
+
+## 9. Status summary
+
+| Area | Implemented (prototype, Stage 1 and Stage 2) | Planned (Stage 3 and later) |
+|---|---|---|
+| Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
+| Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
+| Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance | smaller strides, after review of the stride-21 measurements |
+| Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check | Spark SQL analysis of the paired results (project author) |
+| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; one configuration measured (stride 21, Spark defaults) | stride, partition-count and optional caching experiments; a single-process pandas baseline |
+| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly | Docker; a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
+| Documentation | README, [data-sources.md](data-sources.md), this specification, [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
+
+## 10. Known issues and open items after the Stage 2 cleanup
+
+- The three prototype problems listed for Stage 2 (the ticker-only join, end
+  dates taken from simulated rows, collecting every summary for the reference
+  check) are fixed as described in sections 6 and 7.
+- The Stage 2 review findings are fixed: the unverified flag now includes the
+  entry date (a conservative rule change), partial pre-breach 2x values are
+  stored only in `*_pre_breach` columns, check 10 covers every count-guarded
+  value in both directions, definitions are self-checked, records carry code
+  provenance and the measured JVM heap, pairing refuses leverages other than 1x
+  and 2x, and config paths resolve against the repository root. The earlier
+  definitions and runs are kept unchanged next to a `SUPERSEDED.txt` note
+  pointing to the `-r2` folders.
+- Strides below 21 have not been run; the next stride is chosen after review.
+- Only one configuration has been measured, on a machine with little free
+  memory before each run. The Spark SQL analysis of the paired results and the
+  partition and caching experiments (Stage 3) are left to the project author.
+- 239 of the 1,790 stride-21 windows (13%), and 30% of NVDA's and 33% of TSLA's,
+  use the price of an unverified extreme day. Results are also shown without
+  them as a **sensitivity analysis**: the flagged windows are a non-random
+  subset (periods with extreme market days), so the comparison shows how much
+  results depend on those periods, not whether those days are data errors.
+- Open transcript-hook items (separator rule, save timing, folders for
+  interruption notices) and the NumPy deprecation warnings are unchanged.

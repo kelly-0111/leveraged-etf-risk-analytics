@@ -6,12 +6,19 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
     "pandas>=2.2,<3",  # PySpark 4.2 warns pandas 3 is not fully supported
+    "pandas-market-calendars==5.5.0",  # exact: trading-calendar checks depend on its holiday rules
     "pyarrow>=18",
     "pyspark>=4.0",
 ]
 
 [dependency-groups]
 dev = ["pytest>=8"]
+download = [
+    "yfinance==1.7.0",
+]
+measure = [
+    "psutil==7.2.2",  # exact: peak-memory measurements depend on it
+]
 
 [build-system]
 requires = ["hatchling"]
