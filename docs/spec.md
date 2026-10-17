@@ -1,6 +1,8 @@
 # Leveraged ETF Risk Analytics — specification
 
-Last updated 2026-10-13, after the Stage 2 cleanup (stride 21, under review).
+Last updated 2026-10-17. Implemented: the pipeline, three Spark SQL analyses of
+its results and a Docker image; pending: the performance experiments; planned:
+an optional systems extension with MySQL, Kafka and Redis (§11).
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -9,8 +11,9 @@ is reviewed.
 |---|---|---|
 | Prototype | Reference model; Spark run over one full-period path per ticker and leverage; Python/Spark consistency checks; 2020–2025 data | **Implemented** (now expressed as full-period windows) |
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
-| Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run under review |
-| Stage 3 | Reproducible environment (Docker) and performance experiments | Planned |
+| Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
+| Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | In progress: three SQL analyses and the Docker image implemented; performance experiments pending |
+| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | Planned |
 | Stage 4 | Figures, final documentation and demo | Planned |
 
 ## 1. Purpose and scope
@@ -28,8 +31,11 @@ tickers.
 
 Course concepts applied: a Python reference implementation with tests; Parquet
 with explicit schemas (PyArrow); PySpark batch processing with grouped pandas
-functions; Spark DataFrame and SQL aggregation; performance measurement and a
-Docker environment (both planned).
+functions; Spark DataFrame aggregation and three Spark SQL analyses; performance
+measurement (one configuration measured, experiments pending); a Docker image
+for the pipeline.
+An optional systems extension (§11) explores a job queue and a result cache
+around the pipeline; nothing in the analysis depends on it.
 
 ## 2. Research questions
 
@@ -42,6 +48,10 @@ Docker environment (both planned).
    results are given per unit of NAV; a hypothetical fund size only rescales them.
 3. **Spark performance.** How do workload size, partitioning and caching affect
    Spark runtime and memory for this workload on one machine, and why?
+
+Engineering questions for the optional systems extension (job processing,
+recovery, result caching) are in §11; they concern the infrastructure around
+the pipeline, not the analysis.
 
 ## 3. Model — implemented (`src/etf_risk/model.py`)
 
@@ -143,9 +153,12 @@ src/etf_risk/
   measure.py         implemented  fresh-process timed runs, process-tree memory sampling, stop rule
   provenance.py      implemented  code state for every record (commit, worktree state, SHA-256 of sources and uv.lock); repo-relative paths
   plots.py           planned      figures from result files (Stage 4)
+analysis/            implemented  three Spark SQL analyses of a run's paired table (project author):
+                                  sql_overview.py, sql_comparison.py, sql_sensitivity.py
 tests/               implemented  model, validation, ingest, download, windows, Spark consistency and failure
-                                  injection, sample check, measurement, AI-log tooling
+                                  injection, sample check, measurement, provenance, AI-log tooling
 .claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
+Dockerfile, docker/  implemented  pipeline image and its build and run scripts (data mounted, never copied in)
 ```
 
 Names of planned modules are provisional.
@@ -206,7 +219,9 @@ per window.
   `verify.py` refuse to run if any of them changed. Window configs, run records,
   protocol files and `verify.json` record the code that produced them: the git
   commit, whether the worktree was clean, and the SHA-256 of every source file
-  and of `uv.lock`, so results from uncommitted code remain identifiable.
+  and of `uv.lock`, so results from uncommitted code remain identifiable. The
+  Docker image has no `.git`: there the commit and clean flag come from the
+  build (`code_source: "build"`) and the image ID is recorded as well.
 - **Definition self-check (`windows.py`)**: before writing, every window is
   re-derived from the returns: the dates at its entry, first-return and exit
   rows, the start grid and 21-session spacing, complete coverage of all grid
@@ -403,8 +418,11 @@ checksums in every record).
   some medians noticeably (TSLA 2x return +13.5% across all 174 windows, −12.3%
   across the 117 unflagged ones). This shows how much results depend on periods
   with extreme market days; it is not evidence that those days are data errors.
-- **Runtime and memory (expectation 5).** 900,714 path-day rows from 451,080
-  window-member rows. Over three measured fresh-process runs after one warm-up:
+- **Runtime and memory (expectation 5).** Measured on one machine and
+  configuration only: an Apple Silicon laptop (8 cores, 8 GiB RAM), Spark in
+  local mode with default settings; other machines and settings have not been
+  measured. 900,714 path-day rows from 451,080 window-member rows. Over three
+  measured fresh-process runs after one warm-up:
   median wall time 44.7 s (40.2–47.0 s), of which Spark start-up took about 4 s,
   the model and `path_days` write 12–16 s, and summaries and pairing 10–12 s;
   median peak summed RSS 1.27 GiB (1.24–1.45 GiB) against a 4.8 GiB stop threshold,
@@ -416,16 +434,37 @@ checksums in every record).
   Spark's defaults (200 shuffle partitions, partition merging enabled); no other
   configuration has been compared yet.
 
+### Spark SQL analyses of the run of record
+
+Three scripts in `analysis/`, written by the project author, query the run's
+`paired` table; each takes the run folder as its argument (README, step 6).
+Every statistic is reported with the number of windows it covers. Ticker order:
+AAPL, MSFT, NVDA, TSLA, then QQQ.
+
+- **`sql_overview.py`**: windows 529, 466, 311, 174, 310; 2x breaches 12 (AAPL)
+  and none elsewhere; windows using an unverified day 78, 12, 92, 57, 0. Exact
+  median 1x return 24.4%, 22.8%, 39.5%, 22.5%, 16.6%; median 2x return 35.2%
+  (over AAPL's 517 windows with a 2x return), 39.9%, 51.3%, 13.5%, 31.4%.
+- **`sql_comparison.py`**: the 2x return exceeded twice the 1x return in 219 of
+  AAPL's 517 windows with both returns (42.4%), 164 of 466 (35.2%), 141 of 311
+  (45.3%), 43 of 174 (24.7%) and 140 of 310 (45.2%). The 12 breached windows are
+  counted as not compared, not as failures.
+- **`sql_sensitivity.py`**: without the windows that use an unverified day, the
+  median 2x return is 48.5% (AAPL, 451 windows), 41.4% (454), 52.2% (219) and
+  −12.3% (TSLA, 117); QQQ has no such windows (31.4%, 310). As above, this is a
+  sensitivity analysis, not evidence of data errors.
+
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stage 1 and Stage 2) | Planned (Stage 3 and later) |
+| Area | Implemented (prototype, Stages 1–2, SQL analyses, Docker image) | Planned (Stage 3 and later) |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
 | Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance | smaller strides, after review of the stride-21 measurements |
-| Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check | Spark SQL analysis of the paired results (project author) |
-| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; one configuration measured (stride 21, Spark defaults) | stride, partition-count and optional caching experiments; a single-process pandas baseline |
-| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly | Docker; a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
+| Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check; three Spark SQL analyses of the paired results (project author, §8) | — |
+| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; one configuration measured (stride 21, Spark defaults) | stride, partition-count and optional caching experiments (pending); a single-process pandas baseline |
+| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
+| Systems extension | — | MySQL job table, Kafka job queue, worker and reconciler, Redis result cache, Docker Compose, recovery and caching experiments (§11) |
 | Documentation | README, [data-sources.md](data-sources.md), this specification, [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
@@ -443,8 +482,9 @@ checksums in every record).
   pointing to the `-r2` folders.
 - Strides below 21 have not been run; the next stride is chosen after review.
 - Only one configuration has been measured, on a machine with little free
-  memory before each run. The Spark SQL analysis of the paired results and the
-  partition and caching experiments (Stage 3) are left to the project author.
+  memory before each run; the partition and caching experiments (Stage 3) are
+  pending and left to the project author. The three Spark SQL analyses are done
+  (§8).
 - 239 of the 1,790 stride-21 windows (13%), and 30% of NVDA's and 33% of TSLA's,
   use the price of an unverified extreme day. Results are also shown without
   them as a **sensitivity analysis**: the flagged windows are a non-random
@@ -452,3 +492,105 @@ checksums in every record).
   results depend on those periods, not whether those days are data errors.
 - Open transcript-hook items (separator rule, save timing, folders for
   interruption notices) and the NumPy deprecation warnings are unchanged.
+
+## 11. Systems extension — planned (optional)
+
+An exploratory layer around the batch pipeline: analysis jobs are submitted,
+queued, run by a worker and tracked, and summary queries can be served from a
+cache. Nothing in sections 3–10 depends on it, and each of its stages can be the
+last. Only the Docker image (§9) exists so far; everything below is planned and
+may change at review.
+
+| Component | Role | Notes |
+|---|---|---|
+| MySQL 8 | job table: the single source of truth for job state | parameters, input checksums, status, attempt number and token, lease, accepted run id, error |
+| Kafka (one broker, KRaft) | job queue: one topic carrying job ids | delivery at least once; one partition; no replica |
+| Worker | runs the existing CLIs (`etf_risk.windows` → `etf_risk.spark_pipeline` → `etf_risk.verify`) in a subprocess for each job it claims | one job at a time on this machine, for memory |
+| Reconciler | requeues jobs whose lease expired and republishes jobs whose publication was never confirmed | each change conditional on the attempt token it observed |
+| Redis | cache-aside for summary-query results | key: run id + normalized query; run outputs never change, so entries need no invalidation |
+| Docker Compose | starts only the services one experiment needs, each with a memory limit | service tests are excluded from the default, offline test run |
+
+```mermaid
+flowchart LR
+    S[submit CLI] -->|insert job as queued| DB[(MySQL jobs)]
+    S -->|publish job id, wait for confirmation| K[[Kafka topic]]
+    S -->|then set published_at| DB
+    K --> W[worker]
+    W -->|claim: new attempt token and lease| DB
+    W -->|commit offset after the claim| K
+    W --> P["windows → spark_pipeline → verify"]
+    P --> O[run folder per attempt]
+    W -->|accept result if the token still matches| DB
+    R[reconciler] -->|expired lease or unconfirmed publish| DB
+    R -->|republish| K
+    Q[summary query] -->|hit| C[(Redis)]
+    Q -->|miss: Spark SQL on paired| O
+```
+
+**Guarantee.** Each job accepts at most one result. A successfully completed job
+has one accepted result. A job may execute more than once: Kafka delivers at
+least once, and a lease can expire while a slow worker still runs.
+
+- **Attempt tokens.** Every claim writes a new attempt token and attempt number
+  in one conditional update. Lease renewal and the final status write both
+  require that token; an update that matches no row means the worker was fenced
+  off: it stops, and its outputs are not accepted.
+- **Run ids include the attempt**, so attempts never share an output folder, and
+  the pipeline never overwrites outputs.
+- **Manual offset commits.** Auto-commit is off; the worker commits the Kafka
+  offset only after its claim succeeded, or after deciding the job needs nothing
+  (already succeeded, or held by a live lease). A worker that dies before
+  committing gets the job redelivered.
+- **Publish confirmation.** The producer (`acks=all`, idempotence on) waits for
+  Kafka's delivery confirmation before `published_at` is set; otherwise the
+  reconciler publishes again. With one broker, `acks=all` means that broker
+  wrote the message; there is no replica.
+
+**Engineering questions**
+
+- **E1.** Does each job accept at most one result, and does every successfully
+  completed job have exactly one, even when jobs execute more than once?
+- **E2.** After a worker crash (before or after its claim), a broker restart or a
+  database restart, how long until the job runs again and finishes, and is any
+  job lost or accepted twice?
+- **E3.** How much latency does a result cache save for repeated summary queries
+  compared with a warm Spark session, at which hit rates, and what happens when
+  Redis is down?
+
+**Planned experiments**
+
+- An accepted result counts as correct when its run passes every check (§6) and
+  matches a reference run by content (Parquet files differ in bytes between runs).
+- Recovery (E1, E2): each failure case is injected on purpose; detection and
+  recovery times, executions per job, accepted results per job and lost jobs are
+  recorded.
+- Result cache (E3): latency of a new Spark process, a warm Spark session and a
+  Redis hit, at hit rates set by the workload; the fallback to Spark with Redis
+  stopped.
+- Optional: Spark task retries. Local mode does not retry a failed task; a
+  `local[N,F]` master with one injected failure shows a retry.
+
+**Memory budgets (to validate, not proven limits)**
+
+- Pipeline container: 2.5 GiB without swap. It held for stride 21 on the tested
+  machine only (Docker Desktop's VM with 3.83 GiB on the 8 GiB Apple Silicon
+  laptop), with peaks of 2,282 and 2,342 MiB (cgroup `memory.peak`, which
+  includes page cache); other machines, settings and denser strides need their
+  own check.
+- Kafka heap 256 MiB in a 640 MiB container; MySQL with a 64 MiB buffer pool and
+  `performance_schema` off in 512 MiB; Redis `maxmemory` 32 MiB (`allkeys-lru`)
+  in 128 MiB. Each budget is checked against measured peaks when its service is
+  introduced and changed if exceeded.
+- Docker Desktop's VM has 3.83 GiB here. Timings inside containers form a
+  separate configuration and are not compared with the native measurements (§8).
+
+**Not claimed:** throughput or scaling beyond one machine (Kafka and MySQL run as
+single instances); durability beyond one broker and one database on this
+machine; cache results for workloads other than these small, unchanging result
+tables; any change to the analysis results in §8.
+
+**Stages and authorship.** Compose infrastructure, then the job queue, the
+recovery experiments and the result cache; each stops for review. The Docker
+image and the Compose infrastructure are written with Claude Code; the job
+table, worker, reconciler, cache logic and the experiments by the project
+author, with tutoring.
