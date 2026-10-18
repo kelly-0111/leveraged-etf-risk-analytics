@@ -1,6 +1,8 @@
 # Spark performance experiments
 
-> **TODO (author):** authorship line in your own words.
+Author: the project author, who set the question and the design (section 1), wrote the reasoning
+in 2.3, 2.4 and 2.6, made the decisions behind section 3, wrote the predictions in 4.1–4.5, and
+checked the parts drafted with Claude Code.
 
 AI contribution: Claude Code (Opus 5.5) sets the tasks and acceptance criteria and reviews each
 step. It drafted the parts marked _Drafted with Claude Code_: section 2, items 2.1, 2.2 and 2.5,
@@ -8,10 +10,11 @@ from the records named in each part (numbers read from the configs by script, fi
 recomputed), section 3 from the author's decisions of 2026-10-18, and 4.6 from section 4 and the
 Stage 2 records. At the author's request it also applied wording fixes from its reviews in
 section 1 and in 2.1, copied the author's predictions 4.1–4.5 from the conversation into
-section 4, and added the sentence there that H1 is the least certain prediction.
+section 4, added the sentence there that H1 is the least certain prediction, and drafted the
+authorship line above, which the author chose.
 
-Status: Part A (sections 1–4) written, apart from the authorship line; not yet committed; no
-measured runs yet.
+Status: Part A (sections 1–4) committed in `164f65a` before any measured run (the authorship line
+was added in a later commit); no measured runs yet.
 
 ## 1. Question, hypotheses and design
 
