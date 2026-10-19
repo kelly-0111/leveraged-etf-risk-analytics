@@ -1,8 +1,10 @@
 # Leveraged ETF Risk Analytics — specification
 
-Last updated 2026-10-17. Implemented: the pipeline, three Spark SQL analyses of
-its results and a Docker image; pending: the performance experiments; planned:
-an optional systems extension with MySQL, Kafka and Redis (§11).
+Last updated 2026-10-19. Implemented: the pipeline, three Spark SQL analyses of
+its results, a Docker image and the stride experiment
+([experiments.md](experiments.md)); pending: the shuffle-partition experiment;
+optional: a caching experiment; planned: an optional systems extension with
+MySQL, Kafka and Redis (§11).
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -12,7 +14,7 @@ is reviewed.
 | Prototype | Reference model; Spark run over one full-period path per ticker and leverage; Python/Spark consistency checks; 2020–2025 data | **Implemented** (now expressed as full-period windows) |
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
-| Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | In progress: three SQL analyses and the Docker image implemented; performance experiments pending |
+| Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | In progress: three SQL analyses, the Docker image and the stride experiment ([experiments.md](experiments.md)) done; shuffle-partition experiment pending; caching experiment optional |
 | Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | Planned |
 | Stage 4 | Figures, final documentation and demo | Planned |
 
@@ -32,8 +34,8 @@ tickers.
 Course concepts applied: a Python reference implementation with tests; Parquet
 with explicit schemas (PyArrow); PySpark batch processing with grouped pandas
 functions; Spark DataFrame aggregation and three Spark SQL analyses; performance
-measurement (one configuration measured, experiments pending); a Docker image
-for the pipeline.
+measurement (a stride experiment done, the shuffle-partition experiment
+pending); a Docker image for the pipeline.
 An optional systems extension (§11) explores a job queue and a result cache
 around the pipeline; nothing in the analysis depends on it.
 
@@ -118,7 +120,8 @@ Dollar rebalance sums stay only for the reference comparison.
 | Quality report | `data/processed/<snapshot>/quality_report.json` | `ingest.py` | per-ticker check results, a verification-status block, and the list of unverified extreme days |
 | Window definitions | `data/windows/<snapshot>/<name>/` (`windows.parquet`, `config.json`) | `windows.py` | one row per window: `window_kind, ticker, window_days, entry_date, first_return_date, exit_date, entry_row, stride, calendar_year, contains_unverified_day, unverified_day_count, entry_on_unverified_day`; the config records the SHA-256 of every return file, of `quality_report.json` and of `windows.parquet`, the self-check results, the flag rule, each return file's raw-manifest hash, and the code that built it (commit, whether the worktree was clean, SHA-256 of every source file and of `uv.lock`) |
 | Run output | `data/outputs/windows/<snapshot>/<name>/<run id>/` | `spark_pipeline.py`, `verify.py` | `window_stats/` (one row per window, no model), `path_days/` (per window, leverage and day; partitioned by ticker), `path_summary/` (per window and leverage), `paired/` (per window, 1x and 2x; for a breached 2x path the full-window 2x drawdown and turnover columns are null and the partial values sit in `*_pre_breach` columns with `days_ok_2x`), `checks.json`, `run.json` (including the code provenance and the JVM's measured maximum heap), and `verify.json` from the sample check |
-| Measurement records | `data/outputs/windows/<snapshot>/<name>/protocol-<UTC time>.json`, `<run id>.log` | `measure.py` | per run: wall time, in-process phase timings, peak summed RSS in total and per process type, stop-rule status and its limits |
+| Measurement records | `data/outputs/windows/<snapshot>/<name>/protocol-<UTC time>.json`, `<run id>.log` (the stride experiment: under `data/outputs-experiments/`) | `measure.py` | per run: wall time, in-process phase timings, peak summed RSS in total and per process type, stop-rule status and its limits |
+| Measurements CSV | `data/outputs-experiments/measurements.csv` | `analysis/collect_measurements.py` | one row per started run of the stride experiment: identity and role, input size, Spark settings, summed stage task counts, wall and phase times, peak RSS by process type, sampling, code ([experiments.md](experiments.md) 5.6) |
 
 Snapshots: `full-2026-10-12` (five tickers, each from its first trading day to
 2025-12-31; used for the main analysis) and the 2020–2025 snapshot of the four
@@ -134,9 +137,8 @@ extreme days are unverified**, including AAPL 2000-09-29 (−51.9%).
 
 ### Planned
 
-- **Measurements** (Stage 3): a CSV of performance-experiment runs
-  (configuration, input size, partitions, runtime, peak memory, status, repeat),
-  built from the run records that `measure.py` already writes.
+- **Measurements** (Stage 3): the same kind of CSV for the shuffle-partition
+  experiment, with the partition counts Spark actually used.
 - **Figures** (Stage 4): generated from the result files, never edited by hand.
 
 ## 5. Module hierarchy and data flow
@@ -154,7 +156,8 @@ src/etf_risk/
   provenance.py      implemented  code state for every record (commit, worktree state, SHA-256 of sources and uv.lock); repo-relative paths
   plots.py           planned      figures from result files (Stage 4)
 analysis/            implemented  three Spark SQL analyses of a run's paired table (project author):
-                                  sql_overview.py, sql_comparison.py, sql_sensitivity.py
+                                  sql_overview.py, sql_comparison.py, sql_sensitivity.py;
+                                  collect_measurements.py (with Claude Code): the stride experiment's measurements CSV
 tests/               implemented  model, validation, ingest, download, windows, Spark consistency and failure
                                   injection, sample check, measurement, provenance, AI-log tooling
 .claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
@@ -175,10 +178,11 @@ flowchart TD
     O --> V[verify.py<br/>independent sample check]
     M --> V
     S -.->|started by| B[measure.py<br/>runtime and peak memory]
-    O -.-> E[Stage 3: performance<br/>experiments]
+    B --> E[stride experiment<br/>measurements CSV]
+    B -.-> E2[shuffle-partition<br/>experiment]
     O -.-> F[plots.py<br/>figures]
     classDef planned stroke-dasharray: 5 5
-    class E,F planned
+    class E2,F planned
 ```
 
 Boxes with solid borders are implemented; dashed boxes are planned.
@@ -294,12 +298,16 @@ uses the network. Run them with `uv run --group measure pytest`.
   date is an NYSE session whose index, counted from the anchor session
   1980-01-02, is a multiple of `stride`, so all tickers' windows start on the
   same dates. Only complete windows are kept. Strides below 21 are refused
-  unless `--allow-dense-stride` is given; daily-start windows (stride 1) wait
-  for the review of the stride-21 measurements.
+  unless `--allow-dense-stride` is given; strides 14, 7 and 3 were run in the
+  stride experiment ([experiments.md](experiments.md)), and daily-start windows
+  (stride 1) have not been attempted.
 
   | Stride | Windows (5 tickers) | Path-day rows at 1x and 2x | Status |
   |---|---|---|---|
   | 21 | 1,790 (AAPL 529, MSFT 466, NVDA 311, QQQ 310, TSLA 174) | 900,714 (breached 2x paths stop early) | run and measured (section 8) |
+  | 14 | 2,683 | 1,350,000 | measured in the stride experiment |
+  | 7 | 5,364 | 2,698,866 | measured in the stride experiment |
+  | 3 | 12,518 | 6,298,446 | measured in the stride experiment, as exploratory only (not admitted by its memory rule) |
   | 1 | 37,550 | at most 18,925,200 | not attempted; memory and runtime not inferred from these counts |
 
   **Unverified-day flag (conservative rule change in the Stage 2 cleanup).** A
@@ -432,7 +440,8 @@ checksums in every record).
   occur at different moments, and the 60% threshold is an experimental limit
   for this machine, not a measured safe bound. Adaptive execution was on with
   Spark's defaults (200 shuffle partitions, partition merging enabled); no other
-  configuration has been compared yet.
+  Spark configuration has been compared yet (the stride experiment below
+  varied only the workload).
 
 ### Spark SQL analyses of the run of record
 
@@ -454,18 +463,57 @@ AAPL, MSFT, NVDA, TSLA, then QQQ.
   −12.3% (TSLA, 117); QQQ has no such windows (31.4%, 310). As above, this is a
   sensitivity analysis, not evidence of data errors.
 
+### What the stride experiment showed (2026-10-19)
+
+Measured on the same machine and with the same Spark settings as the run of
+record, varying only the workload; the design and predictions were committed
+before any measured run. Design, run log, records and answers:
+[experiments.md](experiments.md).
+
+- **Runs.** Five protocols of four fresh-process runs (one warm-up, three
+  measured): strides 21, 14 and 7 as planned, stride 3, and stride 21 again
+  as a drift check. All 20 runs passed every check, and no sample reached the
+  4.8 GiB stop threshold.
+- **Stride 3 is exploratory.** The experiment's rule for admitting stride 3
+  failed on projected memory; the author ran it anyway, to see whether it
+  would complete. Its results (median wall time 40.2 s, median peak 2.73 GiB)
+  are reported separately, never as a planned point.
+- **Drift.** The repeated stride-21 median (18.2 s) was 18.3% below the first
+  (22.2 s), outside the 10% tolerance, so comparisons across strides are
+  marked as affected. Which apps were open during the last two protocols is
+  uncertain.
+- **Expectation 5.** Median wall times were 22.2, 20.3 and 25.7 s at strides
+  21, 14 and 7, for 1, 1.5 and 3 times the windows. A linear fit over these
+  three medians gives an intercept of 18.8 s (85% of the stride-21 median) and
+  1.2 ms per window, with every fitted value within 8.5% of its median. This
+  meets the experiment's numerical criteria for fixed costs dominating at
+  stride 21 and for roughly linear growth, but three points and the drift make
+  the evidence weak, and the intercept is an estimate, not measured overhead:
+  the timed fixed parts (Spark start-up and the time outside the pipeline's
+  clock) took 4.4 s. The model phase grew 1.66 times while the windows grew 3
+  times. Median peak memory rose only from 2.62 to 2.70 GiB; the driver JVM's
+  resident memory exceeded its 1.0 GiB heap by 0.52 to 0.57 GiB.
+- **Against the run of record.** At stride 21 the median wall time was half
+  the run of record's (22.2 against 44.7 s) and the median peak about twice
+  (2.62 against 1.27 GiB), with 3.0–3.5 instead of 1.3–1.6 GiB free before
+  the runs. The code (apart from `provenance.py`), the windows and the Spark
+  settings were the same; the records cannot establish the cause.
+- **Not measured.** The shuffle partition counts Spark actually used (only the
+  200 requested and the summed stage task counts per phase were recorded),
+  spilling and CPU use; the single-process pandas comparison was not run.
+
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stages 1–2, SQL analyses, Docker image) | Planned (Stage 3 and later) |
+| Area | Implemented (prototype, Stages 1–2, SQL analyses, Docker image, stride experiment) | Planned (Stage 3 and later) |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
-| Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance | smaller strides, after review of the stride-21 measurements |
+| Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance; strides 14, 7 and 3 built and run for the stride experiment | stride 1 (excluded for now, [experiments.md](experiments.md) 1.3) |
 | Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check; three Spark SQL analyses of the paired results (project author, §8) | — |
-| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; one configuration measured (stride 21, Spark defaults) | stride, partition-count and optional caching experiments (pending); a single-process pandas baseline |
+| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)) | shuffle-partition experiment (pending); optional caching experiment; a single-process pandas baseline |
 | Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
 | Systems extension | — | MySQL job table, Kafka job queue, worker and reconciler, Redis result cache, Docker Compose, recovery and caching experiments (§11) |
-| Documentation | README, [data-sources.md](data-sources.md), this specification, [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
+| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
 
@@ -480,11 +528,17 @@ AAPL, MSFT, NVDA, TSLA, then QQQ.
   and 2x, and config paths resolve against the repository root. The earlier
   definitions and runs are kept unchanged next to a `SUPERSEDED.txt` note
   pointing to the `-r2` folders.
-- Strides below 21 have not been run; the next stride is chosen after review.
-- Only one configuration has been measured, on a machine with little free
-  memory before each run; the partition and caching experiments (Stage 3) are
-  pending and left to the project author. The three Spark SQL analyses are done
-  (§8).
+- Strides 14, 7 and 3 were run in the stride experiment, stride 3 only as an
+  exploratory protocol that the experiment's memory rule did not admit; stride
+  1 has not been run.
+- Performance has been measured with Spark's default settings only, on one
+  machine. In the stride experiment the repeated stride-21 protocol's median
+  wall time was 18.3% below the first's (drift beyond the 10% tolerance), the
+  apps open during its last two protocols are uncertain, and the shuffle
+  partition counts Spark actually used, spilling and CPU use were not recorded
+  ([experiments.md](experiments.md) 5.3, 5.5, 6.5). The shuffle-partition
+  experiment is pending and left to the project author; the caching experiment
+  is optional. The three Spark SQL analyses are done (§8).
 - 239 of the 1,790 stride-21 windows (13%), and 30% of NVDA's and 33% of TSLA's,
   use the price of an unverified extreme day. Results are also shown without
   them as a **sensitivity analysis**: the flagged windows are a non-random
