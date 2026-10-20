@@ -14,6 +14,15 @@ Output: data/outputs/windows/<snapshot>/<definitions name>/<run id>/
           paired/         one row per window, 1x and 2x side by side
           checks.json     violation counts of the full-scale checks
           run.json        configuration, checksums, Spark settings, timings, counts, status
+          plans.json      with --record-plans: final plans and AQE shuffle-read partition counts
+
+Options for the shuffle-partition experiment (docs/partition-experiment.md 4.1-4.2):
+  --shuffle-partitions N, --coalesce on|off
+          Spark settings, left at Spark's defaults when not given. Refused inside an existing
+          Spark session (as in the tests), whose settings building a session would change.
+  --record-plans
+          plans.json (etf_risk.plans), written after the run's status is set. A capture failure
+          is recorded in run.json and leaves the status and exit code unchanged.
 
 How the work is split (docs/spec.md, sections 6 and 7):
   - window members: each definition is exploded into its rows and joined to a
@@ -30,8 +39,9 @@ How the work is split (docs/spec.md, sections 6 and 7):
 Exit codes: 0 all checks passed, 1 a check failed, 2 the run failed, 3 checksum error.
 
 AI contribution: written with Claude Code (Opus 5.5). Verified with
-tests/test_spark_equivalence.py (including failure injection) and by the
-sample comparison in etf_risk.verify on the stride-21 run.
+tests/test_spark_equivalence.py (including failure injection), by the
+sample comparison in etf_risk.verify on the stride-21 run, and, for the
+options above, with tests/test_partition_options.py.
 """
 from __future__ import annotations
 
@@ -53,6 +63,7 @@ from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import DateType, DoubleType, IntegerType, StringType, StructField, StructType
 
+from etf_risk import plans
 from etf_risk.model import STATUS_BREACH, STATUS_OK, simulate_path
 from etf_risk.provenance import code_state, resolve
 from etf_risk.windows import WINDOW_KEY, ChecksumError, verify_checksums
@@ -106,7 +117,10 @@ GROUP BY window_kind, ticker, window_days, entry_date
 """
 
 
-def build_spark(master: str = "local[*]", shuffle_partitions: int | None = None) -> SparkSession:
+def build_spark(master: str = "local[*]", shuffle_partitions: int | None = None,
+                coalesce: bool | None = None) -> SparkSession:
+    """None leaves a setting at Spark's default. On an existing session, getOrCreate() applies these
+    settings to it, which is why main() refuses the partition flags inside one."""
     # Without this, Spark binds to the Wi-Fi interface on macOS.
     os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
     builder = (
@@ -117,6 +131,8 @@ def build_spark(master: str = "local[*]", shuffle_partitions: int | None = None)
     )
     if shuffle_partitions is not None:
         builder = builder.config("spark.sql.shuffle.partitions", str(shuffle_partitions))
+    if coalesce is not None:
+        builder = builder.config("spark.sql.adaptive.coalescePartitions.enabled", "true" if coalesce else "false")
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     return spark
@@ -521,6 +537,13 @@ def run_dir_for(windows_dir: Path, out_root: Path, run_id: str) -> Path:
     return out_root / config["snapshot"] / windows_dir.name / run_id
 
 
+def positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--windows", type=Path, required=True, help="window-definition folder from etf_risk.windows")
@@ -528,12 +551,47 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", default=None, help="default: run-<UTC time>")
     parser.add_argument("--initial-nav", type=float, default=INITIAL_NAV)
     parser.add_argument("--master", default="local[*]")
+    parser.add_argument("--shuffle-partitions", type=positive_int, default=None,
+                        help="spark.sql.shuffle.partitions (default: Spark's, 200); needs a fresh process")
+    parser.add_argument("--coalesce", choices=["on", "off"], default=None,
+                        help="spark.sql.adaptive.coalescePartitions.enabled (default: Spark's, on); needs a fresh process")
+    parser.add_argument("--record-plans", action="store_true",
+                        help="write plans.json: the final plan of every SQL execution of the run and the partition "
+                             "counts of AQE's shuffle reads (docs/partition-experiment.md 4.2)")
     return parser
+
+
+PLAN_GROUPS = ("window_stats", "model", "summaries", "checks", "bookkeeping")
+
+
+def record_plans(spark: SparkSession, after_id: int | None, start_error: str | None, run_dir: Path,
+                 timings: dict) -> dict:
+    """Write plans.json and return the run.json summary of the capture. Never raises: a failure is
+    recorded here and leaves the run's status and exit code unchanged (docs/partition-experiment.md 3.4)."""
+    t = time.perf_counter()
+    path = run_dir / "plans.json"
+    try:
+        if start_error is not None:
+            raise plans.PlanCaptureError(f"no watermark at the start of the run: {start_error}")
+        doc = plans.capture(spark, after_id, PLAN_GROUPS)
+        path.write_text(json.dumps(doc, indent=2) + "\n")
+        result = {"status": "ok", "file": path.name, "executions": len(doc["executions"]),
+                  "first_execution_id": doc["first_execution_id"]}
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        result = {"status": "failed", "error": "".join(traceback.format_exception_only(type(exc), exc)).strip()[-2000:]}
+    timings["plan_capture"] = timings.get("plan_capture", 0.0) + time.perf_counter() - t
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     args = build_parser().parse_args(argv)
+    sets_spark = args.shuffle_partitions is not None or args.coalesce is not None
+    if sets_spark and SparkSession.getActiveSession() is not None:
+        print("--shuffle-partitions and --coalesce need a fresh process: a Spark session already exists here, "
+              "and building one would change its settings", file=sys.stderr)
+        return 2
     run_id = args.run_id or "run-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     try:
         config, verified = verify_checksums(args.windows)
@@ -551,15 +609,27 @@ def main(argv: list[str] | None = None) -> int:
         "windows_config": config, "verified_sha256": verified, "leverages": list(LEVERAGES),
         "initial_nav": args.initial_nav, "environment": environment(), "status": "running",
     }
+    if sets_spark or args.record_plans:          # without the new flags, run.json is as before
+        record["pipeline_options"] = {"shuffle_partitions": args.shuffle_partitions, "coalesce": args.coalesce,
+                                      "record_plans": args.record_plans}
     timings: dict[str, float] = {}
     status, code = "failed", 2
     spark = None
     own_session = SparkSession.getActiveSession() is None      # only stop a session started here
+    plan_after, plan_start_error = None, None
     try:
         t = time.perf_counter()
-        spark = build_spark(args.master)
+        spark = build_spark(args.master, args.shuffle_partitions,
+                            None if args.coalesce is None else args.coalesce == "on")
         timings["session_start"] = time.perf_counter() - t
         record["spark"] = spark_settings(spark)
+        if args.record_plans:                    # the executions after this id are this run's
+            t = time.perf_counter()
+            try:
+                plan_after = plans.watermark(spark)
+            except Exception as exc:
+                plan_start_error = "".join(traceback.format_exception_only(type(exc), exc)).strip()[-500:]
+            timings["plan_capture"] = time.perf_counter() - t
         defs = spark.read.parquet(str(args.windows / config["windows_file"]))
         return_files = [str(resolve(config["snapshot_dir"]) / rel) for rel in config["inputs_sha256"] if rel.startswith("daily_returns/")]
         returns = spark.read.parquet(*return_files)
@@ -574,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
             record["row_counts"].update({name: results[name].count() for name in ("path_days", "summary", "paired")})
         record["stage_task_counts"] = stage_task_counts(spark, ["window_stats", "model", "summaries", "checks"])
         status, code = ("ok", 0) if total_violations(checks) == 0 else ("checks_failed", 1)
+        if args.record_plans:                    # after the status is set, which it cannot change
+            record["plan_capture"] = record_plans(spark, plan_after, plan_start_error, run_dir, timings)
     except Exception as exc:
         record["error"] = "".join(traceback.format_exception_only(type(exc), exc)).strip()[-4000:]
     finally:
