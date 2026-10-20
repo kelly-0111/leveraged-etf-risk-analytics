@@ -17,7 +17,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Three Spark SQL analyses of the results ([`analysis/`](analysis/)) | Implemented |
 | Docker image for the pipeline | Implemented |
 | Stride experiment: runtime and memory at strides 21, 14 and 7 ([docs/experiments.md](docs/experiments.md)) | Complete; drift detected, stride 3 exploratory only |
-| Shuffle-partition experiment | Pending |
+| Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Design, code and predictions committed (Part A); measurements pending |
 | Caching experiment | Optional |
 | Figures and final write-up | Planned |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
@@ -36,15 +36,21 @@ are not forecasts, and the model ignores fees, financing and execution.
    deviations, measurements and answers;
    [`collect_measurements.py`](analysis/collect_measurements.py) builds its
    measurements CSV from the run records.
-5. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
+5. **[docs/partition-experiment.md](docs/partition-experiment.md)**: the
+   shuffle-partition experiment's design, rules and predictions (Part A,
+   committed before any measured run), with its
+   [session helpers](docs/partition-session.zsh) and
+   [collector](analysis/collect_partition_measurements.py).
+6. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
    [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
    windows that use an unverified day).
-6. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
+7. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
    (with `validate`) → `windows` → `spark_pipeline` (which runs `model`) →
-   `verify`; `measure` times runs. Module overview: spec §5.
-7. **How AI was used**: [AI assistance](#ai-assistance) below.
+   `verify`; `measure` times runs, and `plans` records a run's execution plans.
+   Module overview: spec §5.
+8. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
 
@@ -141,6 +147,11 @@ uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/
   differ slightly ([data-sources.md](docs/data-sources.md)).
 - Nothing is overwritten: `windows` refuses an existing folder (unless
   `--overwrite`), and `spark_pipeline` asks for a new `--run-id`.
+- `spark_pipeline` also takes `--shuffle-partitions N` and `--coalesce on|off`
+  (Spark settings, refused inside an existing Spark session) and
+  `--record-plans`, which writes `plans.json` with the run's final plans and
+  the partition counts Spark used
+  ([partition-experiment.md](docs/partition-experiment.md) 4).
 - Strides below 21 need `--allow-dense-stride`. Strides 14, 7 and 3 were
   measured in the stride experiment (stride 3 as exploratory only); stride 1
   has not been run.
@@ -203,7 +214,8 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   project's machine.
 - **Performance measurement**: fresh-process runs with memory sampling and a
   stop rule; a stride experiment whose design and predictions were committed
-  before any measured run; the shuffle-partition experiment is pending.
+  before any measured run; a shuffle-partition experiment whose design, code
+  and predictions are committed, with its measurements pending.
 
 ## AI assistance
 
@@ -233,8 +245,10 @@ together with how it was checked.
 ## Next steps
 
 1. **Performance experiments** (mine): the stride experiment is complete
-   ([docs/experiments.md](docs/experiments.md)); next is a shuffle-partition
-   experiment with `etf_risk.measure`; a caching experiment is optional.
+   ([docs/experiments.md](docs/experiments.md)). The shuffle-partition
+   experiment's Part A is committed
+   ([docs/partition-experiment.md](docs/partition-experiment.md)), and its
+   formal session is next. A caching experiment is optional.
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4).
