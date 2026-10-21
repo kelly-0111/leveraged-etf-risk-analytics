@@ -13,10 +13,12 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Part | Status |
 |---|---|
 | Data: download with manifest, checksum-enforced ingest, validation, daily returns in Parquet | Implemented |
-| Model and Spark pipeline: 252-day windows on a shared trading-day grid, 1x and 2x for each window, full-scale checks, an independent sample check, measurement tooling | Implemented; one configuration measured (stride 21) |
+| Model and Spark pipeline: 252-day windows on a shared trading-day grid, 1x and 2x for each window, full-scale checks, an independent sample check, measurement tooling | Implemented |
 | Three Spark SQL analyses of the results ([`analysis/`](analysis/)) | Implemented |
 | Docker image for the pipeline | Implemented |
-| Performance experiments (stride, partitions, caching) | Pending |
+| Stride experiment: runtime and memory at strides 21, 14 and 7 ([docs/experiments.md](docs/experiments.md)) | Complete; drift detected, stride 3 exploratory only |
+| Shuffle-partition experiment | Pending |
+| Caching experiment | Optional |
 | Figures and final write-up | Planned |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
 
@@ -24,19 +26,25 @@ are not forecasts, and the model ignores fees, financing and execution.
 
 1. **This README**: status, key results and how to run everything.
 2. **[docs/spec.md](docs/spec.md)**: the research questions (§2), the model and
-   its assumptions (§3), how results are checked (§6), the window design (§7)
-   and the full results of the stride-21 run (§8).
+   its assumptions (§3), how results are checked (§6), the window design (§7),
+   the full results of the stride-21 run and a summary of the stride
+   experiment (§8).
 3. **[docs/data-sources.md](docs/data-sources.md)**: where the data comes from,
    the checks run on it, and what is not verified.
-4. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
+4. **[docs/experiments.md](docs/experiments.md)**: the stride experiment, with
+   its design and predictions (committed before any measured run), run log,
+   deviations, measurements and answers;
+   [`collect_measurements.py`](analysis/collect_measurements.py) builds its
+   measurements CSV from the run records.
+5. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
    [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
    windows that use an unverified day).
-5. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
+6. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
    (with `validate`) → `windows` → `spark_pipeline` (which runs `model`) →
    `verify`; `measure` times runs. Module overview: spec §5.
-6. **How AI was used**: [AI assistance](#ai-assistance) below.
+7. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
 
@@ -67,19 +75,33 @@ overlap, so these numbers describe one history, not independent samples; spec
 - The last row is a sensitivity analysis: TSLA's 2x median falls from 13.5% to
   −12.3%, while AAPL's rises from 35.2% to 48.5%. It shows how much a result
   depends on periods with extreme days, not whether those days are data errors.
-- Runtime and memory have been measured for one configuration only: stride 21
-  on one Apple Silicon laptop (8 cores, 8 GiB RAM), Spark in local mode with
-  default settings. Over three measured runs, the median wall time was 44.7 s
-  and the median peak memory 1.27 GiB (summed resident memory of the run's
-  processes, sampled every 0.25 s). These numbers describe that machine and
-  configuration, not others; the performance experiments are pending.
+- Runtime and memory were measured on one Apple Silicon laptop (8 cores, 8 GiB
+  RAM), with Spark in local mode and default settings; the numbers describe
+  that machine and configuration, not others. For the run of record, the
+  median wall time over three measured runs was 44.7 s and the median peak
+  memory 1.27 GiB (summed resident memory of the run's processes, sampled
+  every 0.25 s).
+- The stride experiment ([docs/experiments.md](docs/experiments.md)) measured
+  the same stride-21 workload and strides 14 and 7 (1.5 and 3 times the
+  windows) on 2026-10-19: median wall times 22.2, 20.3 and 25.7 s, median
+  peaks 2.62 to 2.70 GiB, and every check passed in all 20 runs. At stride 21
+  that is half the run of record's time and about twice its memory, with more
+  memory free before the runs; the records do not establish why. A linear fit
+  over the three strides gives an intercept of 18.8 s (85% of the stride-21
+  median) and 1.2 ms per window: an estimate from three points, not measured
+  overhead. A repeated stride-21 protocol at the end had an 18.3% shorter
+  median wall time than the first, beyond the 10% drift tolerance, so
+  comparisons across strides are marked as affected. Stride 3 was run although
+  the experiment's memory rule did not admit it; its results (40.2 s,
+  2.73 GiB) are exploratory only.
 
 ## Running
 
 Requires Python 3.12, Java 17 and [uv](https://docs.astral.sh/uv/); run the
 commands from the repository root. Memory use has been measured on one machine
-only (see Key results): there, a stride-21 run peaked at about 1.3 GiB; other
-machines, settings and denser strides have not been measured.
+only (see Key results): there, runs at strides 21 to 7 peaked at 1.2 to 2.7 GiB,
+and the exploratory stride-3 runs at up to 2.8 GiB; other machines and settings
+have not been measured.
 
 ```bash
 uv sync                                    # .venv from uv.lock
@@ -119,7 +141,9 @@ uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/
   differ slightly ([data-sources.md](docs/data-sources.md)).
 - Nothing is overwritten: `windows` refuses an existing folder (unless
   `--overwrite`), and `spark_pipeline` asks for a new `--run-id`.
-- Strides below 21 need `--allow-dense-stride` and have not been measured yet.
+- Strides below 21 need `--allow-dense-stride`. Strides 14, 7 and 3 were
+  measured in the stride experiment (stride 3 as exploratory only); stride 1
+  has not been run.
 - The 2020–2025 prototype regression needs the prototype CSVs, which were
   downloaded outside this repository ([data-sources.md](docs/data-sources.md)).
 
@@ -178,7 +202,8 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
 - **Docker**: an image that reproduces the native results exactly on this
   project's machine.
 - **Performance measurement**: fresh-process runs with memory sampling and a
-  stop rule; the experiments are pending.
+  stop rule; a stride experiment whose design and predictions were committed
+  before any measured run; the shuffle-partition experiment is pending.
 
 ## AI assistance
 
@@ -207,8 +232,9 @@ together with how it was checked.
 
 ## Next steps
 
-1. **Performance experiments** (mine): stride, shuffle-partition and caching
-   experiments with `etf_risk.measure`, read with `explain("formatted")`.
+1. **Performance experiments** (mine): the stride experiment is complete
+   ([docs/experiments.md](docs/experiments.md)); next is a shuffle-partition
+   experiment with `etf_risk.measure`; a caching experiment is optional.
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4).
