@@ -18,6 +18,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Docker image for the pipeline | Implemented |
 | Stride experiment: runtime and memory at strides 21, 14 and 7 ([docs/experiments.md](docs/experiments.md)) | Complete; drift detected, stride 3 exploratory only |
 | Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Complete; B (200 partitions, coalescing off) slower than A and C; no clear memory difference; outputs within tolerance |
+| Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Design, code and predictions committed (Part A); measurements pending |
 | Caching experiment | Optional |
 | Figures and final write-up | Planned |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
@@ -42,16 +43,23 @@ are not forecasts, and the model ignores fees, financing and execution.
    plans and answers; the [session helpers](docs/partition-session.zsh) ran
    its session, and the [collector](analysis/collect_partition_measurements.py)
    builds its measurements CSV and checks its acceptance criteria.
-6. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
+6. **[docs/pandas-baseline.md](docs/pandas-baseline.md)**: the pandas
+   baseline's design, rules and predictions (Part A, committed before any
+   measured run), an end-to-end comparison of the Spark pipeline with a
+   single-process pandas implementation of the same computation, with its
+   [session helpers](docs/baseline-session.zsh) and
+   [collector](analysis/collect_baseline_measurements.py).
+7. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
    [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
    windows that use an unverified day).
-7. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
+8. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
    (with `validate`) → `windows` → `spark_pipeline` (which runs `model`) →
-   `verify`; `measure` times runs, and `plans` records a run's execution plans.
-   Module overview: spec §5.
-8. **How AI was used**: [AI assistance](#ai-assistance) below.
+   `verify`; `measure` times runs, `plans` records a run's execution plans,
+   and `pandas_pipeline` computes the same results in one process without
+   Spark. Module overview: spec §5.
+9. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
 
@@ -167,6 +175,10 @@ uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/
   `--record-plans`, which writes `plans.json` with the run's final plans and
   the partition counts Spark used
   ([partition-experiment.md](docs/partition-experiment.md) 4).
+- `etf_risk.pandas_pipeline` takes `--windows`, `--out-root` and `--run-id`
+  and writes the Spark pipeline's outputs from one process, without Spark;
+  `etf_risk.measure --pipeline pandas` times it
+  ([pandas-baseline.md](docs/pandas-baseline.md) 4).
 - Strides below 21 need `--allow-dense-stride`. Strides 14, 7 and 3 were
   measured in the stride experiment (stride 3 as exploratory only); stride 1
   has not been run.
@@ -231,7 +243,9 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   stop rule; a stride experiment whose design and predictions were committed
   before any measured run; a shuffle-partition experiment, likewise committed
   in advance, that compared three partition settings and recorded the
-  partition counts Spark used.
+  partition counts Spark used; and a pandas baseline, committed the same way,
+  that compares the Spark pipeline end to end with a single-process pandas
+  implementation, with its measurements pending.
 
 ## AI assistance
 
@@ -262,8 +276,10 @@ together with how it was checked.
 
 1. **Performance experiments** (mine): the stride and shuffle-partition
    experiments are complete ([docs/experiments.md](docs/experiments.md),
-   [docs/partition-experiment.md](docs/partition-experiment.md)). A caching
-   experiment is optional.
+   [docs/partition-experiment.md](docs/partition-experiment.md)). The pandas
+   baseline's Part A is committed
+   ([docs/pandas-baseline.md](docs/pandas-baseline.md)), and its formal
+   session is next. A caching experiment is optional.
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4).
