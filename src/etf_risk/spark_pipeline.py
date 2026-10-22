@@ -24,6 +24,16 @@ Options for the shuffle-partition experiment (docs/partition-experiment.md 4.1-4
           plans.json (etf_risk.plans), written after the run's status is set. A capture failure
           is recorded in run.json and leaves the status and exit code unchanged.
 
+Option for the caching experiment (docs/caching-experiment.md 2.1):
+  --cache none|members|members-checks
+          none caches nothing; members caches the window-member rows from the window statistics
+          to the end of the model phase; members-checks also caches the four tables, each from
+          right after it is read back to the end of the checks. Every cache is persisted at
+          MEMORY_AND_DISK_DESER, filled by an explicit count() and released with
+          unpersist(blocking=True); main() releases any cache still held on every other path.
+          Each fill's SQL execution has the description "cache fill: <table>". run.json gains a
+          cache section (fills, releases, storage info); without the option, run.json is as before.
+
 How the work is split (docs/spec.md, sections 6 and 7):
   - window members: each definition is exploded into its rows and joined to a
     broadcast of the returns (about 39k rows).
@@ -41,7 +51,8 @@ Exit codes: 0 all checks passed, 1 a check failed, 2 the run failed, 3 checksum 
 AI contribution: written with Claude Code (Opus 5.5). Verified with
 tests/test_spark_equivalence.py (including failure injection), by the
 sample comparison in etf_risk.verify on the stride-21 run, and, for the
-options above, with tests/test_partition_options.py.
+options above, with tests/test_partition_options.py and
+tests/test_caching_options.py.
 """
 from __future__ import annotations
 
@@ -59,6 +70,7 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 
 import pandas as pd
+from pyspark import StorageLevel
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import DateType, DoubleType, IntegerType, StringType, StructField, StructType
@@ -432,12 +444,111 @@ def total_violations(checks: dict[str, dict]) -> int:
     return sum(v for group in checks.values() for v in group.values())
 
 
+# --- caching (docs/caching-experiment.md 2.1) --------------------------------------
+
+CACHE_MODES = ("none", "members", "members-checks")       # configurations A, B and C
+CACHE_TABLES = {"none": (), "members": ("members",),
+                "members-checks": ("members", "window_stats", "path_days", "path_summary", "paired")}
+CACHE_LEVEL = StorageLevel.MEMORY_AND_DISK_DESER           # PySpark 4.2's level for DataFrame.cache()
+FILL_DESCRIPTION = "cache fill: {}"     # the job description of each fill's count(), which names its SQL execution
+
+
+def storage_info(spark: SparkSession) -> list[dict]:
+    """Every RDD with cached blocks, from SparkContext.getRDDStorageInfo through the JVM gateway."""
+    return [{"rdd_id": int(r.id()), "partitions": int(r.numPartitions()),
+             "cached_partitions": int(r.numCachedPartitions()), "memory_bytes": int(r.memSize()),
+             "disk_bytes": int(r.diskSize()), "storage_level": r.storageLevel().description()}
+            for r in spark.sparkContext._jsc.sc().getRDDStorageInfo()]
+
+
+class RunCaches:
+    """The caches of one run (--cache). Each table of the mode is persisted at CACHE_LEVEL and filled by
+    an explicit count() where the pipeline creates it, then released with unpersist(blocking=True)
+    after its last reader; main() releases any still held on every other path. The count() runs under
+    the job description FILL_DESCRIPTION, so plans.json tells each fill's SQL execution from the reads
+    after it. Storage info is read after each fill, before and after each release, and at the end of
+    each phase, in every mode."""
+
+    def __init__(self, spark: SparkSession, mode: str):
+        if mode not in CACHE_MODES:
+            raise ValueError(f"cache mode {mode!r} is not one of {CACHE_MODES}")
+        self.spark, self.mode = spark, mode
+        self.held: dict[str, DataFrame] = {}
+        self.tables: dict[str, dict] = {}
+        self.snapshots: list[dict] = []
+        self.storage_info_s = 0.0
+
+    def _storage(self) -> list[dict]:
+        t = time.perf_counter()
+        try:
+            return storage_info(self.spark)
+        finally:
+            self.storage_info_s += time.perf_counter() - t
+
+    def fill(self, name: str, df: DataFrame, phase: str) -> DataFrame:
+        if name not in CACHE_TABLES[self.mode]:
+            return df
+        known = {i["rdd_id"] for i in self._storage()}
+        t = time.perf_counter()
+        df = df.persist(CACHE_LEVEL)
+        self.held[name] = df                                 # held before the fill, so cleanup covers it
+        sc = self.spark.sparkContext
+        previous = sc.getLocalProperty("spark.job.description")         # the phase's description
+        sc.setJobDescription(FILL_DESCRIPTION.format(name))
+        try:
+            rows = df.count()
+        finally:
+            sc.setJobDescription(previous)
+        self.tables[name] = {"filled_in": phase, "rows": rows, "fill_s": time.perf_counter() - t,
+                             "after_fill": [i for i in self._storage() if i["rdd_id"] not in known]}
+        return df
+
+    def release(self, name: str, phase: str | None, by: str = "plan") -> None:
+        df = self.held.pop(name, None)
+        if df is None:
+            return
+        entry = self.tables.setdefault(name, {})
+        ids = {i["rdd_id"] for i in entry.get("after_fill", [])}
+        entry["before_release"] = [i for i in self._storage() if i["rdd_id"] in ids]
+        t = time.perf_counter()
+        df.unpersist(blocking=True)
+        entry.update({"released_in": phase, "released_by": by, "release_s": time.perf_counter() - t,
+                      "cached_after_release": [i for i in self._storage() if i["rdd_id"] in ids]})
+
+    def release_all(self) -> None:
+        """main()'s cleanup on every path: an exception, a failed check, the early return of compute()."""
+        for name in list(self.held):
+            self.release(name, None, by="cleanup")
+
+    def snapshot(self, at: str) -> None:
+        self.snapshots.append({"at": at, "cached": self._storage()})
+
+    def record(self) -> dict:
+        return {"mode": self.mode, "storage_level": str(CACHE_LEVEL), "tables": self.tables,
+                "snapshots": self.snapshots, "storage_info_s": self.storage_info_s}
+
+
 # --- whole run -------------------------------------------------------------------
 
 def compute(spark: SparkSession, defs: DataFrame, returns: DataFrame, leverages: Sequence[float] = LEVERAGES,
-            initial_nav: float = INITIAL_NAV, out_dir: Path | None = None, timings: dict | None = None) -> dict:
-    """Run everything. With out_dir, each table is written and read back, so the model runs once."""
+            initial_nav: float = INITIAL_NAV, out_dir: Path | None = None, timings: dict | None = None,
+            caches: RunCaches | None = None) -> dict:
+    """Run everything. With out_dir, each table is written and read back, so the model runs once. With
+    caches, the tables of its mode are filled and released inside the phases (docs/caching-experiment.md
+    2.1), so the phase timings include those costs; without it, nothing is cached."""
     timings = {} if timings is None else timings
+
+    def cached(name: str, df: DataFrame, phase_name: str) -> DataFrame:
+        return caches.fill(name, df, phase_name) if caches is not None else df
+
+    def release(*names: str, phase_name: str) -> None:
+        if caches is not None:
+            for name in names:
+                caches.release(name, phase_name)
+
+    def end_of(phase_name: str) -> None:
+        if caches is not None:
+            caches.snapshot(phase_name)
 
     def materialize(df: DataFrame, name: str, partition_by: str | None = None) -> DataFrame:
         if out_dir is None:
@@ -454,24 +565,32 @@ def compute(spark: SparkSession, defs: DataFrame, returns: DataFrame, leverages:
 
     t = phase("window_stats")
     returns = returns_with_rows(returns)
-    members = window_members(defs, returns)
-    stats = materialize(window_stats(members, defs, returns), "window_stats")
+    members = cached("members", window_members(defs, returns), "window_stats")
+    stats = cached("window_stats", materialize(window_stats(members, defs, returns), "window_stats"), "window_stats")
     construction = construction_checks(stats)
+    end_of("window_stats")
     timings["window_stats_and_construction_check"] = time.perf_counter() - t
-    if sum(construction.values()):
+    if sum(construction.values()):       # caches still held are released by main() (RunCaches.release_all)
         return {"checks": {"window_construction": construction}, "model_run": False, "stats": stats}
 
     t = phase("model")
-    path_days = materialize(simulate_windows(members, leverages, initial_nav), "path_days", partition_by="ticker")
+    path_days = cached("path_days", materialize(simulate_windows(members, leverages, initial_nav), "path_days",
+                                                partition_by="ticker"), "model")
+    release("members", phase_name="model")
+    end_of("model")
     timings["model_and_path_days"] = time.perf_counter() - t
 
     t = phase("summaries")
-    summary = materialize(summarize_paths(path_days, defs, initial_nav), "path_summary")
-    paired = materialize(pair_paths(summary, stats, leverages), "paired")
+    summary = cached("path_summary", materialize(summarize_paths(path_days, defs, initial_nav), "path_summary"),
+                     "summaries")
+    paired = cached("paired", materialize(pair_paths(summary, stats, leverages), "paired"), "summaries")
+    end_of("summaries")
     timings["summaries_and_pairing"] = time.perf_counter() - t
 
     t = phase("checks")
     checks = run_checks(stats, path_days, summary, paired, defs, leverages)
+    release("window_stats", "path_days", "path_summary", "paired", phase_name="checks")
+    end_of("checks")
     timings["checks"] = time.perf_counter() - t
     return {"checks": checks, "model_run": True, "stats": stats, "path_days": path_days, "summary": summary, "paired": paired}
 
@@ -558,6 +677,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--record-plans", action="store_true",
                         help="write plans.json: the final plan of every SQL execution of the run and the partition "
                              "counts of AQE's shuffle reads (docs/partition-experiment.md 4.2)")
+    parser.add_argument("--cache", choices=CACHE_MODES, default=None,
+                        help="cache the window-member rows (members) and also the four read-back tables "
+                             "(members-checks), or nothing (none); docs/caching-experiment.md 2.1")
     return parser
 
 
@@ -609,12 +731,15 @@ def main(argv: list[str] | None = None) -> int:
         "windows_config": config, "verified_sha256": verified, "leverages": list(LEVERAGES),
         "initial_nav": args.initial_nav, "environment": environment(), "status": "running",
     }
-    if sets_spark or args.record_plans:          # without the new flags, run.json is as before
+    if sets_spark or args.record_plans or args.cache is not None:     # without the flags, run.json is as before
         record["pipeline_options"] = {"shuffle_partitions": args.shuffle_partitions, "coalesce": args.coalesce,
                                       "record_plans": args.record_plans}
+        if args.cache is not None:
+            record["pipeline_options"]["cache"] = args.cache
     timings: dict[str, float] = {}
     status, code = "failed", 2
     spark = None
+    caches = None
     own_session = SparkSession.getActiveSession() is None      # only stop a session started here
     plan_after, plan_start_error = None, None
     try:
@@ -633,7 +758,10 @@ def main(argv: list[str] | None = None) -> int:
         defs = spark.read.parquet(str(args.windows / config["windows_file"]))
         return_files = [str(resolve(config["snapshot_dir"]) / rel) for rel in config["inputs_sha256"] if rel.startswith("daily_returns/")]
         returns = spark.read.parquet(*return_files)
-        results = compute(spark, defs, returns, LEVERAGES, args.initial_nav, out_dir=run_dir, timings=timings)
+        if args.cache is not None:
+            caches = RunCaches(spark, args.cache)
+        results = compute(spark, defs, returns, LEVERAGES, args.initial_nav, out_dir=run_dir, timings=timings,
+                          caches=caches)
         checks = results["checks"]
         (run_dir / "checks.json").write_text(json.dumps(checks, indent=2) + "\n")
         record["checks"] = checks
@@ -649,6 +777,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         record["error"] = "".join(traceback.format_exception_only(type(exc), exc)).strip()[-4000:]
     finally:
+        if caches is not None:                   # before spark.stop(), on every path
+            try:
+                caches.release_all()
+            except Exception as exc:
+                record["cache_cleanup_error"] = "".join(traceback.format_exception_only(type(exc), exc)).strip()[-2000:]
+            record["cache"] = caches.record()
         timings["total_in_process"] = time.perf_counter() - started
         record.update({"status": status, "timings_seconds": timings, "finished_at_utc": datetime.now(timezone.utc).isoformat()})
         (run_dir / "run.json").write_text(json.dumps(record, indent=2, default=str) + "\n")

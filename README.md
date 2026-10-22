@@ -19,7 +19,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Stride experiment: runtime and memory at strides 21, 14 and 7 ([docs/experiments.md](docs/experiments.md)) | Complete; drift detected, stride 3 exploratory only |
 | Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Complete; B (200 partitions, coalescing off) slower than A and C; no clear memory difference; outputs within tolerance |
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
-| Caching experiment | Optional |
+| Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up | Planned |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
 
@@ -28,8 +28,8 @@ are not forecasts, and the model ignores fees, financing and execution.
 1. **This README**: status, key results and how to run everything.
 2. **[docs/spec.md](docs/spec.md)**: the research questions (§2), the model and
    its assumptions (§3), how results are checked (§6), the window design (§7),
-   the full results of the stride-21 run and summaries of the stride and
-   shuffle-partition experiments and the pandas baseline (§8).
+   the full results of the stride-21 run and summaries of the stride,
+   shuffle-partition and caching experiments and the pandas baseline (§8).
 3. **[docs/data-sources.md](docs/data-sources.md)**: where the data comes from,
    the checks run on it, and what is not verified.
 4. **[docs/experiments.md](docs/experiments.md)**: the stride experiment, with
@@ -51,17 +51,25 @@ are not forecasts, and the model ignores fees, financing and execution.
    ran its session, and the
    [collector](analysis/collect_baseline_measurements.py) builds its
    measurements CSV and checks its acceptance criteria.
-7. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
+7. **[docs/caching-experiment.md](docs/caching-experiment.md)**: the caching
+   experiment, which compared no cache, a cache of the window-member rows, and
+   one of those rows plus the four read-back tables, with its design, rules and
+   predictions (committed before any measured run), run log, measurements,
+   cache checks and answers; the [session helpers](docs/caching-session.zsh)
+   ran its session, and the
+   [collector](analysis/collect_caching_measurements.py) builds its
+   measurements CSV and checks its acceptance criteria.
+8. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
    [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
    windows that use an unverified day).
-8. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
+9. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
    (with `validate`) → `windows` → `spark_pipeline` (which runs `model`) →
    `verify`; `measure` times runs, `plans` records a run's execution plans,
    and `pandas_pipeline` computes the same results in one process without
    Spark. Module overview: spec §5.
-9. **How AI was used**: [AI assistance](#ai-assistance) below.
+10. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
 
@@ -137,6 +145,24 @@ overlap, so these numbers describe one history, not independent samples; spec
   model function but handle data, aggregate and write in their own ways, so
   the comparison does not isolate Spark's overhead. The prediction had put
   pandas at about 40 s, slower than Spark; no drift was detected.
+- The caching experiment
+  ([docs/caching-experiment.md](docs/caching-experiment.md)) ran the stride-7
+  workload on 2026-10-22 (UTC) with three caching strategies: A, no cache; B,
+  the window-member rows cached from the window statistics through the model
+  phase; C, those rows and the four tables read back after each phase, cached
+  through the checks. Eight runs each, in the order A–B–C–C–B–A, all passed
+  every check, and Spark's storage information and the execution plans
+  verified every cache's fill and release and the cached reads in each phase.
+  Median times without the plan recording were 26.5, 27.0 and 28.7 s: B's and
+  C's were 2.1% and 8.4% longer than A's, below the 10% threshold, so there was
+  no clear difference. Caching the members lengthened the window statistics by
+  0.9 s and shortened the model phase by 0.3 s; C's further caches lengthened
+  the model phase by 1.3 s, with no observed net saving in the later phases.
+  Median peaks were 2.68–2.70 GiB, with C's caches, about 0.2 GiB, held in the
+  JVM heap. All outputs matched A's within the tolerance; in B and C, seven
+  floating-point summary columns differed in the last bits, and a different
+  order of addition is a plausible but unestablished explanation. No drift was
+  detected.
 
 ## Running
 
@@ -190,6 +216,10 @@ uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/
   `--record-plans`, which writes `plans.json` with the run's final plans and
   the partition counts Spark used
   ([partition-experiment.md](docs/partition-experiment.md) 4).
+- `spark_pipeline --cache none|members|members-checks` caches the
+  window-member rows, or those and the four read-back tables, and records the
+  fills, releases and Spark's storage information in `run.json`
+  ([caching-experiment.md](docs/caching-experiment.md) 4).
 - `etf_risk.pandas_pipeline` takes `--windows`, `--out-root` and `--run-id`
   and writes the Spark pipeline's outputs from one process, without Spark;
   `etf_risk.measure --pipeline pandas` times it
@@ -258,9 +288,11 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   stop rule; a stride experiment whose design and predictions were committed
   before any measured run; a shuffle-partition experiment, likewise committed
   in advance, that compared three partition settings and recorded the
-  partition counts Spark used; and a pandas baseline, committed the same way,
-  that compared the Spark pipeline end to end with a single-process pandas
-  implementation.
+  partition counts Spark used; a pandas baseline, committed the same way, that
+  compared the Spark pipeline end to end with a single-process pandas
+  implementation; and a caching experiment, committed the same way, that
+  compared three caching strategies and checked every cache in Spark's storage
+  information and execution plans.
 
 ## AI assistance
 
@@ -289,12 +321,12 @@ together with how it was checked.
 
 ## Next steps
 
-1. **Performance experiments** (mine): the stride and shuffle-partition
-   experiments and the pandas baseline are complete
+1. **Performance experiments** (mine): the stride, shuffle-partition and
+   caching experiments and the pandas baseline are complete
    ([docs/experiments.md](docs/experiments.md),
    [docs/partition-experiment.md](docs/partition-experiment.md),
-   [docs/pandas-baseline.md](docs/pandas-baseline.md)). A caching experiment
-   is optional.
+   [docs/pandas-baseline.md](docs/pandas-baseline.md),
+   [docs/caching-experiment.md](docs/caching-experiment.md)).
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4).
