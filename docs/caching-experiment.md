@@ -1,20 +1,24 @@
 # Caching experiment
 
 Author: I decided the configurations and rules listed in 1.2, reviewed and approved the rest of the
-design and the predictions, and will run the formal measurements and write the Part B answers. AI
+design and the predictions, ran the formal measurements, and wrote the Part B answers. AI
 contributions are described below.
 
 **Part A (sections 1–13): the design, the code and the predictions, committed before any measured
-run.** The author approved the design, the predictions and the abort limits (section 11) on
-2026-10-22 as the preregistered hypotheses, and runs the formal measurements (2.4, 4.4). No formal
-measurement has been made yet; the code was validated on a small window set (4.5). Part B (results
-and answers) will follow section 13. The history of this document stays at the end.
+run (`6131f83`).** The author approved the design, the predictions and the abort limits (section 11)
+on 2026-10-22 as the preregistered hypotheses, and ran the formal measurements (2.4, 4.4). **Part B
+(sections 14–15): the results of batch-1, run on 2026-10-22 (UTC), and the author's answers.**
+Batch-1 met every acceptance criterion (10), so it is the analyzed batch, and no further batch runs
+(3). Sections 1–13, the predictions included, are unchanged since Part A. The history of this
+document stays at the end.
 
 _Drafted with Claude Code (Opus 5.5) on 2026-10-22 from the author's decisions listed in 1.2, from
 the code it wrote for section 4 and from the records of the shuffle-partition experiment and the
 pandas baseline. Everything not listed in 1.2 as decided by the author is Claude Code's proposal
 (section 13). The predictions in section 11 were drafted with Claude Code and reviewed and approved
-by the author. Revision 1 applied the author's review of the draft (history at the end)._
+by the author. Revision 1 applied the author's review of the draft (history at the end). Part B was
+drafted with Claude Code from batch-1's records, with the author's statements and answers (sections
+14 and 15)._
 
 This experiment changes none of the earlier experiments ([experiments.md](experiments.md),
 [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md)), nor
@@ -713,6 +717,384 @@ The author's decisions and approvals are in 1.2. Everything else was proposed by
 - **11:** the draft of the predictions, which the author approved.
 - **12:** the contents of the deferred list.
 
+_Part A ends here; it was committed before any measured run (`6131f83`)._
+
+## 14. Results
+
+_Drafted with Claude Code (Opus 5.5) on 2026-10-22 from batch-1's run log and `positions.tsv`, the
+six protocol JSONs, the 24 `run.json` and `plans.json` files and their output tables,
+`measurements.csv` and `acceptance.json` (numbers read by script), the author's terminal output from
+both windows, and the author's statements (14.2, 14.3). Times are UTC on 2026-10-22: the six
+protocols ran from 20:28:56 to 21:43:13. Differences and percentages are computed from unrounded
+values, so they can differ by 0.001 from those of the rounded values shown. This section gives facts
+only; the answers are in section 15._
+
+### 14.1 Protocols
+
+| Position | Configuration | Protocol | Runs (UTC) | Status |
+| ---: | --- | --- | --- | --- |
+| 1 | A | `20261022T202856Z` | 20:28:56–20:30:47 | 4 of 4 `ok` |
+| 2 | B | `20261022T210120Z` | 21:01:20–21:03:14 | 4 of 4 `ok` |
+| 3 | C | `20261022T210843Z` | 21:08:43–21:10:43 | 4 of 4 `ok` |
+| 4 | C | `20261022T211604Z` | 21:16:04–21:18:04 | 4 of 4 `ok` |
+| 5 | B | `20261022T212322Z` | 21:23:22–21:25:15 | 4 of 4 `ok` |
+| 6 | A | `20261022T214123Z` | 21:41:23–21:43:13 | 4 of 4 `ok` |
+
+- All 24 runs ended `ok` with zero check violations. No protocol stopped early, no run was aborted,
+  and no sample crossed the 4.80 GiB threshold. Each position ran once, so nothing was re-run and
+  every protocol is a used protocol (3).
+- **Acceptance (10):** the collector found all five criteria met and listed no problem. Batch-1 is
+  therefore the analyzed batch, and no further batch runs (3).
+- **Code state (3):** every protocol and run record shows commit `6131f83`, Part A's commit, with
+  the hashed paths clean, and the same `source_sha256` (12 files) and `uv_lock_sha256` (starting
+  `99484c14ebf3`).
+- **Inputs (2.2):** every run verified the seven SHA-256 values before Spark started and recorded a
+  `windows_config` equal to the stride-7 `config.json`. When the collector ran after the session,
+  the seven files still had those hashes.
+- **Settings (6.1):** every run records its configuration's `pipeline_options` and Spark's defaults
+  for the three partition settings. Every other recorded Spark setting, and the recorded
+  environment, are identical in all 24 runs.
+- **Plans (6.2):** captured in all 24 runs, ids 0 to n−1 without gaps: 25 SQL executions in A, 26 in
+  B and 30 in C. In every run, every plan is adaptive and final except one, the `CreateViewCommand`
+  without jobs in `summaries`, which is not adaptive. No execution ended with an error. Plan capture
+  took 1.062–1.429 s per run.
+- **Caches (6.3, 6.4):** the check after each protocol and the collector found every run's storage
+  information, fills and downstream reads as 6.3 and 6.4 require (14.8).
+- **Records:** `data/outputs-caching/batch-1/`, laid out as in 2.4.
+
+### 14.2 Run log
+
+The session used the helpers of 4.4, `docs/caching-session.zsh` as committed in `623fe32` (SHA-256
+starting `b4872ee768f0c4bc`), loaded in two Terminal windows: window 1 ran the checks, pauses,
+readings and protocols, and window 2 the watcher. Each protocol started right after a five-minute
+pause and a `ready` reading that met all three limits of 3.2, and `position` wrote the 3.2 checks
+into the run log at each start. Before each pause, the author also ran `prechecks` by hand.
+
+| Position | Checks by hand | Pause before the start | Available at the start (GiB) | 5-minute load at the start | Minutes since boot | Lowest free before a run (GiB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 1, A | 20:23:50 | 20:23:54–20:28:54 | 4.33 | 1.27 | 44 | 3.18 |
+| 2, B | 20:56:12 | 20:56:17–21:01:18 | 3.55 | 1.37 | 76 | 2.66 |
+| 3, C | 21:03:39 | 21:03:43–21:08:43 | 3.91 | 2.36 | 84 | 2.71 |
+| 4, C | 21:10:58 | 21:11:03–21:16:03 | 3.95 | 2.16 | 91 | 2.64 |
+| 5, B | 21:18:17 | 21:18:22–21:23:22 | 4.11 | 2.12 | 99 | 3.15 |
+| 6, A | 21:36:17 | 21:36:22–21:41:22 | 3.88 | 1.37 | 117 | 2.75 |
+
+At every start, the checks that `position` wrote show Low Power Mode off, AC power, no Docker
+backend, no Java or pipeline process, only Terminal and Finder open, `HEAD 6131f83` with no changed
+code file, and no Spark scratch folder. The last column is the lowest `free_memory_before_bytes`
+among each protocol's four runs. Eight runs started with less than 3.0 GiB free; as in the earlier
+experiments, 3.2 requires 3.0 GiB only before a protocol starts.
+
+- **Before position 1:** the run log begins with a pause (19:38:21–19:43:21) and three readings,
+  1,215 minutes after the previous boot, with 2.57–2.66 GiB available and a 5-minute load of
+  4.91–5.13, so nothing started. The author restarted the Mac because the available memory was
+  below the 3.0 GiB limit. The checks at 19:46:21, two minutes after the boot, showed Low Power Mode
+  on and load averages of 51.53, 32.10 and 13.59; the author turned Low Power Mode off during the
+  readings that followed. After a pause (19:46:31–19:51:31), 13 readings 7 to 37 minutes after the
+  boot each failed at least one limit (1.83–2.99 GiB available; a 5-minute load falling from 12.46
+  to 1.39), and a reading at 39 minutes met all three. Of these 17 readings, two came right after a
+  pause, so two starts were refused; the other 15 were run on their own. The checks by hand at
+  20:23:50 showed Low Power Mode off, and position 1 started after a further pause, 44 minutes after
+  the boot.
+- **Between positions:** the protocols started 32, 7, 7, 7 and 18 minutes apart. After position 1,
+  whose runs ended at 20:30:47, the next checks came at 20:56:12; after position 5, whose runs ended
+  at 21:25:15, at 21:36:17. The author left the computer idle during both gaps and ran no other
+  programs. The checks by hand right after positions 2, 3 and 4 showed 1-minute loads of 6.98, 6.05
+  and 5.96, from the protocols just finished; after each pause, the 5-minute load at the start was
+  1.27–2.36.
+- **Abort rule:** no run came near its limit. The longest raw wall times were 28.6 s (A), 29.3 s (B)
+  and 30.5 s (C), against 80, 80 and 81 s. The watcher saw all 24 pipeline processes, four per
+  protocol, and its largest readings were 26, 28 and 25 s. No abort and no after-abort check was
+  needed.
+- **A typo:** before position 6, `prechecks` typed with a closing curly quote left zsh waiting for
+  the end of the quote; nothing ran, and the author entered the command again.
+- **Notes:** after each protocol, the author recorded `4 ok, nothing unusual` with `note`.
+- **After the session:** a check at 22:05 found no Spark scratch folder and no Java process.
+
+### 14.3 Deviations and uncertain conditions
+
+There was no departure from 3.2 at any protocol start: the checks that `position` wrote, and the
+reading just before each start, met every condition (14.2). One condition is uncertain:
+
+1. **Uneven spacing.** Positions 2 and 6 started 32 and 18 minutes after the positions before them,
+   the others 7 minutes apart, so the spacing that the drift reasoning of 2.3 assumes is far from
+   even. The run log does not record the Mac's state in the two gaps; the author states that the
+   computer was idle and ran no other programs.
+
+Low Power Mode was on in the checks at 19:46:21, before any protocol, and off in every check from
+20:23:50 on (14.2).
+
+### 14.4 Drift (section 8)
+
+| Rule | Positions | Protocol medians of `wall_excl_capture_s` | Difference from the first | Median peak total RSS (GiB) | Difference |
+| --- | --- | --- | --- | --- | --- |
+| 1. Session drift: A | 1, 6 | 26.296, 26.613 s | +0.317 s (+1.21%) | 2.684, 2.678 | −0.006 GiB |
+| 2. Pair: B | 2, 5 | 27.130, 26.940 s | −0.190 s (−0.70%) | 2.675, 2.681 | +0.007 GiB |
+| 2. Pair: C | 3, 4 | 28.810, 28.633 s | −0.177 s (−0.61%) | 2.695, 2.701 | +0.006 GiB |
+
+No time difference exceeds 10% of the first median, so no drift is reported under rules 1 and 2,
+and no memory difference exceeds 0.2 GiB (rule 3). The context of rule 4 is in 14.2 and 14.3.
+
+**Earlier records (rule 5, descriptive).** A's six measured runs have a median
+`wall_excl_capture_s` of 26.485 s (raw `wall_s` 27.581 s; `plan_capture_s` 1.083 s) and a median
+peak total RSS of 2.683 GiB. The shuffle-partition experiment's A (2.5) had 26.462 s (raw 27.376 s;
+plan capture 0.897 s) and 2.689 GiB. A's summed stage task counts (53, 22, 81 and 100) and file
+counts (1, 40, 8 and 1) equal that configuration's in all eight runs.
+
+### 14.5 Measurements CSV
+
+**Location.** `uv run python analysis/collect_caching_measurements.py --batch
+data/outputs-caching/batch-1` reads the batch's records and writes `measurements.csv` and
+`acceptance.json` into the batch folder (4.3). Like the records, they are under `data/`, which is
+not in Git. Rebuilding both from the records gives byte-identical files.
+
+**Rows.** One row per started run: 24 rows, warm-ups included, in position order. `used` marks the
+runs of the used protocols, here all 24.
+
+**Columns.** 79: the 10 identity columns, the 29 measurement columns of the stride experiment's CSV
+(experiments.md 5.6), and these 40:
+
+| Group | Columns | From |
+| --- | --- | --- |
+| Caching and timing | `cache_mode`; `plan_capture_status`; `plan_capture_s`; `wall_excl_capture_s`, which is `wall_s − plan_capture_s` rounded to milliseconds (5); `sql_executions`; `fill_executions`; `storage_info_s` | `cache`, `plan_capture` and `timings_seconds` in `run.json`; `plans.json` |
+| Caches | for each of the five cacheable tables: `fill_s`, `release_s`, and `memory_bytes` and `disk_bytes` right after its fill | `cache` in `run.json` |
+| Downstream reads | `cached_reads_<phase>` for the four phases and bookkeeping: positive/zero/missing, the fills excluded (6.4) | `plans.json` |
+| Files | `files_window_stats`, `files_path_days`, `files_path_summary`, `files_paired`: the Parquet files of each output table | the run folder |
+| Comparison (7) | `<table>_vs_reference` for the four tables: `reference`, `pass`, `fail`, `missing`, `incomplete`, `unreadable` or `no reference` | the tables |
+
+**Limitations.** Those of experiments.md 5.6 apply: task counts are summed stage task counts, and
+memory is sampled RSS. Each cache's bytes are Spark's storage information right after its fill.
+
+### 14.6 Summary tables
+
+_Drafted with Claude Code (Opus 5.5) from `measurements.csv` (values computed by script)._
+
+Summaries use the measured runs that ended `ok` in the used protocols (5): three per protocol, six
+per configuration. Each cell gives the median and, in brackets, the minimum and maximum. Peak memory
+is `peak_rss_total_bytes` in GiB (2^30 bytes).
+
+**By protocol**
+
+| Position | Configuration | Protocol | `wall_excl_capture_s` (s) | `wall_s` (s) | `plan_capture_s` (s) | Peak total RSS (GiB) |
+| ---: | --- | --- | --- | --- | --- | --- |
+| 1 | A | `20261022T202856Z` | 26.296 (26.127–26.623) | 27.358 (27.222–27.693) | 1.070 (1.062–1.095) | 2.684 (2.682–2.687) |
+| 2 | B | `20261022T210120Z` | 27.130 (26.747–27.257) | 28.299 (27.928–28.402) | 1.169 (1.145–1.181) | 2.675 (2.669–2.684) |
+| 3 | C | `20261022T210843Z` | 28.810 (28.605–29.135) | 30.207 (30.034–30.512) | 1.397 (1.377–1.429) | 2.695 (2.688–2.702) |
+| 4 | C | `20261022T211604Z` | 28.633 (28.346–28.842) | 30.014 (29.767–30.212) | 1.381 (1.370–1.421) | 2.701 (2.693–2.713) |
+| 5 | B | `20261022T212322Z` | 26.940 (26.663–28.207) | 28.095 (27.811–29.337) | 1.148 (1.130–1.155) | 2.681 (2.667–2.690) |
+| 6 | A | `20261022T214123Z` | 26.613 (26.357–26.624) | 27.695 (27.468–27.726) | 1.111 (1.071–1.113) | 2.678 (2.663–2.694) |
+
+**By configuration** (six measured runs; the largest peak covers all eight runs, warm-ups included)
+
+| Configuration | `wall_excl_capture_s` (s) | `wall_s` (s) | `plan_capture_s` (s) | Peak total RSS (GiB) | Largest peak (GiB) |
+| --- | --- | --- | --- | --- | ---: |
+| A: no cache | 26.485 (26.127–26.624) | 27.581 (27.222–27.726) | 1.083 (1.062–1.113) | 2.683 (2.663–2.694) | 2.694 |
+| B: members | 27.035 (26.663–28.207) | 28.197 (27.811–29.337) | 1.151 (1.130–1.181) | 2.678 (2.667–2.690) | 2.690 |
+| C: members and the four tables | 28.721 (28.346–29.135) | 30.120 (29.767–30.512) | 1.389 (1.370–1.429) | 2.698 (2.688–2.713) | 2.713 |
+
+**Phases and peaks by process type** (medians of the six measured runs; each median is taken on its
+own, so the phases do not add up to the total)
+
+| | A | B | C |
+| --- | ---: | ---: | ---: |
+| `session_start` (s) | 2.476 | 2.469 | 2.468 |
+| `window_stats_and_construction_check` (s) | 4.933 | 5.865 | 5.944 |
+| `model_and_path_days` (s) | 8.534 | 8.205 | 9.490 |
+| `summaries_and_pairing` (s) | 6.509 | 6.676 | 6.909 |
+| `checks` (s) | 1.646 | 1.548 | 1.547 |
+| `total_in_process` (s), plan capture included | 26.640 | 27.371 | 28.942 |
+| Spark JVM peak (GiB) | 1.523 | 1.521 | 1.557 |
+| Python workers peak (GiB) | 1.048 | 1.055 | 1.050 |
+| Python driver peak (GiB) | 0.115 | 0.114 | 0.114 |
+
+### 14.7 Comparisons (section 9)
+
+_Drafted with Claude Code (Opus 5.5) from `measurements.csv`. For configurations X and Y,
+d = X − Y between medians of measured runs: d1 in positions 1–3, d2 in positions 4–6, and d over the
+six runs of each. The time threshold is 10% of A's six-run median, 2.649 s; the memory threshold is
+0.2 GiB._
+
+| X − Y | Measure | d1 | d2 | d | Same sign | Beyond the threshold | Rule (9) |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| A − B | `wall_excl_capture_s` (s) | −0.834 | −0.327 | −0.550 | yes | no | no clear difference |
+| B − C | `wall_excl_capture_s` (s) | −1.680 | −1.693 | −1.686 | yes | no | no clear difference |
+| A − C | `wall_excl_capture_s` (s) | −2.514 | −2.020 | −2.236 | yes | no | no clear difference |
+| A − B | peak total RSS (GiB) | +0.009 | −0.004 | +0.005 | no | no | no clear difference |
+| B − C | peak total RSS (GiB) | −0.020 | −0.020 | −0.020 | yes | no | no clear difference |
+| A − C | peak total RSS (GiB) | −0.011 | −0.023 | −0.015 | yes | no | no clear difference |
+
+B's six-run median is 2.1% above A's (0.550 s), C's 6.2% above B's (1.686 s) and 8.4% above A's
+(2.236 s), all below the threshold. In all three time comparisons, d1, d2 and d have the same sign:
+B and C were slower than A, and C slower than B, in both halves.
+
+**Phases** (described without a threshold; seconds)
+
+| Phase | A − B: d1, d2, d | B − C: d1, d2, d | A − C: d1, d2, d |
+| --- | --- | --- | --- |
+| `session_start` | +0.013, +0.017, +0.007 | −0.048, +0.032, +0.001 | −0.034, +0.049, +0.008 |
+| `window_stats_and_construction_check` | −0.991, −0.802, −0.932 | −0.064, −0.138, −0.079 | −1.055, −0.940, −1.011 |
+| `model_and_path_days` | +0.096, +0.463, +0.329 | −1.220, −1.246, −1.285 | −1.124, −0.783, −0.956 |
+| `summaries_and_pairing` | −0.400, −0.086, −0.167 | −0.105, −0.362, −0.233 | −0.505, −0.447, −0.400 |
+| `checks` | −0.054, +0.248, +0.097 | +0.091, −0.062, +0.001 | +0.038, +0.186, +0.099 |
+| `total_in_process` | −1.054, −0.374, −0.731 | −1.704, −1.729, −1.571 | −2.758, −2.103, −2.302 |
+
+In both halves, B's `window_stats_and_construction_check` and `summaries_and_pairing` were longer
+than A's and its `model_and_path_days` shorter; C's `window_stats_and_construction_check`,
+`model_and_path_days` and `summaries_and_pairing` were longer than B's; and C's `checks` was shorter
+than A's. The `checks` of A and B, and of B and C, change sign between the halves, as does
+`session_start` in two of the three pairs.
+
+### 14.8 Caches and plans (sections 5 and 6)
+
+_Drafted with Claude Code (Opus 5.5) from the `run.json` and `plans.json` files and the CSV. Every
+count is the same in all eight runs of a configuration; times are medians (minimum–maximum) of the
+six measured runs, and MB is 10^6 bytes._
+
+| | A: no cache | B: members | C: members and the four tables |
+| --- | --- | --- | --- |
+| SQL executions; fills among them | 25; none | 26; 1 | 30; 5 |
+| Downstream cached reads in `window_stats`, `model`, `summaries`, `checks` | 0, 0, 0, 0 | 1, 1, 0, 0 | 2, 1, 3, 14 |
+| Cached RDDs at the four phase ends | 0, 0, 0, 0 | 1, 0, 0, 0 | 2, 2, 4, 0 |
+| Summed stage task counts: `window_stats`, `model`, `summaries`, `checks` | 53, 22, 81, 100 | 57, 11, 81, 100 | 61, 36, 110, 100 |
+| Files: `window_stats`, `path_days`, `path_summary`, `paired` | 1, 40, 8, 1 | 1, 40, 8, 1 | 1, 40, 8, 1 |
+| Storage readings (`storage_info_s`) | 0.002 s | 0.008 s | 0.031 s |
+
+| Cached data | Rows | Partitions | In memory (MB) | On disk | Fill in B (s) | Fill in C (s) | Release (s) |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| members | 1,351,728 | 1 | 13.77 | 0 | 2.481 (2.441–2.824) | 2.467 (2.424–2.559) | 0.003–0.005 |
+| `window_stats` | 5,364 | 1 | 0.48 | 0 | — | 0.137 (0.129–0.176) | at most 0.001 |
+| `path_days` | 2,698,866 | 8 | 202.21 | 0 | — | 1.325 (1.135–1.455) | at most 0.001 |
+| `path_summary` | 10,728 | 8 | 1.03 | 0 | — | 0.093 (0.081–0.121) | at most 0.001 |
+| `paired` | 5,364 | 1 | 0.91 | 0 | — | 0.075 (0.073–0.076) | at most 0.001 |
+
+- **Storage (6.3):** in every run, each fill counted its table's rows and added one RDD, with all of
+  its partitions cached at the level "Disk Memory Deserialized 1x Replicated" and every byte in
+  memory. Each cache was still fully cached just before its release, was released by the plan in
+  its phase, and was no longer listed afterwards. In C, the storage information at the phase ends
+  shows 14.25 MB cached at the end of `window_stats`, 202.69 MB at the end of `model`, 204.63 MB at
+  the end of `summaries` and none at the end of `checks`. Between the `path_days` fill and the
+  members' release, the members, `window_stats` and `path_days` were cached together: 216.46 MB by
+  the sizes after their fills.
+- **Fills and downstream reads (6.4):** every fill's execution carried its description and read its
+  cache once, in its table's phase. All 48 fill reads and all 176 downstream reads recorded a
+  positive row metric; none was zero or missing. The only missing row metrics, 32, were on
+  `Scan parquet` nodes of executions that read cached data: the nested file scans of 4.2.
+- **Shuffle reads:** in every run, AQE coalesced the model's group-by read to 8 partitions, and the
+  summaries' reads to 8, 9, 1 and 1 partitions. In A, the model phase also read the shuffle of the
+  returns' window by `ticker`, coalesced to 1; in B and C, the cached members replaced that part of
+  the model's plan.
+
+### 14.9 Output comparison (section 7)
+
+_Drafted with Claude Code (Opus 5.5) from `acceptance.json`, from the collector's comparison
+function run per configuration, and from the `path_days` files of all 24 runs._
+
+**Reference:** run 2 of position 1, `run-20261022T202856Z-2`. All 23 other runs pass in all four
+tables: the reference's row counts (5,364, 2,698,866, 10,728 and 5,364) and keys, with no null or
+duplicate key; the same columns and types; NULLs in the same rows; breach fields and the other
+non-floating columns equal exactly. No table was missing, incomplete or unreadable.
+
+**Floating-point columns:**
+
+| Configuration | Runs compared | Runs with any difference | Largest absolute difference: `paired`, `path_summary` | Largest relative difference: `paired`, `path_summary` |
+| --- | ---: | ---: | --- | --- |
+| A | 7 | 0 | 0, 0 | 0, 0 |
+| B | 8 | 8 | 7.11e-15, 3.64e-12 | 6.25e-16, 6.25e-16 |
+| C | 8 | 8 | 7.11e-15, 3.64e-12 | 6.25e-16, 6.25e-16 |
+
+In B and C, the same seven columns differ: in `paired`, `total_turnover_2x`,
+`total_turnover_2x_pre_breach`, `mean_turnover_2x` and `mean_turnover_2x_pre_breach`; in
+`path_summary`, `total_turnover`, `mean_turnover` and `total_abs_rebalance`. Every other
+floating-point column of these two tables, and every column of `window_stats` and `path_days`, is
+equal exactly in every run. Every difference is within the tolerance of section 7.
+
+**Row order of `path_days`.** In every run, each of the 40 `path_days` files holds the same rows as
+the reference's file at the same place. In A's seven other runs, all 40 files hold them in the same
+order; in each of the 16 runs of B and C, 9 of the 40 files hold them in another order. The seven
+differing columns are sums and means over a path's rows, and the result of a floating-point sum
+depends on the order of its terms. The records do not show why caching the members changes the
+order of the rows that the model phase writes.
+
+## 15. Answers and limits
+
+_The questions are Claude Code's proposals of 2026-10-22. In 15.1–15.4, the parts marked as drafted
+give facts, computed with Claude Code (Opus 5.5) by script from batch-1's records (14) and from
+section 11, which is unchanged. The answers, marked "Answer (author)", are the author's, copied from
+the conversation of 2026-10-22._
+
+### 15.1 (a) Runtime
+
+> How did caching the members (B) and also the four tables (C) change wall time, under the rule of
+> section 9?
+
+_Drafted with Claude Code (Opus 5.5): the medians are in 14.6, and d1, d2 and d by pair and by phase
+in 14.7._
+
+**Answer (author).** B and C were slightly slower than A, but the differences were below the
+predefined threshold. Under the rule in section 9, there was no clear difference in runtime.
+
+### 15.2 (b) Phases and caches
+
+> Where did time move between phases, and what did the fills cost against what the cached reads
+> saved?
+
+_Drafted with Claude Code (Opus 5.5): the phases are in 14.6 and 14.7, and the fills, releases and
+reads in 14.8._
+
+**Answer (author).** B's window-statistics phase was 0.93 s longer than A's, while its model phase
+was 0.33 s shorter. The members fill took about 2.48 s, including data construction, so this was
+not all additional work. Compared with B, C's model phase increased by 1.29 s, with no net speedup
+in summaries or checks. Overall, the observed savings did not offset the added costs.
+
+### 15.3 (c) Memory and results
+
+> Did caching change peak memory or any result?
+
+_Drafted with Claude Code (Opus 5.5): peak memory is in 14.6 and 14.7, the caches' sizes in 14.8,
+and the output comparison in 14.9._
+
+**Answer (author).** Peak memory differed only slightly. All outputs passed the tolerance checks,
+although some floating-point summary values were not exactly equal.
+
+### 15.4 (d) Predictions against results
+
+> Where were the predictions off, and why?
+
+_Drafted with Claude Code (Opus 5.5) from section 11, which is unchanged, and from section 14. Time
+items use the medians of `wall_excl_capture_s` over the six measured runs, and memory items the
+medians of peak total RSS._
+
+| Section 11 | Predicted | Measured | Result |
+| --- | --- | --- | --- |
+| A, median time | 26.5 s, band 21.2–31.8 s | 26.485 s | inside, 0.1% below the point |
+| B, median time | 26.5 s, band 21.2–31.8 s | 27.035 s | inside, 2.0% above the point |
+| C, median time | 27.0 s, band 21.6–35.1 s | 28.721 s | inside, 6.4% above the point |
+| A, B and C, median peak | 2.5–2.9, 2.5–2.9 and 2.5–3.1 GiB | 2.683, 2.678 and 2.698 GiB | inside |
+| Abort limits | 80, 80 and 81 s | longest runs 28.6, 29.3 and 30.5 s | no run aborted |
+| 11.1, sizes | members 13–15 MB; `path_days` about 0.19 GiB; the small tables under 3 MB each; nothing on disk | 13.77 MB; 0.188 GiB (202.21 MB); 0.48, 1.03 and 0.91 MB; 0 bytes on disk | as predicted |
+| 11.1, fill and release times | members 0.3–1.2 s; `path_days` 0.3–1.5 s; the small tables under 0.3 s each; releases under 0.1 s | members 2.481 s (B) and 2.467 s (C); `path_days` 1.325 s; 0.075–0.137 s; releases at most 0.005 s | members above the range; the others as predicted |
+| 11.1, files | 1, 40, 8 and 1 | 1, 40, 8 and 1 in all 24 runs | as predicted |
+| 11.1, outputs | equal to the reference exactly | A equal; in all B and C runs, seven columns differ in the last bits (relative at most 6.25e-16), within the tolerance | not as predicted for B and C |
+| 11.2, wall time | no clear difference between any two | d = −0.550 s (A − B), −1.686 s (B − C) and −2.236 s (A − C), all below the 2.649 s threshold | as predicted |
+| 11.2, memory | no clear difference between any two | \|d\| at most 0.020 GiB | as predicted |
+| 11.2, phases | B's `window_stats` longer and `model` shorter than A's; C's `model` longer than B's; C's `checks` shorter than A's and B's | +0.932 s and −0.329 s; +1.285 s; C − A −0.099 s, shorter in both halves, and C − B −0.001 s, with the halves differing in sign | as predicted, except C's `checks` against B's |
+| 11.3, B's two effects | each 0.3–1.0 s, nearly cancelling | `window_stats` +0.932 s, `model` −0.329 s; B − A +0.550 s in all | each inside the range |
+| 11.3, C against B | fills 0.5–2 s together; memory reads save 0.3–1.5 s; net about +0.5 s | fills 1.630 s (the sum of their medians); `summaries` +0.233 s and `checks` −0.001 s; net +1.686 s | fills inside; no observed net saving in these phases; net larger |
+| 11.3, heap | the caches change what the heap holds, not the JVM's RSS | Spark JVM peak 1.557 GiB in C, 1.521 in B, 1.523 in A | C +0.034 GiB above A |
+
+**Answer (author).** I underestimated the members fill time, and the prediction of exact equality
+did not hold. A different order of floating-point addition is a plausible explanation, but the
+specific mechanism has not been established. C's additional caching also produced less net benefit
+than expected, and its checks were not consistently faster than B's.
+
+### 15.5 (e) What these measurements cannot show
+
+> What can these measurements not show?
+
+**Answer (author).** These results apply to this machine, workload and caching strategy. CPU time
+and garbage collection were not measured, so the conclusions cannot be generalized to all Spark
+workloads.
+
 ## History of this document
 
 **Draft** (2026-10-22): the design from the author's decisions and the plan of 2026-10-22, the code
@@ -736,3 +1118,11 @@ read in its phase.
 
 The author approved this version for commit on 2026-10-22. It is committed before any measured run,
 together with the code of section 4, on `feature/caching`.
+
+**Part B** (2026-10-22). Section 14 gives batch-1's results as facts, with the author's statements
+in 14.2 and 14.3, and section 15 the author's answers, with facts drafted by Claude Code. After
+Claude Code's review of the answers, the author added the last sentence of (d) and had one result in
+15.4 changed to "no observed net saving in these phases". The status at the top now describes both
+parts, the authorship line states that the author ran the formal measurements and wrote the answers,
+and a line marks the end of Part A; sections 1–13, the predictions included, are unchanged. This
+version is committed on `feature/caching` after the formal session.
