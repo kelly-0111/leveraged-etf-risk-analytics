@@ -1,5 +1,9 @@
 # Shuffle-partition experiment
 
+Author: I decided the configurations and rules listed in 1.2, reviewed and approved the rest of the
+design and the predictions, ran the formal measurements, and wrote the Part B answers. AI
+contributions are described below.
+
 **Part A (sections 1–13): the design, the code and the predictions, committed before any measured
 run (`caa0be1`).** The author approved the predictions (section 11) and the rules listed in 1.2 on
 2026-10-19 and ran the formal measurements (2.4, 4.4). **Part B (sections 14–15): the results of
@@ -14,8 +18,7 @@ Code and reviewed and approved by the author. Revision 1 applied a read-only rev
 draft by a separate Claude Code session (036c80c6). Revision 2 applied the author's decisions of
 the same day and described the implemented code. Revision 3 recorded the fixes from Claude Code's
 review of that code (history at the end). Part B was drafted with Claude Code from batch-1's
-records, with the author's statements and answers (sections 14 and 15). The author's own authorship
-line is still to be added._
+records, with the author's statements and answers (sections 14 and 15)._
 
 This experiment changes neither the stride experiment ([experiments.md](experiments.md)) nor its
 predictions, records or collector. It writes only under `data/outputs-partitions/`.
@@ -1135,4 +1138,5 @@ This version is committed before any measured run, together with the code of sec
 in 14.3, and section 15 the author's answers, with facts drafted by Claude Code and the review's
 corrections applied at the author's request. The status at the top now describes both parts, and a
 line marks the end of Part A; sections 1–13, the predictions included, are unchanged. This version
-is committed on `feature/shuffle-partitions` after the formal session.
+is committed on `feature/shuffle-partitions` after the formal session. The author's authorship line
+at the top was added in a later commit.

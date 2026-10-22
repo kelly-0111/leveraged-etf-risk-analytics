@@ -398,9 +398,10 @@ runs so the results can be checked against them rather than fitted afterwards.
    one grouped pandas call per window adds a per-window Python cost. Spark's
    adaptive execution may merge shuffle partitions, so requested and actual
    partition counts will both be recorded. A single-process pandas run may be
-   faster at these sizes. Memory will be measured, not estimated. The only
-   timing so far is one informal prototype run (8 paths, about 12 seconds end to
-   end), which is not a benchmark.
+   faster at these sizes. Memory will be measured, not estimated. At the time
+   these expectations were recorded, the only timing available was an informal
+   prototype run. The subsequent measurements and their limitations are
+   reported below.
 
 ### What the stride-21 run showed (`full-2026-10-12`, after the cleanup)
 
