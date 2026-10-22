@@ -619,13 +619,13 @@ measured run. Design, run log, records and answers:
   after the fills in every phase meant to have them. The machine checks were
   recorded at every start, and no drift was detected (A +1.2%).
 - **Time.** Median times without the plan recording were 26.5 s (A), 27.0 s
-  (B) and 28.7 s (C): B's and C's were 2.1% and 8.4% longer than A's, in both
-  halves of the order, but below the threshold of 10% of A's median, so there
-  was no clear difference. Caching the members lengthened the window
-  statistics by 0.93 s and shortened the model phase by 0.33 s; their fill
-  took 2.48 s, building the members included. C's further caches lengthened
-  the model phase by 1.29 s against B, with no observed net saving in the
-  summaries or checks.
+  (B) and 28.7 s (C). Overall, B and C were 2.1% and 8.4% slower than A; both
+  were slower in each half. Both differences were below the threshold of 10%
+  of A's median, so there was no clear difference. Caching the members
+  lengthened the window statistics by 0.93 s and shortened the model phase by
+  0.33 s; their fill took 2.48 s, building the members included. C's further
+  caches lengthened the model phase by 1.29 s against B, with no observed net
+  saving in the summaries or checks.
 - **Memory and results.** Median peaks were 2.68–2.70 GiB, with no clear
   difference; C held up to about 0.2 GiB in cached tables, all in memory, and
   its JVM peak was 0.03 GiB above A's. Every output matched A's within the
