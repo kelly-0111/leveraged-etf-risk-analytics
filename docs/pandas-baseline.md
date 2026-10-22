@@ -1,16 +1,21 @@
 # Pandas baseline
 
-**Part A: the design, the code and the predictions, committed before any measured run.** The
-author approved the predictions (section 11) and the rules listed in 1.2 on 2026-10-22, and runs the
-formal measurements (2.4, 4.4). No formal measurement has been made yet; the code was validated on
-small window sets (4.5). Part B (results and answers) will follow section 13. The history of this
-document stays at the end.
+Author: I decided the scope, workload, order and settings listed in 1.2, reviewed and approved the
+rest of the design and the predictions, ran the formal measurements, and wrote the Part B answers.
+AI contributions are described below.
+
+**Part A (sections 1–13): the design, the code and the predictions, committed before any measured
+run (`204d04d`).** The author approved the predictions (section 11) and the rules listed in 1.2 on
+2026-10-22 and ran the formal measurements (2.4, 4.4). **Part B (sections 14–15): the results of
+batch-1, run on 2026-10-22 (UTC), and the author's answers.** Batch-1 met every acceptance criterion
+(10), so it is the analyzed batch, and no further batch runs (3). Sections 1–13, the predictions
+included, are unchanged since Part A. The history of this document stays at the end.
 
 _Drafted with Claude Code (Opus 5.5) on 2026-10-22 from the author's decisions listed in 1.2, from
 the code it wrote for section 4 and from the records of the stride and shuffle-partition
 experiments. Everything not listed in 1.2 is Claude Code's proposal (section 13). The predictions in
-section 11 were drafted with Claude Code and reviewed and approved by the author. The author's own
-authorship line is still to be added._
+section 11 were drafted with Claude Code and reviewed and approved by the author. Part B was drafted
+with Claude Code from batch-1's records, with the author's answers (sections 14 and 15)._
 
 This experiment changes neither the stride experiment ([experiments.md](experiments.md)) nor the
 shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)), nor their
@@ -408,6 +413,298 @@ The author's decisions and approvals are in 1.2. Everything else was proposed by
 - **11:** the draft of the predictions, which the author approved.
 - **12:** the contents of the deferred list.
 
+_Part A ends here; it was committed before any measured run (`204d04d`)._
+
+## 14. Results
+
+_Drafted with Claude Code (Opus 5.5) on 2026-10-22 from batch-1's run log and `positions.tsv`, the
+four protocol JSONs, the 16 `run.json` files, `measurements.csv` and `acceptance.json` (numbers read
+by script), and the author's terminal output from both windows. Times are UTC: the session ran from
+05:28 to 05:57 on 2026-10-22. Differences and percentages are computed from unrounded values, so
+they can differ by 0.001 from those of the rounded values shown. This section gives facts only; the
+answers will follow in section 15._
+
+### 14.1 Protocols
+
+| Position | Implementation | Protocol | Runs (UTC, 2026-10-22) | Status |
+| ---: | --- | --- | --- | --- |
+| 1 | S | `20261022T053314Z` | 05:33:14–05:35:01 | 4 of 4 `ok` |
+| 2 | P | `20261022T054121Z` | 05:41:21–05:42:22 | 4 of 4 `ok` |
+| 3 | P | `20261022T054752Z` | 05:47:52–05:48:53 | 4 of 4 `ok` |
+| 4 | S | `20261022T055420Z` | 05:54:20–05:56:06 | 4 of 4 `ok` |
+
+- All 16 runs ended `ok` with zero check violations. No protocol stopped early, no run was aborted,
+  and no sample crossed the 4.80 GiB threshold. Each position ran once, so nothing was re-run (3)
+  and every protocol is a used protocol.
+- **Acceptance (10):** the collector found all five criteria met and listed no problem. Batch-1 is
+  therefore the analyzed batch, and no further batch runs (3).
+- **Code state:** every protocol and run record shows commit `204d04d` with the hashed paths clean,
+  and the same `source_sha256` (12 files) and `uv_lock_sha256` (starting `99484c14ebf3`).
+- **Inputs:** every run verified the seven SHA-256 values of 2.2 and recorded a `windows_config`
+  equal to the stride-7 `config.json`. When the collector ran after the session, the seven files
+  still had those hashes.
+- **Settings (6):** every S run recorded Spark's default values for the three partition settings and
+  no `pipeline_options`; every P run recorded `"engine": "pandas"` and no Spark settings; each
+  protocol recorded its pipeline. S's other recorded Spark settings are identical in its eight runs,
+  and the recorded environment is identical in all 16 runs.
+- **Records:** `data/outputs-baseline/batch-1/`, laid out as in 2.4.
+
+### 14.2 Run log
+
+The session used the helpers of 4.4 as committed in `f1b3222`, loaded in two Terminal windows:
+window 1 ran the pauses, readings and protocols, and window 2 the watcher. Each protocol started
+right after a five-minute pause and a `ready` reading that met all three limits of 3, and `position`
+wrote the 3.2 checks into the run log at each start.
+
+| Position | Checks at the start | Pause before the start | Available at the start (GiB) | 5-minute load at the start | Minutes since boot | Lowest free before a run (GiB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 1, S | 05:33:13 | 05:28:13–05:33:13 | 3.88 | 1.58 | 364 | 2.83 |
+| 2, P | 05:41:20 | 05:36:20–05:41:20 | 4.19 | 2.42 | 373 | 4.11 |
+| 3, P | 05:47:51 | 05:42:51–05:47:51 | 4.11 | 1.71 | 379 | 4.00 |
+| 4, S | 05:54:20 | 05:49:20–05:54:20 | 4.08 | 1.50 | 386 | 2.95 |
+
+Every check at a start showed Low Power Mode off, AC power, no Docker backend, no Java or pipeline
+process, only Terminal and Finder open, `HEAD 204d04d` with no changed code file, and no Spark
+scratch folder. The last column is the lowest `free_memory_before_bytes` among each protocol's four
+runs. In each S protocol one run started with less than 3.0 GiB free (run 4: 2.83 and 2.95 GiB); 3
+requires 3.0 GiB only before a protocol starts.
+
+- **The boot** was the one of the shuffle-partition experiment's session, at 23:28 on 2026-10-21;
+  the Mac had not been restarted since.
+- **Spacing:** the protocols started 8.1, 6.5 and 6.5 minutes apart.
+- **Further checks:** the author ran `prechecks` three more times between protocols (at 05:35:32,
+  labeled `position n`, then at 05:42:41 and 05:49:12), before the pauses. They showed the same
+  state.
+- **Readings on their own:** in window 2, during the pause before position 1, `ready` read 2.41 GiB
+  (logged as `protocol not started`) and then 4.53 GiB. No start was refused: each `pause5 && ready
+  && position n` started at its first attempt.
+- **Abort rule:** no run came near its limit. The longest raw wall times were 27.9 s (S) and 15.7 s
+  (P), against 80 and 120 s. The watcher saw all 16 pipeline processes, four per protocol, and its
+  largest readings were 24 s (S) and 16 s (P). No abort and no after-abort check was needed.
+- **Notes:** after each protocol, the author recorded `4 ok, nothing unusual` with `note`.
+- **After the session:** a check found no Spark scratch folder and no Java process.
+
+### 14.3 Deviations and uncertain conditions
+
+None found. Every start has its 3.2 checks in the run log, and each start met 3.
+
+### 14.4 Drift (section 8)
+
+| Rule | Positions | Protocol medians of `wall_s` | Difference from the first | Median peak total RSS (GiB) | Difference |
+| --- | --- | --- | --- | --- | --- |
+| 1. S pair | 1, 4 | 26.206, 26.460 s | +0.254 s (+0.97%) | 2.679, 2.682 | +0.003 GiB |
+| 2. P pair | 2, 3 | 15.262, 15.440 s | +0.178 s (+1.17%) | 1.953, 1.990 | +0.037 GiB |
+
+No time difference exceeds 10% of the first median, so no drift is reported under rules 1 and 2,
+and no memory difference exceeds 0.2 GiB (rule 3). The context of rule 4 is in 14.2.
+
+**Earlier records (rule 5, descriptive).** S's six measured runs have a median `wall_s` of 26.407 s
+and a median peak total RSS of 2.680 GiB, against 26.462 s (`wall_excl_capture_s`) and 2.689 GiB for
+configuration A in the shuffle-partition experiment's batch-1 (partition-experiment.md 14.6). S's
+summed stage task counts (53, 22, 81 and 100) and file counts (1, 40, 8 and 1) equal A's in all
+eight runs.
+
+### 14.5 Measurements CSV
+
+**Location.** `uv run python analysis/collect_baseline_measurements.py --batch
+data/outputs-baseline/batch-1` reads the batch's records and writes `measurements.csv` and
+`acceptance.json` into the batch folder (4.3). Like the records, they are under `data/`, which is
+not in Git.
+
+**Rows.** One row per started run: 16 rows, warm-ups included, in protocol order. `used` marks the
+runs of the used protocols, here all 16.
+
+**Columns.** 48:
+
+| Group | Columns | From |
+| --- | --- | --- |
+| Identity | `batch`, `position`, `engine` (the implementation's label, S or P), `used`, `protocol_id`, `run_id`, `run_number`, `warmup`, `status`, `exit_code` | the batch folder, `positions.tsv`, the protocol JSON |
+| Measurements | `started_at_utc`, `windows`, `path_day_rows`, `wall_s`, the six phases of 5 (`session_start_s` empty for P), `free_memory_before_bytes`, `peak_rss_total_bytes` and the peaks per process type, `samples`, `max_processes_seen`, `threshold_crossed`, `git_commit`, `git_worktree_clean` | `run.json`: `measurement`, `row_counts`, `timings_seconds`, `code` |
+| Spark (empty for P) | `shuffle_partitions_requested`, `adaptive_enabled`, `coalesce_enabled`, `default_parallelism`, `jvm_max_heap_bytes`, `tasks_<phase>` | `spark`, `stage_task_counts` |
+| Files | `files_window_stats`, `files_path_days`, `files_path_summary`, `files_paired` | the run folder |
+| Comparison (7) | `window_stats_vs_reference`, `path_summary_vs_reference`, `paired_vs_reference`, `path_days_vs_reference`: `reference`, `pass`, `fail` or empty | the tables |
+
+**Limitations.** Memory is sampled RSS, as in experiments.md 5.6. S's task counts are summed stage
+task counts. The phases correspond by name but not by work (5).
+
+### 14.6 Summary tables
+
+_Drafted with Claude Code (Opus 5.5) from `measurements.csv` (values computed by script)._
+
+Summaries use the measured runs that ended `ok` in the used protocols (5): three per protocol, six
+per implementation. Each cell gives the median and, in brackets, the minimum and maximum. Peak
+memory is `peak_rss_total_bytes` in GiB (2^30 bytes).
+
+**By protocol**
+
+| Position | Implementation | Protocol | `wall_s` (s) | Peak total RSS (GiB) |
+| ---: | --- | --- | --- | --- |
+| 1 | S | `20261022T053314Z` | 26.206 (25.621–27.152) | 2.679 (2.667–2.698) |
+| 2 | P | `20261022T054121Z` | 15.262 (15.202–15.652) | 1.953 (1.924–1.978) |
+| 3 | P | `20261022T054752Z` | 15.440 (15.314–15.515) | 1.990 (1.959–2.054) |
+| 4 | S | `20261022T055420Z` | 26.460 (26.353–26.686) | 2.682 (2.672–2.707) |
+
+**By implementation** (six measured runs; the largest peak covers all eight runs, warm-ups included)
+
+| Implementation | `wall_s` (s) | Peak total RSS (GiB) | Largest peak (GiB) |
+| --- | --- | --- | ---: |
+| S: the Spark pipeline, Spark's defaults | 26.407 (25.621–27.152) | 2.680 (2.667–2.707) | 2.707 |
+| P: the pandas pipeline, one process | 15.377 (15.202–15.652) | 1.968 (1.924–2.054) | 2.054 |
+
+**Phases and peaks by process type** (medians of the six measured runs; each median is taken on its
+own, so the phases do not add up to the total)
+
+| | S | P |
+| --- | ---: | ---: |
+| `session_start` (s) | 2.440 | — |
+| `window_stats_and_construction_check` (s) | 4.943 | 0.308 |
+| `model_and_path_days` (s) | 8.622 | 12.134 |
+| `summaries_and_pairing` (s) | 6.459 | 1.479 |
+| `checks` (s) | 1.535 | 0.974 |
+| `total_in_process` (s) | 25.281 | 14.970 |
+| outside the pipeline's clock, `wall_s` − `total_in_process` (s) | 1.065 | 0.408 |
+| Python driver peak (GiB) | 0.114 | 1.968 |
+| Spark JVM peak (GiB) | 1.521 | — |
+| Python workers peak (GiB) | 1.046 | — |
+| processes seen, largest count per run (all eight runs) | 11–14 | 1 |
+
+### 14.7 Comparison (section 9)
+
+_Drafted with Claude Code (Opus 5.5) from `measurements.csv`. d = S − P between medians of measured
+runs: d1 from positions 1 and 2, d2 from positions 4 and 3, d over the six runs of each. The time
+threshold is 10% of S's six-run median, 2.641 s; the memory threshold is 0.2 GiB._
+
+| Measure | d1 | d2 | d | Same sign | Beyond the threshold | Rule (9) |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| `wall_s` (s) | +10.944 | +11.020 | +11.030 | yes | yes | differ: P shorter |
+| peak total RSS (GiB) | +0.726 | +0.692 | +0.712 | yes | yes | differ: P lower |
+
+S's six-run median `wall_s` is 71.7% above P's, and P's is 41.8% below S's. P's median peak is
+0.712 GiB (26.6%) below S's. These are differences between the two implementations end to end
+(1.1).
+
+**Phases** (described without a threshold and not attributed to a cause, 5; seconds)
+
+| Phase | d1 | d2 | d |
+| --- | ---: | ---: | ---: |
+| `window_stats_and_construction_check` | +4.646 | +4.624 | +4.635 |
+| `model_and_path_days` | −3.249 | −3.658 | −3.512 |
+| `summaries_and_pairing` | +5.205 | +4.766 | +4.980 |
+| `checks` | +0.499 | +0.540 | +0.561 |
+| `total_in_process` | +10.623 | +9.980 | +10.311 |
+
+In both halves, P's model phase took longer than S's, and each of its other phases took less time.
+S's `session_start` (2.440 s) has no P counterpart, and the time outside the pipeline's clock was
+1.065 s in S and 0.408 s in P.
+
+**Observations.** S wrote 1, 40, 8 and 1 files for `window_stats`, `path_days`, `path_summary` and
+`paired`, and P wrote 1, 5, 1 and 1. P ran as one process in every run.
+
+### 14.8 Output comparison (section 7)
+
+_Drafted with Claude Code (Opus 5.5) from `acceptance.json`._
+
+**Reference:** run 2 of position 1, `run-20261022T053314Z-2`. All 15 other runs pass for
+`window_stats`, `path_summary` and `paired`:
+
+- the reference's row counts (5,364, 10,728 and 5,364) and keys, with no null or duplicate key;
+- the same columns and types, and NULLs in the same rows;
+- breach fields and the other non-floating columns equal exactly.
+
+Every run's `window_stats` and `path_days` row counts (5,364 and 2,698,866) equal the reference's.
+`path_days`, compared in full for run 2 of both P protocols, passes with no difference in any
+column.
+
+**Floating-point columns:** the seven other S runs show no difference in any compared column. In the
+eight P runs, 16 columns differ in the last bits. The largest absolute difference is 7.28e-12, in
+`path_summary.total_abs_rebalance`, whose values are in the thousands (relative 4.4e-16). The
+largest relative difference is 3.52e-11, in `paired.approx_rel_error`, whose values are near zero;
+there the largest absolute difference is 2.56e-15. Every difference is within the tolerance of 7.
+The columns are `sum_abs_return`, `realized_variance` and `exact_gap` in `window_stats` and in
+`paired`; in `paired` also `total_turnover_2x`, `total_turnover_2x_pre_breach`, `mean_turnover_2x`,
+`mean_turnover_2x_pre_breach`, `approx_gap`, `approx_rel_error` and `log_gap`; and `total_turnover`,
+`mean_turnover` and `total_abs_rebalance` in `path_summary`.
+
+## 15. Answers and limits
+
+_The questions are Claude Code's proposals of 2026-10-22; the author divided the first into two
+(15.1 and 15.2) when answering. In 15.1–15.4, the parts marked as drafted give facts, computed with
+Claude Code (Opus 5.5) by script from batch-1's records (14) and from section 11, which is
+unchanged. The answers, marked "Answer (author)", are the author's, copied from the conversation of
+2026-10-22. After Claude Code's review, the author added the last two sentences of 15.4, which say
+why the predictions were off, and at the author's request Claude Code applied the review's wording
+"median wall time" in 15.1 and "median peak total RSS" in 15.3._
+
+### 15.1 (a) Wall time
+
+> How do the two implementations compare end to end in wall time?
+
+_Drafted with Claude Code (Opus 5.5): the medians are in 14.6, and d1, d2 and d in 14.7._
+
+**Answer (author).** Pandas's median wall time was 41.8% shorter than Spark's: 15.38 versus
+26.41 s. Both halves supported this difference.
+
+### 15.2 (b) Phases
+
+> How do their phases differ?
+
+_Drafted with Claude Code (Opus 5.5): the phases are in 14.6 and their differences in 14.7. The
+phases correspond by name but not by work (5)._
+
+**Answer (author).** Spark's model phase was shorter, but pandas saved more time in window
+statistics, summaries and startup. This compares two implementations, not isolated engine overhead.
+
+### 15.3 (c) Memory and correctness
+
+> How do peak memory and the outputs compare?
+
+_Drafted with Claude Code (Opus 5.5): peak memory is in 14.6 and 14.7, and the output comparison in
+14.8._
+
+**Answer (author).** Pandas's median peak total RSS was 26.6% lower than Spark's: 1.97 versus
+2.68 GiB. All required output comparisons passed within tolerance.
+
+### 15.4 (d) Predictions against results
+
+> Where were the predictions off, and why?
+
+_Drafted with Claude Code (Opus 5.5) from section 11, which is unchanged, and from section 14. Time
+items use the medians of `wall_s` and of the phases over the six measured runs, and memory items the
+medians of peak total RSS._
+
+| Section 11 | Predicted | Measured | Result |
+| --- | --- | --- | --- |
+| S, median time | 26.5 s, band 21.2–31.8 s | 26.407 s | inside, 0.4% below the point |
+| P, median time | 40 s, band 28–60 s | 15.377 s | outside: 61.6% below the point, 12.6 s below the band |
+| S, median peak | 2.5–2.9 GiB | 2.680 GiB | inside |
+| P, median peak | 0.8–1.8 GiB | 1.968 GiB | outside: 0.168 GiB above the range |
+| Abort limits | 80 and 120 s | longest runs 27.9 and 15.7 s | no run aborted |
+| 11.1, time | P slower than S by more than 10%, in both halves | P shorter: d = +11.030 s, with d1 and d2 of the same sign | contradicted: the ranking is reversed |
+| 11.1, memory | P lower than S by more than 0.2 GiB, in both halves | d = +0.712 GiB, with d1 and d2 of the same sign | as predicted |
+| 11.2, P's `model_and_path_days` | 21–44 s: the model alone 19–39 s, and building and writing the path-day rows 2–5 s | 12.134 s | below the range |
+| 11.2, P's other phases | window statistics with input reading 1–3 s, summaries 3–6 s, checks 1–3 s, process start about 1 s | 0.308, 1.479 and 0.974 s, and 0.408 s outside the pipeline's clock | each below its estimate |
+
+- The model's estimate rested on an assumption (11.2): S's model phase used its eight workers at
+  50–100% efficiency, so one core would need 3.6–7.2 ms per window for the model alone. P's whole
+  model phase, the `path_days` write included, took 12.134 s, or 2.26 ms per window.
+- P's model phase took 1.41 times as long as S's (12.134 against 8.622 s). The two phases do not do
+  the same work (5), so this ratio does not measure parallel efficiency.
+- P's peak, all in one process, exceeded the predicted range; the records do not show which data
+  the process held at its peak.
+
+**Answer (author).** Spark matched its predicted ranges. Pandas was faster than predicted but used
+more memory than predicted, reversing the expected time ranking. The estimate overstated pandas's
+model and other phase times. The predicted memory ranking held, but the records do not explain why
+pandas's peak exceeded its range.
+
+### 15.5 (e) What these measurements cannot show
+
+> What can these measurements not show?
+
+**Answer (author).** These results cover one machine and workload. No drift was detected, but that
+does not prove constant conditions. Sampling and implementation differences limit causal claims and
+conclusions about larger workloads.
+
 ## History of this document
 
 **Draft** (2026-10-22): the design from the author's decisions, the code and its validation, for the
@@ -421,3 +718,9 @@ author's review.
 
 This version is committed before any measured run, together with the code of section 4, on
 `feature/pandas-baseline`.
+
+**Part B** (2026-10-22). Section 14 gives batch-1's results as facts, and section 15 the author's
+answers, with facts drafted by Claude Code; the changes after Claude Code's review are listed at the
+start of section 15. The status at the top now describes both parts, the author's authorship line
+was added, and a line marks the end of Part A. Sections 1–13, the predictions included, are
+unchanged. This version is committed on `feature/pandas-baseline` after the formal session.
