@@ -17,7 +17,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Three Spark SQL analyses of the results ([`analysis/`](analysis/)) | Implemented |
 | Docker image for the pipeline | Implemented |
 | Stride experiment: runtime and memory at strides 21, 14 and 7 ([docs/experiments.md](docs/experiments.md)) | Complete; drift detected, stride 3 exploratory only |
-| Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Design, code and predictions committed (Part A); measurements pending |
+| Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Complete; B (200 partitions, coalescing off) slower than A and C; no clear memory difference; outputs within tolerance |
 | Caching experiment | Optional |
 | Figures and final write-up | Planned |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
@@ -27,8 +27,8 @@ are not forecasts, and the model ignores fees, financing and execution.
 1. **This README**: status, key results and how to run everything.
 2. **[docs/spec.md](docs/spec.md)**: the research questions (§2), the model and
    its assumptions (§3), how results are checked (§6), the window design (§7),
-   the full results of the stride-21 run and a summary of the stride
-   experiment (§8).
+   the full results of the stride-21 run and summaries of the stride and
+   shuffle-partition experiments (§8).
 3. **[docs/data-sources.md](docs/data-sources.md)**: where the data comes from,
    the checks run on it, and what is not verified.
 4. **[docs/experiments.md](docs/experiments.md)**: the stride experiment, with
@@ -37,10 +37,11 @@ are not forecasts, and the model ignores fees, financing and execution.
    [`collect_measurements.py`](analysis/collect_measurements.py) builds its
    measurements CSV from the run records.
 5. **[docs/partition-experiment.md](docs/partition-experiment.md)**: the
-   shuffle-partition experiment's design, rules and predictions (Part A,
-   committed before any measured run), with its
-   [session helpers](docs/partition-session.zsh) and
-   [collector](analysis/collect_partition_measurements.py).
+   shuffle-partition experiment, with its design, rules and predictions
+   (committed before any measured run), run log, deviations, measurements,
+   plans and answers; the [session helpers](docs/partition-session.zsh) ran
+   its session, and the [collector](analysis/collect_partition_measurements.py)
+   builds its measurements CSV and checks its acceptance criteria.
 6. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
@@ -82,11 +83,11 @@ overlap, so these numbers describe one history, not independent samples; spec
   −12.3%, while AAPL's rises from 35.2% to 48.5%. It shows how much a result
   depends on periods with extreme days, not whether those days are data errors.
 - Runtime and memory were measured on one Apple Silicon laptop (8 cores, 8 GiB
-  RAM), with Spark in local mode and default settings; the numbers describe
-  that machine and configuration, not others. For the run of record, the
-  median wall time over three measured runs was 44.7 s and the median peak
-  memory 1.27 GiB (summed resident memory of the run's processes, sampled
-  every 0.25 s).
+  RAM), with Spark in local mode and, apart from the shuffle-partition
+  experiment, default settings; the numbers describe that machine and those
+  configurations, not others. For the run of record, the median wall time over
+  three measured runs was 44.7 s and the median peak memory 1.27 GiB (summed
+  resident memory of the run's processes, sampled every 0.25 s).
 - The stride experiment ([docs/experiments.md](docs/experiments.md)) measured
   the same stride-21 workload and strides 14 and 7 (1.5 and 3 times the
   windows) on 2026-10-19: median wall times 22.2, 20.3 and 25.7 s, median
@@ -100,14 +101,28 @@ overlap, so these numbers describe one history, not independent samples; spec
   comparisons across strides are marked as affected. Stride 3 was run although
   the experiment's memory rule did not admit it; its results (40.2 s,
   2.73 GiB) are exploratory only.
+- The shuffle-partition experiment
+  ([docs/partition-experiment.md](docs/partition-experiment.md)) ran the
+  stride-7 workload on 2026-10-22 (UTC) with three settings: A, Spark's
+  defaults (200 shuffle partitions, AQE coalescing on); B, 200 partitions with
+  coalescing off; C, 8 partitions with coalescing off. Eight runs each, in the
+  order A–B–C–C–B–A, all passed every check. Median times without the plan
+  recording were 26.5, 44.6 and 25.3 s: B's was 69% longer than A's and 77%
+  longer than C's, in the same direction in both halves of the order, while A
+  and C showed no clear difference. Median peaks were 2.69 GiB in all three,
+  and `paired` and `path_summary` matched A's within the tolerance. In B, one
+  join stayed a sort-merge join where AQE chose a broadcast join in A and C.
+  No drift was detected; the machine checks were recorded only before the
+  first protocol, and the last protocol followed a two-hour break.
 
 ## Running
 
 Requires Python 3.12, Java 17 and [uv](https://docs.astral.sh/uv/); run the
 commands from the repository root. Memory use has been measured on one machine
-only (see Key results): there, runs at strides 21 to 7 peaked at 1.2 to 2.7 GiB,
-and the exploratory stride-3 runs at up to 2.8 GiB; other machines and settings
-have not been measured.
+only (see Key results): there, runs at strides 21 to 7 peaked at 1.2 to 2.8 GiB,
+and the exploratory stride-3 runs at up to 2.8 GiB; other machines, and Spark
+settings beyond the shuffle-partition experiment's three, have not been
+measured.
 
 ```bash
 uv sync                                    # .venv from uv.lock
@@ -214,8 +229,9 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   project's machine.
 - **Performance measurement**: fresh-process runs with memory sampling and a
   stop rule; a stride experiment whose design and predictions were committed
-  before any measured run; a shuffle-partition experiment whose design, code
-  and predictions are committed, with its measurements pending.
+  before any measured run; a shuffle-partition experiment, likewise committed
+  in advance, that compared three partition settings and recorded the
+  partition counts Spark used.
 
 ## AI assistance
 
@@ -244,11 +260,10 @@ together with how it was checked.
 
 ## Next steps
 
-1. **Performance experiments** (mine): the stride experiment is complete
-   ([docs/experiments.md](docs/experiments.md)). The shuffle-partition
-   experiment's Part A is committed
-   ([docs/partition-experiment.md](docs/partition-experiment.md)), and its
-   formal session is next. A caching experiment is optional.
+1. **Performance experiments** (mine): the stride and shuffle-partition
+   experiments are complete ([docs/experiments.md](docs/experiments.md),
+   [docs/partition-experiment.md](docs/partition-experiment.md)). A caching
+   experiment is optional.
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4).
