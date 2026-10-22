@@ -1,0 +1,217 @@
+# Claude Code message 22
+
+Session: `c82fe879-2a08-4e8f-a4c7-740b70b55e9a` · prompt sent 2026-10-19 16:20 (local time)
+
+Redacted record: [transcript.jsonl](transcript.jsonl)
+
+This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
+
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×405, home ×610, model-reasoning ×12, user ×44. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+
+## 1. User — 2026-10-19T21:20:05.279Z
+
+1. Treat task counts as observations, not pass/fail criteria. Verify settings through recorded configuration and execution plans.
+2. Compare both paired and path_summary outputs against A by their full keys. Check missing/duplicate keys, row counts, NULLs, breach flags and numeric values with an explicit tolerance.
+3. Put the complete proposal in docs/partition-experiment.md: A/B/C settings, A–B–C–C–B–A order, repeats, measurements, drift rules, comparison method and acceptance criteria. Mark it as a draft awaiting review.
+Keep existing predictions and records unchanged. Do not implement pipeline changes, run measurements, commit or push yet.
+
+## 2. Assistant — 2026-10-19T21:23:20.572Z
+
+I'll check the exact keys and column names first, so the comparison rules in the document name real columns.
+
+## 3. Assistant — 2026-10-19T21:23:24.429Z
+
+### Tool call: Bash
+
+```
+{
+  "command": "grep -n \"^WINDOW_KEY\" src/etf_risk/windows.py && uv run python - <<'EOF'\nimport json\nfrom pathlib import Path\nimport pyarrow.dataset as ds\nrun_dir = sorted(Path(\"data/outputs-experiments/full-2026-10-12/rolling-252-s7\").glob(\"run-*-2\"))[0]\nfor table in (\"paired\", \"path_summary\"):\n    schema = ds.dataset(run_dir / table, format=\"parquet\").schema\n    print(table, len(schema.names), \"columns:\")\n    print(\"  \", \", \".join(f\"{f.name}:{f.type}\" for f in schema))\n    files = [p for p in (run_dir / table).rglob(\"*.parquet\")]\n    print(\"   files:\", len(files))\nprint(\"path_days files:\", len(list((run_dir / \"path_days\").rglob(\"*.parquet\"))), \"| window_stats files:\", len(list((run_dir / \"window_stats\").rglob(\"*.parquet\"))))\nrun = json.loads((run_dir / \"run.json\").read_text())\nprint(\"spark_version:\", run[\"spark\"][\"spark_version\"], \"| master:\", run[\"spark\"][\"spark.master\"])\nEOF",
+  "description": "Show window key, output schemas and file counts of a stride-7 run"
+}
+```
+
+## 4. User — 2026-10-19T21:23:26.547Z
+
+### Tool result
+
+```
+67:WINDOW_KEY = ["window_kind", "ticker", "window_days", "entry_date"]
+paired 38 columns:
+   window_kind:string, ticker:string, window_days:int32, entry_date:date32[day], n_paths:int64, n_leverages:int64, return_1x:double, return_2x:double, mdd_1x:double, breached_1x:bool, breached_2x:bool, breach_date_2x:date32[day], breach_day_2x:int32, last_ok_date_2x:date32[day], days_ok_2x:int64, n_turnover_days_2x:int64, first_return_date:date32[day], exit_date:date32[day], contains_unverified_day:bool, unverified_day_count:int32, entry_on_unverified_day:bool, realized_variance:double, sum_abs_return:double, max_abs_return:double, price_return:double, mdd_2x:double, mdd_2x_pre_breach:double, mean_turnover_2x:double, mean_turnover_2x_pre_breach:double, max_turnover_2x:double, max_turnover_2x_pre_breach:double, total_turnover_2x:double, total_turnover_2x_pre_breach:double, exact_gap:double, log_gap:double, approx_gap:double, approx_rel_error:double, mdd_bound:double
+   files: 1
+path_summary 34 columns:
+   window_kind:string, ticker:string, window_days:int32, entry_date:date32[day], leverage:double, n_rows:int64, n_distinct_days:int64, max_day:int32, days_ok:int64, breached:bool, n_breach_rows:int64, breach_day:int32, breach_date:date32[day], last_ok_date:date32[day], n_valid_nav:int64, n_valid_drawdown:int64, n_turnover_days:int64, n_valid_rebalance:int64, final_nav:double, max_drawdown:double, mean_turnover:double, max_turnover:double, total_turnover:double, max_turnover_date:date32[day], total_abs_rebalance:double, max_abs_rebalance:double, total_return:double, first_return_date:date32[day], exit_date:date32[day], stride:int32, calendar_year:int32, contains_unverified_day:bool, unverified_day_count:int32, entry_on_unverified_day:bool
+   files: 8
+path_days files: 40 | window_stats files: 1
+spark_version: 4.2.0 | master: local[*]
+```
+
+## 5. Assistant — 2026-10-19T21:25:24.323Z
+
+### Tool call: Bash
+
+```
+{
+  "command": "uv run python - <<'EOF'\nimport json\nfrom pathlib import Path\nbase = Path(\"data/outputs-experiments/full-2026-10-12/rolling-252-s7\")\nproto = json.loads(next(base.glob(\"protocol-20261019T035809Z.json\")).read_text())\nfor entry in proto[\"runs\"]:\n    d = base / entry[\"run_id\"]\n    run = json.loads((d / \"run.json\").read_text())\n    tasks = [run[\"stage_task_counts\"][g][\"tasks\"] for g in (\"window_stats\", \"model\", \"summaries\", \"checks\")]\n    files = [len(list((d / t).rglob(\"*.parquet\"))) for t in (\"window_stats\", \"path_days\", \"path_summary\", \"paired\")]\n    print(entry[\"run_id\"], \"warmup\" if entry[\"warmup\"] else \"measured\", \"tasks\", tasks, \"files\", files)\nEOF",
+  "description": "Check task and file counts across all stride-7 runs"
+}
+```
+
+## 6. User — 2026-10-19T21:25:25.011Z
+
+### Tool result
+
+```
+run-20261019T035809Z-1 warmup tasks [53, 22, 81, 100] files [1, 40, 8, 1]
+run-20261019T035809Z-2 measured tasks [53, 22, 81, 100] files [1, 40, 8, 1]
+run-20261019T035809Z-3 measured tasks [53, 22, 81, 100] files [1, 40, 8, 1]
+run-20261019T035809Z-4 measured tasks [53, 22, 81, 100] files [1, 40, 8, 1]
+```
+
+## 7. Assistant — 2026-10-19T21:25:48.835Z
+
+All four stride-7 runs agree, with the same task counts and file counts, so the draft can cite them as records rather than guesses. Writing the draft:
+
+## 8. Assistant — 2026-10-19T21:26:37.935Z
+
+### Tool call: Write
+
+````
+{
+  "file_path": "~/leveraged-etf-risk-analytics/docs/partition-experiment.md",
+  "content": "# Shuffle-partition experiment\n\n**Draft, awaiting the author's review.** Nothing in this document is implemented, measured or\ncommitted. The pipeline has no partition flags and records no execution plans yet, and no run has\nbeen made. Every part may change at review. Once approved, this document becomes Part A, together\nwith the author's predictions (section 11). It is committed with the code changes of section 4\nbefore any measured run. Part B (results and answers) will follow section 13.\n\n_Drafted with Claude Code (Opus 5.5) on 2026-10-19 from the author's decisions listed in 1.2, from\n`spark_pipeline.py`, `measure.py` and `windows.py`, and from the stride experiment's records.\nEverything not listed in 1.2 is Claude Code's proposal; section 13 collects these proposals. The\nauthor's authorship line follows the review._\n\nThis experiment changes neither the stride experiment ([experiments.md](experiments.md)) nor its\npredictions or records. It writes only under `data/outputs-partitions/`.\n\n## 1. Question and decisions\n\n### 1.1 Question\n\nFor a fixed workload, how do the requested number of shuffle partitions and AQE's partition\ncoalescing change runtime and peak memory, and do they change any result? This is the partitioning\npart of research question 3 (spec §2). The data, model, window set, leverages, code and all other\nSpark settings stay fixed. The machine is the stride experiment's (Apple M2 MacBook Air, 8 cores,\n8 GiB RAM).\n\n### 1.2 Decided by the author (2026-10-19)\n\n- Three configurations, A, B and C (2.1), with AQE enabled in all of them.\n- The stride-7 window set of the stride experiment as the only workload (2.2).\n- Order A–B–C–C–B–A, with four fresh-process runs per protocol: one warm-up, three measured (2.3).\n- Code and dependency hashes are identical across all new runs, and the input checksums are\n  verified. The new code hashes need not match the code that built the window set (3.1, 10).\n- Settings are verified through the recorded configuration and the execution plans (6). Task\n  counts are observations, not pass/fail criteria (5).\n- `paired` and `path_summary` of every run are compared with A by their full keys: missing and\n  duplicate keys, row counts, NULLs, breach flags, and numeric values within an explicit\n  tolerance (7).\n- Deferred: other configurations and extensive diagnostic tooling (12).\n\n## 2. Configurations, workload and order\n\n### 2.1 Configurations\n\n| Configuration | `spark.sql.shuffle.partitions` | `spark.sql.adaptive.enabled` | `spark.sql.adaptive.coalescePartitions.enabled` | Role |\n| --- | ---: | --- | --- | --- |\n| A | 200 | `true` | `true` | Spark's defaults, as in the stride experiment |\n| B | 200 | `true` | `false` | the same requested count, not coalesced |\n| C | 8 | `true` | `false` | one partition per core (`default_parallelism` is 8), not coalesced |\n\nAll other settings are the pipeline's (`local[*]`, UI off, UTC session time zone) and Spark's\ndefaults. Because AQE stays enabled, its other runtime rules still apply in B and C. For example,\nit can turn a sort-merge join into a broadcast join and then read that shuffle locally. Only\ncoalescing is switched off.\n\nA against B shows what coalescing does with 200 requested partitions. B against C shows what the\nrequested count does without coalescing. A against C compares Spark's defaults with an explicit\nsmall count.\n\n### 2.2 Workload\n\nThe workload is the stride-7 set in `data/windows-experiments/full-2026-10-12/rolling-252-s7`,\nunchanged: 5,364 windows and 1,351,728 window-member rows (experiments.md 2.2). Its runs in the\nstride experiment wrote 2,698,866 path-day rows. It is the largest workload the stride experiment\nadmitted. Each run verifies seven SHA-256 values recorded in its `config.json` before Spark starts:\n`windows.parquet`, the five daily-return files and `quality_report.json`. On any mismatch it exits\nwith code 3.\n\n### 2.3 Order and repeats\n\nThere are six protocols, at positions 1 to 6: A, B, C, C, B, A. Each protocol is one\n`etf_risk.measure` call with `--repeats 4`: four fresh-process runs, the first of them a warm-up.\n`measure` summarizes the three measured runs that ended `ok`. Each configuration therefore has two\nprotocols, eight runs and six measured runs.\n\nEach configuration's two positions average 3.5. A drift that changes linearly over the session\ntherefore shifts the pooled results of all three configurations by the same amount. A's two\nprotocols span the session (positions 1 and 6); C's run back to back (3 and 4).\n\n### 2.4 Commands and records\n\nFrom the repository root, using the flags of 4.1 (not implemented yet):\n\n```bash\ncaffeinate -i uv run --group measure python -m etf_risk.measure --repeats 4 -- \\\n    --windows data/windows-experiments/full-2026-10-12/rolling-252-s7 \\\n    --out-root data/outputs-partitions/<A|B|C> \\\n    --shuffle-partitions <200|8> --coalesce <on|off>\n```\n\nRecords go to `data/outputs-partitions/<A|B|C>/full-2026-10-12/rolling-252-s7/`: one\n`protocol-<UTC time>.json` per protocol, and one folder and one `.log` per run. Each configuration's\ntwo protocols share a folder; their protocol times tell them apart. Nothing is written under\n`data/outputs/` or `data/outputs-experiments/`.\n\n### 2.5 Earlier records with A's settings\n\nThe stride experiment's stride-7 protocol `20261019T035809Z` ran this workload with A's settings,\nat commit `0e3c130`:\n\n- median wall time 25.660 s (24.699–26.001 s);\n- median peak total RSS 2.705 GiB, and 2.681–2.714 GiB over all four runs;\n- in all four runs, 53, 22, 81 and 100 tasks in the phases `window_stats`, `model`, `summaries`\n  and `checks`;\n- in all four runs, 1, 40, 8 and 1 files written in `window_stats`, `path_days`, `path_summary` and\n  `paired`.\n\nThese are earlier records under an older code state. They are used only descriptively (8).\n\n## 3. Run conditions and stop rules\n\n### 3.1 Code state\n\n- One code state for all six protocols: the same commit, `source_sha256` and `uv_lock_sha256`, and\n  `git_worktree_clean: true`, in the `code` record of every protocol JSON and every `run.json`.\n- The new code state is not compared with `windows_config.code`, the code that built the window set\n  (`a7fb72d`). The window set itself must be unchanged (10, criterion 2).\n- The following are committed before the first measured run: the code changes of section 4 and\n  their tests, this document, and the author's predictions. `src/`, `pyproject.toml` and `uv.lock`\n  then stay unchanged from the first protocol to the last.\n\n### 3.2 Machine state before each protocol\n\nThe conditions of experiments.md 3.2 apply:\n\n- Low Power Mode off and mains power;\n- Docker Desktop, VS Code and other apps quit;\n- a 5-minute pause;\n- at least 3.0 GiB available just before the start.\n\nProposed additions, from the stride experiment's run log (experiments.md 5.2, 5.3):\n\n- No protocol starts within 30 minutes of a boot (`sysctl -n kern.boottime`).\n- The 5-minute load average, read just before the start, is at most a limit the author sets (4.0\n  is suggested).\n- After any app is quit, the checks are repeated, so the run log shows the state at the start.\n\nSession helpers in a new file write these checks into a run log. `docs/stride-session.zsh` stays\nunchanged, since experiments.md 5.2 cites it by hash.\n\n### 3.3 Stop rules, aborts and failures\n\n- `measure`'s stop rule is unchanged (60% of physical RAM, 4.80 GiB).\n- A run that takes longer than 3× the author's predicted median for its configuration (11) is\n  aborted by killing its pipeline process, as in experiments.md 3.6.\n- `checks_failed`: stop the experiment and investigate.\n- `failed` or `memory_threshold_exceeded`: stop the session and keep everything. At most one re-run\n  of that protocol is allowed, in the same position and with a written reason.\n- All runs and records are kept; nothing is deleted or overwritten.\n\n## 4. Code changes needed before any measured run (not implemented)\n\n### 4.1 Pipeline flags\n\n- `--shuffle-partitions N` (an integer of at least 1) sets `spark.sql.shuffle.partitions`.\n- `--coalesce on|off` sets `spark.sql.adaptive.coalescePartitions.enabled`.\n\nBoth are unset by default, so existing commands, runs and records behave as before. `build_spark`\nalready accepts a partition count. A test checks that each flag reaches the session's settings, and\nthat leaving both out keeps Spark's defaults.\n\n### 4.2 Execution plans\n\nThe pipeline does not record execution plans yet. Proposed: after the last timed phase, next to\nthe row counts, it writes `plans.json` into the run folder. For every SQL execution of the run, the\nfile holds:\n\n- the final physical plan text;\n- the phase (job group) of the execution's jobs.\n\nWith AQE, the final plan exists only after execution. Spark keeps it in its SQL status store, which\nthe pipeline would read through the JVM gateway. That is an internal interface, so this use is tied\nto the recorded Spark version (4.2.0). A test on a small window set checks that it works, including\nwith the UI disabled.\n\nThe time this takes is recorded as its own timing, `plan_capture`. It grows with the number of SQL\nexecutions, which is the same in A, B and C, not with the number of tasks. Spark's event log also\nholds the plans, but it writes one record per task, so its cost grows with the variable under test.\nIt stays deferred (12).\n\n### 4.3 Collector and output comparison\n\nA collector builds `data/outputs-partitions/measurements.csv`, either as a new script or as an\nextension of `analysis/collect_measurements.py`. It writes one row per started run, with:\n\n- the stride experiment's columns (experiments.md 5.6);\n- the configuration, read from the recorded settings;\n- the protocol position and `plan_capture_s`;\n- the observations of section 5.\n\nIt also runs the checks of sections 6, 7 and 10. If `collect_measurements.py` is extended,\nrebuilding the stride experiment's CSV must still give a byte-identical file (SHA-256\n`9b7dcf512c13963d…`).\n\n## 5. Measurements\n\n| Group | Values | From |\n| --- | --- | --- |\n| Time | `wall_s`; the phases `session_start`, `window_stats_and_construction_check`, `model_and_path_days`, `summaries_and_pairing`, `checks`, `total_in_process`; `plan_capture` | `measure`; `timings_seconds` in `run.json` |\n| Memory | free memory before the run; peak RSS in total and per process type; samples; processes seen; threshold crossing | `measure` |\n| Configuration | recorded Spark settings and environment | `spark` and `environment` in `run.json` |\n| Execution plans | final physical plan of every SQL execution, with its phase | `plans.json` (4.2) |\n| Results | status, check violations, row counts; the `paired` and `path_summary` tables | `run.json`, `checks.json`, run folder |\n| Provenance | code state, verified input checksums, window config | `run.json`, protocol JSON |\n| Run conditions | the 3.2 checks, boot time, load average, pauses, memory readings, deviations | run log |\n\nReported as observations, never as pass/fail criteria:\n\n- task counts per phase (`stage_task_counts`: jobs, stages, tasks);\n- files written per output table, counted in each run folder;\n- from the plans: shuffle reads marked coalesced or local, and joins that ran as broadcast joins.\n\nSummaries use the measured runs that ended `ok`, as experiments.md 3.7 does. They give medians and\nmin–max of wall time, phases and peak total RSS, per protocol and per configuration (six runs). The\nmemory statistic is the median of `peak_rss_total_bytes` over the measured runs. The largest value\nover all runs, warm-ups included, is reported next to it.\n\nNot measured (12): partition sizes, shuffle bytes, spill, CPU time and GC time.\n\n## 6. Settings verification\n\nEach run is checked against its configuration in two ways.\n\n1. **Recorded configuration.** The `spark` section of `run.json` shows the configuration's three\n   values (2.1). Every other recorded Spark setting, and the recorded environment, are identical in\n   all 24 runs. Any difference from the stride experiment's stride-7 runs, apart from the varied\n   settings, is reported.\n2. **Execution plans** (`plans.json`):\n   1. Every plan that contains an exchange is adaptive: an `AdaptiveSparkPlan` with\n      `isFinalPlan=true`.\n   2. Every hash- or range-partitioning exchange uses the configuration's count:\n      `hashpartitioning(…, 200)` in A and B, `hashpartitioning(…, 8)` in C. Single-partition and\n      broadcast exchanges do not depend on the setting; they are only listed.\n   3. In B and C, no shuffle read is marked coalesced: no `AQEShuffleRead` with the argument\n      `coalesced`, whether alone or with `skewed`.\n   4. In A, the coalesced reads are counted and reported. Whether and where AQE coalesces is an\n      outcome, not a setting.\n\nItems 1, 2.1, 2.2 and 2.3 are pass/fail criteria (10, criterion 3). Item 2.4 and the task counts\nare observations.\n\n## 7. Output comparison with A\n\n**Reference:** the first measured run of A at position 1 (that protocol's run 2). Every other run of\nthis experiment is compared with it, warm-ups included (23 runs). So is run 2 of the stride\nexperiment's stride-7 protocol: it used A's settings with the earlier code, so it shows whether the\ncode changes of section 4 alter any result. Tables are read with PyArrow, which keeps null and NaN\ndistinct.\n\n| Table | Full key | Rows at stride 7 |\n| --- | --- | ---: |\n| `paired` | `window_kind`, `ticker`, `window_days`, `entry_date` | 5,364 |\n| `path_summary` | `window_kind`, `ticker`, `window_days`, `entry_date`, `leverage` | 10,728 |\n\nFor each table, a run passes if all of these hold:\n\n1. **Rows:** its row count equals the reference's.\n2. **Keys:** no key column is null and no key occurs twice. The run and the reference have exactly\n   the same keys: none missing, none extra.\n3. **Columns:** the same columns, with the same types.\n4. **NULLs:** every column is null in exactly the same rows as in the reference, with rows matched\n   by key.\n5. **Breach fields** are equal exactly:\n   - in `paired`: `breached_1x`, `breached_2x`, `breach_date_2x`, `breach_day_2x`, `last_ok_date_2x`\n     and `days_ok_2x`;\n   - in `path_summary`: `breached`, `n_breach_rows`, `breach_day`, `breach_date`, `last_ok_date` and\n     `days_ok`.\n6. **Other non-floating columns:** every other string, date, integer and boolean column is equal\n   exactly.\n7. **Floating-point columns:** each value x satisfies `|x − r| ≤ 1e-12 + 1e-9 × |r|`, where r is the\n   reference value, and NaN matches only NaN. The largest absolute and relative difference per\n   column is reported, even when the run passes.\n\nThe tolerance is the pipeline's own tolerance for the 1x identity (`RTOL` = 1e-9, `ATOL` = 1e-12).\nSpark may add the terms of a sum or average in an order that depends on partitioning, which can\nchange the last bits. The reported differences show how far below the tolerance they stay.\n`path_days` (2.7 million rows) and `window_stats` are compared by row count only, from `run.json`.\n\n## 8. Drift rules\n\n1. **Session drift.** If A's protocol medians at positions 1 and 6 differ by more than 10% of the\n   first, drift is reported and comparisons are marked as affected. Nothing is re-run silently.\n   This is the rule of experiments.md 3.4.\n2. **Pairs.** The same rule applies to B (positions 2 and 5) and C (3 and 4). The C pair runs back\n   to back, so it shows the variation between protocols with little time for drift.\n3. **Memory.** Pairs whose median peak total RSS differs by more than 0.2 GiB are reported.\n4. **Context.** For each protocol, the free memory before each run, the load average and the time\n   since boot are shown next to the pair differences. No rule applies to them.\n5. **Earlier records.** A is compared with the stride experiment's stride-7 protocol (2.5)\n   descriptively only, since the code state and the day differ.\n\nDrift does not void the results. It is reported, and section 9 still applies.\n\n## 9. Comparing configurations\n\nFor two configurations X and Y:\n\n- d1 is the difference between their protocol medians in positions 1–3;\n- d2 is the same difference in positions 4–6;\n- d is the difference between the medians of their six measured runs.\n\nThe rules:\n\n- **Wall time.** X and Y differ if |d| is more than 10% of A's six-run median and d1, d2 and d have\n  the same sign. Otherwise there is no clear difference.\n- **Peak memory.** The same rule, with a threshold of 0.2 GiB on the median peak total RSS. That is\n  just above the largest spread within one protocol in the stride experiment (0.185 GiB).\n- **Phases** are described with d1, d2 and d, without a threshold.\n- **Plans, task counts and file counts** are described, not tested.\n\nWith two protocols per configuration, this is a descriptive rule, not a statistical test.\n\n## 10. Acceptance criteria\n\nThe results are used only if all of these hold:\n\n1. **Code state:** 3.1 holds in all 6 protocol JSONs and all 24 `run.json` files.\n2. **Inputs:** each run's `verified_sha256` holds exactly the seven inputs of 2.2, each equal to the\n   hash in the stride-7 `config.json`, and each run's `windows_config` equals that file. After the\n   session, the seven hashes are computed once more and are unchanged.\n3. **Settings:** section 6, items 1 and 2.1–2.3, hold for every run.\n4. **Results:** every run ended `ok` with zero check violations. Section 7 passes for every run and\n   for the stride-experiment run.\n5. **Completeness:** each of the six protocols started 4 of 4 runs and all ended `ok`. None stopped\n   early, none was aborted, and no sample exceeded 4.80 GiB.\n6. **Run conditions:** 3.2 holds before each protocol. A departure is recorded as a deviation, and\n   the protocol's results are labeled with it, as in experiments.md 5.3.\n\nIf criterion 1, 2 or 3 fails, no configurations are compared until the cause is found. Failures\nunder criteria 4 and 5 are handled as in 3.3. Drift (section 8) is not an acceptance criterion.\n\n## 11. Predictions\n\n_The author writes this section before any measured run._ For each configuration it gives:\n\n- the median wall time, with a band;\n- the peak memory statistic of section 5, with a range;\n- the plans and task counts expected.\n\nThe abort limits follow from the predicted medians (3.3). The stride experiment's predictions\n(experiments.md section 4) stay unchanged.\n\n## 12. Deferred\n\n- other partition counts, for example 2 or 32;\n- running with AQE disabled;\n- Spark's event log and per-stage task lists;\n- partition sizes, shuffle bytes, spill, CPU time and GC time;\n- a full comparison of `path_days`;\n- caching.\n\n## 13. Proposals awaiting review\n\nThese are Claude Code's proposals in this draft, beyond the author's decisions in 1.2:\n\n- the run conditions added in 3.2 (boot wait, load-average limit, repeated checks);\n- the plan recording of 4.2, read from Spark's SQL status store;\n- in section 7, the choice of reference run, the tolerance, and the comparison with the stride\n  experiment's stride-7 run;\n- the drift and memory thresholds (8) and the comparison rule (9);\n- one output folder per configuration (2.4), and Part B in this file.\n"
+}
+````
+
+## 9. User — 2026-10-19T21:26:39.078Z
+
+### Tool result
+
+```
+File created successfully at: ~/leveraged-etf-risk-analytics/docs/partition-experiment.md (file state is current in your context — no need to Read it back)
+```
+
+## 10. Assistant — 2026-10-19T21:26:50.446Z
+
+Checking the draft: line widths, links, privacy patterns, and that every column name it cites exists in the real output schemas.
+
+## 11. Assistant — 2026-10-19T21:26:57.726Z
+
+### Tool call: Bash
+
+````
+{
+  "command": "uv run python - <<'EOF'\nimport re\nfrom pathlib import Path\nimport pyarrow.dataset as ds\ndoc = Path(\"docs/partition-experiment.md\")\ntext = doc.read_text(encoding=\"utf-8\")\nproblems = 0\nin_code = False\nfor n, line in enumerate(text.splitlines(), 1):\n    if line.startswith(\"```\"):\n        in_code = not in_code\n        continue\n    if not in_code and not line.lstrip().startswith(\"|\") and len(line) > 100:\n        print(f\"line {n}: {len(line)} chars\"); problems += 1\n    for target in re.findall(r\"\\]\\(([^)]+)\\)\", line):\n        if not target.startswith(\"http\") and not (doc.parent / target.split(\"#\")[0]).exists():\n            print(f\"line {n}: missing link {target}\"); problems += 1\nplan = re.compile(\"implementation\" + \"[-_ ]\" + \"plan\", re.I)\nfor rx, name in ((plan, \"plan\"), (re.compile(r\"/Users/|/private/\"), \"path\"), (re.compile(r\"[\\w.+-]+@[\\w-]+\\.[a-z]{2,}\"), \"email\"),\n                 (re.compile(\"[\" + chr(0x3040) + \"-\" + chr(0x30FF) + chr(0x4E00) + \"-\" + chr(0x9FFF) + chr(0xAC00) + \"-\" + chr(0xD7AF) + \"]\"), \"CJK\")):\n    hits = [n for n, l in enumerate(text.splitlines(), 1) if rx.search(l)]\n    if hits:\n        print(name, \"hits at lines\", hits); problems += 1\nrun_dir = sorted(Path(\"data/outputs-experiments/full-2026-10-12/rolling-252-s7\").glob(\"run-*-2\"))[0]\ncited = {\"paired\": [\"window_kind\", \"ticker\", \"window_days\", \"entry_date\", \"breached_1x\", \"breached_2x\", \"breach_date_2x\",\n                    \"breach_day_2x\", \"last_ok_date_2x\", \"days_ok_2x\"],\n         \"path_summary\": [\"window_kind\", \"ticker\", \"window_days\", \"entry_date\", \"leverage\", \"breached\", \"n_breach_rows\",\n                          \"breach_day\", \"breach_date\", \"last_ok_date\", \"days_ok\"]}\nfor table, cols in cited.items():\n    names = set(ds.dataset(run_dir / table, format=\"parquet\").schema.names)\n    missing = [c for c in cols if c not in names]\n    if missing:\n        print(table, \"missing columns\", missing); problems += 1\n    if f\"`{table}`\" not in text:\n        print(\"table not named\", table); problems += 1\nprint(\"lines:\", len(text.splitlines()), \"| problems:\", problems)\nEOF\ngit status --short -- . ':!docs/ai-usage'",
+  "description": "Check the draft's widths, links, privacy and column names"
+}
+````
+
+## 12. User — 2026-10-19T21:26:59.365Z
+
+### Tool result
+
+```
+lines: 361 | problems: 0
+ M README.md
+ M docs/experiments.md
+ M docs/spec.md
+?? analysis/collect_measurements.py
+?? docs/partition-experiment.md
+```
+
+## 13. Assistant — 2026-10-19T21:27:11.549Z
+
+The draft passes every check. Updating memory so it points to the draft as the full design:
+
+## 14. Assistant — 2026-10-19T21:27:18.179Z
+
+### Tool call: Write
+
+```
+{
+  "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
+  "content": "---\nname: partition-experiment-proposal\ndescription: Shuffle-partition experiment; full draft in docs/partition-experiment.md (untracked, marked draft awaiting review); nothing implemented, measured or committed\nmetadata:\n  type: project\n---\n\nThe complete proposal is `docs/partition-experiment.md`, written 2026-10-19 and marked as a draft awaiting the author's review. Its section 1.2 lists the author's decisions, and section 13 lists Claude Code's proposals still to be reviewed. The draft is the design's single source; this note only records the decisions and their status.\n\nAuthor's decisions (2026-10-19):\n- A = 200 partitions, coalescing on; B = 200, off; C = 8, off. AQE enabled in all three.\n- Stride-7 set; order A-B-C-C-B-A; `--repeats 4` per protocol.\n- Identical code and dependency hashes across the new runs, and verified input checksums. The new hashes need not match the old window-building code.\n- Task counts are observations, not pass/fail criteria. Settings are verified through the recorded configuration and the execution plans. The draft proposes `plans.json` read from Spark's SQL status store, outside the timed phases.\n- `paired` and `path_summary` of every run are compared with A by their full keys: rows, keys, columns, NULLs, breach fields, and floats within 1e-12 + 1e-9 × |r|.\n- Deferred: other configurations and extensive diagnostic tooling. The stride experiment's predictions and records stay unchanged.\n\nNot allowed until the author approves: pipeline changes, measurements, commits, pushes.\n\n**Why:** the author reviews the draft before any implementation, measurement or commit.\n\n**How to apply:** take changes from the author's review comments on the draft. Predictions (draft section 11) are the author's ([[stage3-tutor-mode]]). Pending commits from the stride close-out are described in the same session; follow [[git-and-privacy-rules]].\n"
+}
+```
+
+## 15. User — 2026-10-19T21:27:19.308Z
+
+### Tool result
+
+```
+The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+```
+
+## 16. Assistant — 2026-10-19T21:27:19.964Z
+
+### Tool call: Bash
+
+```
+{
+  "command": "cd ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory && sed -i '' 's|^- \\[Partition experiment proposal\\](partition-experiment-proposal.md) — .*|- [Partition experiment proposal](partition-experiment-proposal.md) — A/B/C design; full draft in docs/partition-experiment.md awaiting review; nothing implemented|' MEMORY.md && grep -c 'docs/partition-experiment.md' MEMORY.md",
+  "description": "Point the memory index at the draft document"
+}
+```
+
+## 17. User — 2026-10-19T21:27:20.513Z
+
+### Tool result
+
+```
+1
+Shell cwd was reset to ~/leveraged-etf-risk-analytics
+```
+
+## 18. Assistant — 2026-10-19T21:27:46.610Z
+
+The full proposal is now in [docs/partition-experiment.md](docs/partition-experiment.md), marked as a draft awaiting your review. Its section 1.2 lists your decisions, and section 13 lists my proposals that still need your review. Nothing else changed: no pipeline code, no runs, no commits, no pushes, and the stride experiment's predictions and records are untouched.
+
+## How the draft handles your three points
+
+**1. Task counts and settings checks**
+- Task counts, files written per table and the shuffle-read markers in the plans are now observations only (§5).
+- Settings are checked from two sources (§6):
+  - **Recorded configuration:** the three values in each `run.json`. All other recorded Spark settings and the environment must be identical across the 24 runs.
+  - **Execution plans:** every plan with an exchange must be an AQE plan in its final form. Every hash or range exchange must use the configuration's count, 200 or 8. In B and C, no shuffle read may be marked `coalesced`. In A, the coalesced reads are only counted, because whether AQE coalesces is an outcome, not a setting.
+- The pipeline records no plans yet, so §4.2 proposes a mechanism. After the timed phases, it would write `plans.json` from Spark's SQL status store, and the time this takes gets its own timing. That store is an internal Spark interface, so the draft ties it to Spark 4.2.0 and requires a test. The event log stays deferred: it writes one record per task, so its cost would grow with the variable under test.
+
+`★ Insight ─────────────────────────────────────`
+- In AQE's final plan, the two settings show up in different nodes. The exchange keeps the requested count (`hashpartitioning(…, 200)`), and coalescing appears one level above it, as an `AQEShuffleRead` marked `coalesced`. So the plan text can check the count and the coalescing switch separately.
+`─────────────────────────────────────────────────`
+
+**2. Output comparison (§7)**
+- The reference is A's first measured run, at position 1. All 23 other runs are compared with it, warm-ups included.
+- `paired` is matched on its 4-column key and `path_summary` on its 5-column key. The checks cover:
+  - row counts;
+  - null keys, duplicate keys, and missing or extra keys;
+  - column names and types;
+  - the NULL pattern per column;
+  - breach fields, which must match exactly (each one is named);
+  - other non-floating columns, which must match exactly;
+  - floats within `1e-12 + 1e-9 × |r|`, the pipeline's own tolerance for the 1x check, with NaN matching only NaN. The largest difference per column is reported even when a run passes.
+- Tables are read with PyArrow, so null and NaN stay distinct. `path_days` and `window_stats` are compared by row count only.
+- I added one comparison as a proposal: a stride-experiment stride-7 run, which has A's settings but the old code. It would show whether the new flags and plan recording change any result.
+
+**3. Contents of the document**
+- **Design:** the A/B/C settings table, the workload, the A–B–C–C–B–A order and the repeats.
+- **Procedure:** commands and record folders, the code-state and checksum rules, run conditions and stop rules.
+- **Code changes needed later:** flags, plan recording, collector.
+- **Rules:** measurements, settings checks, the output comparison, drift rules, how configurations are compared, and acceptance criteria.
+- **Placeholders and lists:** an empty predictions section for you, the deferred items, and the open proposals.
+
+## Checks on the draft
+
+- Lines fit the width used in `experiments.md`, and the one link resolves.
+- No private-plan, local-path, email or CJK matches.
+- Every column the comparison names exists in the real output schemas.
+- §2.5 cites what the stride-7 records show for A's settings: 53, 22, 81 and 100 tasks per phase, and 1, 40, 8 and 1 files in `window_stats`, `path_days`, `path_summary` and `paired`. These are identical in all four stride-7 runs.
+
+## Open decisions (§13)
+
+1. Whether to keep the extra run conditions: the 30-minute wait after a boot, the load-average limit (4.0 suggested), and repeating the checks after quitting an app.
+2. Whether plan recording should read Spark's SQL status store.
+3. The reference run, the tolerance, and the extra comparison with the stride-7 run.
+4. The thresholds: 10% for time, 0.2 GiB for memory, and the same-sign rule.
+5. One output folder per configuration, and Part B in this same file.
+
+The three close-out commits proposed earlier are still unmade. The draft isn't part of them; once approved, it would be committed as Part A, together with the code changes.
