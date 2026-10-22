@@ -570,7 +570,7 @@ and answers: [pandas-baseline.md](pandas-baseline.md).
 
 - **What is compared.** Both implementations call the same model function for
   each window and produce the same tables and checks, but they build the member
-  rows, aggregate, check and write in their own ways, and P runs on one core.
+  rows, aggregate, check and write in their own ways, and P runs in one process.
   The comparison does not isolate Spark's overhead.
 - **Runs.** Four protocols of four fresh-process runs in the order S–P–P–S, in
   one batch. All 16 runs passed every check, no sample reached the 4.8 GiB
@@ -582,8 +582,9 @@ and answers: [pandas-baseline.md](pandas-baseline.md).
   took longer than S's (12.1 against 8.6 s), each of its other phases took
   less time, and P has no Spark session start (2.4 s in S).
 - **Memory and results.** Median peak total RSS was 2.68 GiB (S) and 1.97 GiB
-  (P), 26.6% lower for P in both halves. P's outputs matched S's within the
-  tolerance, and `path_days`, compared in full for two P runs, was identical.
+  (P). Overall, P's median peak total RSS was 26.6% lower; it was lower in both
+  halves. P's outputs matched S's within the tolerance, and `path_days`,
+  compared in full for two P runs, was identical.
 - **Predictions.** S's median time and peak were inside their predicted
   ranges. P's median wall time was below its predicted band (28–60 s) and its
   median peak above its range (0.8–1.8 GiB): the predicted time ranking was

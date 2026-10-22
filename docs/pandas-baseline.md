@@ -705,6 +705,12 @@ pandas's peak exceeded its range.
 does not prove constant conditions. Sampling and implementation differences limit causal claims and
 conclusions about larger workloads.
 
+**Limitation added at the author's request** (drafted with Claude Code (Opus 5.5) after the Part B
+commit). Library thread counts were not controlled or measured in either implementation. PyArrow
+permits multithreaded reads and conversion by default; actual thread usage during the measurements
+was not recorded. The records show that P ran in one process (14.7), not that it used a single
+core, so "in one process on one core" in 1.1 holds only for the process count.
+
 ## History of this document
 
 **Draft** (2026-10-22): the design from the author's decisions, the code and its validation, for the
@@ -724,3 +730,7 @@ answers, with facts drafted by Claude Code; the changes after Claude Code's revi
 start of section 15. The status at the top now describes both parts, the author's authorship line
 was added, and a line marks the end of Part A. Sections 1–13, the predictions included, are
 unchanged. This version is committed on `feature/pandas-baseline` after the formal session.
+
+**Part B, revision** (2026-10-22). At the author's request, 15.5 adds a limitation: library thread
+counts were not controlled or measured, so the records show that P ran in one process, not on one
+core. Sections 1–13 stay unchanged.
