@@ -1,14 +1,17 @@
-"""Run the Spark pipeline in fresh processes and record runtime and peak memory.
+"""Run a pipeline in fresh processes and record runtime and peak memory.
 
 Usage:
     uv run --group measure python -m etf_risk.measure --repeats 4 -- \\
         --windows data/windows/full-2026-10-12/rolling-252-s21
 
 Each run is a new `python -m etf_risk.spark_pipeline` process with its own run id;
-the arguments after `--` go to the pipeline. From outside that process tree, a
-sampler adds up the resident memory (RSS) of the process and all its descendants
-(Spark JVM, Python workers) every 0.25 s and keeps the peak, in total and per
-process type. The first run is marked as a warm-up and left out of the summary.
+`--pipeline pandas` starts `etf_risk.pandas_pipeline`, the single-process baseline,
+instead, and the protocol then records the pipeline, as it does for an explicit
+`--pipeline spark`. The arguments after `--` go to the pipeline. From outside that
+process tree, a sampler adds up the resident memory (RSS) of the process and all
+its descendants (Spark JVM, Python workers) every 0.25 s and keeps the peak, in
+total and per process type. The first run is marked as a warm-up and left out of
+the summary.
 
 Stop rule: threshold T = 0.60 x total physical RAM (psutil.virtual_memory().total
 when the protocol starts). After each run, no further run is started if (a) any
@@ -26,7 +29,8 @@ Output: each run's run.json gains a "measurement" section; protocol-<UTC time>.j
 and one <run id>.log per run are written next to the run folders.
 
 AI contribution: written with Claude Code (Opus 5.5). Verified with
-tests/test_measure.py (sampler, status rules, and a protocol that must stop).
+tests/test_measure.py (sampler, status rules, and a protocol that must stop) and,
+for --pipeline, tests/test_pandas_pipeline.py.
 """
 from __future__ import annotations
 
@@ -201,25 +205,34 @@ def run_protocol(make_command: Callable[[str], Sequence[str]], run_dir_of: Calla
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--" not in argv:
-        print("usage: python -m etf_risk.measure [--repeats N] -- <spark_pipeline arguments>", file=sys.stderr)
+        print("usage: python -m etf_risk.measure [--repeats N] [--pipeline spark|pandas] -- <pipeline arguments>",
+              file=sys.stderr)
         return 2
     split = argv.index("--")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repeats", type=int, default=4)
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--threshold-fraction", type=float, default=DEFAULT_THRESHOLD_FRACTION)
+    parser.add_argument("--pipeline", choices=["spark", "pandas"], default=None,
+                        help="the pipeline each run starts (default spark); pandas is the single-process baseline")
     args = parser.parse_args(argv[:split])
     pipeline_args = argv[split + 1:]
 
-    from etf_risk import spark_pipeline                      # imports pyspark only after argument checks
-    pargs = spark_pipeline.build_parser().parse_args(pipeline_args)
-    base = spark_pipeline.run_dir_for(pargs.windows, pargs.out_root, "x").parent
+    name = args.pipeline or "spark"
+    if name == "pandas":
+        from etf_risk import pandas_pipeline as pipeline
+    else:
+        from etf_risk import spark_pipeline as pipeline      # imports pyspark only after argument checks
+    pargs = pipeline.build_parser().parse_args(pipeline_args)
+    base = pipeline.run_dir_for(pargs.windows, pargs.out_root, "x").parent
 
     result = run_protocol(
-        make_command=lambda run_id: [sys.executable, "-m", "etf_risk.spark_pipeline", *pipeline_args, "--run-id", run_id],
+        make_command=lambda run_id: [sys.executable, "-m", f"etf_risk.{name}_pipeline", *pipeline_args, "--run-id", run_id],
         run_dir_of=lambda run_id: base / run_id, log_dir=base, repeats=args.repeats,
         interval=args.interval, threshold_fraction=args.threshold_fraction,
     )
+    if args.pipeline is not None:                            # without the flag, the protocol is as before
+        result["pipeline"] = args.pipeline
     path = base / f"protocol-{result['protocol_started']}.json"
     path.write_text(json.dumps(result, indent=2, default=str) + "\n")
     gib = 1024 ** 3
