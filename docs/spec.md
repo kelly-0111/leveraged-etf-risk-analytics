@@ -2,10 +2,10 @@
 
 Last updated 2026-10-22. Implemented: the pipeline, three Spark SQL analyses of
 its results, a Docker image, the stride experiment
-([experiments.md](experiments.md)) and the shuffle-partition experiment
-([partition-experiment.md](partition-experiment.md)); optional: a caching
-experiment; planned: an optional systems extension with MySQL, Kafka and Redis
-(§11).
+([experiments.md](experiments.md)), the shuffle-partition experiment
+([partition-experiment.md](partition-experiment.md)) and the pandas baseline
+([pandas-baseline.md](pandas-baseline.md)); optional: a caching experiment;
+planned: an optional systems extension with MySQL, Kafka and Redis (§11).
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -15,7 +15,7 @@ is reviewed.
 | Prototype | Reference model; Spark run over one full-period path per ticker and leverage; Python/Spark consistency checks; 2020–2025 data | **Implemented** (now expressed as full-period windows) |
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
-| Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | In progress: three SQL analyses, the Docker image, the stride experiment ([experiments.md](experiments.md)) and the shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)) done; caching experiment optional |
+| Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | In progress: three SQL analyses, the Docker image, the stride experiment ([experiments.md](experiments.md)), the shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)) and the pandas baseline ([pandas-baseline.md](pandas-baseline.md)) done; caching experiment optional |
 | Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | Planned |
 | Stage 4 | Figures, final documentation and demo | Planned |
 
@@ -35,8 +35,8 @@ tickers.
 Course concepts applied: a Python reference implementation with tests; Parquet
 with explicit schemas (PyArrow); PySpark batch processing with grouped pandas
 functions; Spark DataFrame aggregation and three Spark SQL analyses; performance
-measurement (a stride experiment and a shuffle-partition experiment); a Docker
-image for the pipeline.
+measurement (a stride experiment, a shuffle-partition experiment and a pandas
+baseline); a Docker image for the pipeline.
 An optional systems extension (§11) explores a job queue and a result cache
 around the pipeline; nothing in the analysis depends on it.
 
@@ -125,6 +125,7 @@ Dollar rebalance sums stay only for the reference comparison.
 | Measurements CSV | `data/outputs-experiments/measurements.csv` | `analysis/collect_measurements.py` | one row per started run of the stride experiment: identity and role, input size, Spark settings, summed stage task counts, wall and phase times, peak RSS by process type, sampling, code ([experiments.md](experiments.md) 5.6) |
 | Execution plans | `plans.json` in a run folder | `spark_pipeline.py --record-plans` (`plans.py`) | for every SQL execution of the run: its phase and final plan text, each shuffle exchange's requested and runtime partition counts, each AQE shuffle read's mark and partition count ([partition-experiment.md](partition-experiment.md) 4.2) |
 | Shuffle-partition batch | `data/outputs-partitions/<batch>/` | `measure.py` through `docs/partition-session.zsh`; `analysis/collect_partition_measurements.py` | protocols and runs of configurations A, B and C, `positions.tsv`, `run-log.txt`, and the collector's `measurements.csv` and `acceptance.json` ([partition-experiment.md](partition-experiment.md) 2.4, 4.3) |
+| Pandas-baseline batch | `data/outputs-baseline/<batch>/` | `measure.py --pipeline` through `docs/baseline-session.zsh`; `analysis/collect_baseline_measurements.py` | protocols and runs of S (the Spark pipeline) and P (the pandas pipeline), `positions.tsv`, `run-log.txt`, and the collector's `measurements.csv` and `acceptance.json` ([pandas-baseline.md](pandas-baseline.md) 2.4, 4.3) |
 
 Snapshots: `full-2026-10-12` (five tickers, each from its first trading day to
 2025-12-31; used for the main analysis) and the 2020–2025 snapshot of the four
@@ -156,14 +157,17 @@ src/etf_risk/
   measure.py         implemented  fresh-process timed runs, process-tree memory sampling, stop rule
   provenance.py      implemented  code state for every record (commit, worktree state, SHA-256 of sources and uv.lock); repo-relative paths
   plans.py           implemented  a run's final execution plans and AQE partition counts (spark_pipeline --record-plans)
+  pandas_pipeline.py implemented  the pipeline's results in one process with pandas, without Spark (the pandas baseline)
   plots.py           planned      figures from result files (Stage 4)
 analysis/            implemented  three Spark SQL analyses of a run's paired table (project author):
                                   sql_overview.py, sql_comparison.py, sql_sensitivity.py;
                                   collect_measurements.py (with Claude Code): the stride experiment's measurements CSV;
-                                  collect_partition_measurements.py (Claude Code): a shuffle-partition batch's CSV and criteria
+                                  collect_partition_measurements.py (Claude Code): a shuffle-partition batch's CSV and criteria;
+                                  collect_baseline_measurements.py (Claude Code): a pandas-baseline batch's CSV and criteria
 tests/               implemented  model, validation, ingest, download, windows, Spark consistency and failure
                                   injection, sample check, measurement, provenance, AI-log tooling, partition
-                                  flags, plan recording, the partition collector and session helpers
+                                  flags, plan recording, the partition collector and session helpers, the pandas
+                                  pipeline against the Spark pipeline, the baseline collector and session helpers
 .claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
 Dockerfile, docker/  implemented  pipeline image and its build and run scripts (data mounted, never copied in)
 ```
@@ -184,6 +188,7 @@ flowchart TD
     S -.->|started by| B[measure.py<br/>runtime and peak memory]
     B --> E[stride experiment<br/>measurements CSV]
     B --> E2[shuffle-partition experiment<br/>batch CSV and criteria]
+    B --> E3[pandas baseline<br/>batch CSV and criteria]
     O -.-> F[plots.py<br/>figures]
     classDef planned stroke-dasharray: 5 5
     class F planned
@@ -288,9 +293,11 @@ per window.
 
 The tests in `tests/` cover the model, data validation, ingest, download (with
 a fake fetch function), window definitions, Python/Spark consistency and
-failure injection, the sample check, measurement, the AI-log tooling, and the
-shuffle-partition flags, plan recording, collector and session helpers; none
-uses the network. Run them with `uv run --group measure pytest`.
+failure injection, the sample check, measurement, the AI-log tooling, the
+shuffle-partition flags, plan recording, collector and session helpers, and the
+pandas pipeline (every table and check against the Spark pipeline's), the
+baseline collector and its session helpers; none uses the network. Run them
+with `uv run --group measure pytest`.
 
 ## 7. Fixed 252-trading-day windows — implemented (Stage 2)
 
@@ -508,7 +515,9 @@ before any measured run. Design, run log, records and answers:
   200 requested and the summed stage task counts per phase were recorded),
   spilling and CPU use; the single-process pandas comparison was not run. The
   shuffle-partition experiment, below, recorded the actual partition counts of
-  its own runs ([partition-experiment.md](partition-experiment.md) 4.2, 14.8).
+  its own runs ([partition-experiment.md](partition-experiment.md) 4.2, 14.8),
+  and the pandas baseline, below, ran the pandas comparison
+  ([pandas-baseline.md](pandas-baseline.md)).
 
 ### What the shuffle-partition experiment showed (2026-10-22)
 
@@ -551,18 +560,50 @@ committed before any measured run. Design, run log, records and answers:
   protocol, and the last protocol followed a two-hour break. CPU time,
   spilling and GC were not measured.
 
+### What the pandas baseline showed (2026-10-22)
+
+Measured on the same machine with the stride-7 workload: an end-to-end
+comparison of the Spark pipeline at Spark's defaults (S) with a single-process
+pandas implementation of the same computation (P). The design, code and
+predictions were committed before any measured run. Design, run log, records
+and answers: [pandas-baseline.md](pandas-baseline.md).
+
+- **What is compared.** Both implementations call the same model function for
+  each window and produce the same tables and checks, but they build the member
+  rows, aggregate, check and write in their own ways, and P runs in one process.
+  The comparison does not isolate Spark's overhead.
+- **Runs.** Four protocols of four fresh-process runs in the order S–P–P–S, in
+  one batch. All 16 runs passed every check, no sample reached the 4.8 GiB
+  stop threshold, and the batch met every acceptance criterion. The machine
+  checks were recorded at every start, and no drift was detected (S +0.97%,
+  P +1.17%).
+- **Time.** Median wall times were 26.4 s (S) and 15.4 s (P): P's was 41.8%
+  shorter, in the same direction in both halves of the order. P's model phase
+  took longer than S's (12.1 against 8.6 s), each of its other phases took
+  less time, and P has no Spark session start (2.4 s in S).
+- **Memory and results.** Median peak total RSS was 2.68 GiB (S) and 1.97 GiB
+  (P). Overall, P's median peak total RSS was 26.6% lower; it was lower in both
+  halves. P's outputs matched S's within the tolerance, and `path_days`,
+  compared in full for two P runs, was identical.
+- **Predictions.** S's median time and peak were inside their predicted
+  ranges. P's median wall time was below its predicted band (28–60 s) and its
+  median peak above its range (0.8–1.8 GiB): the predicted time ranking was
+  reversed, while the memory ranking held. For this workload the
+  single-process pandas implementation was faster end to end, as the last
+  hypothesis of expectation 5 allowed; other sizes were not measured.
+
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stages 1–2, SQL analyses, Docker image, stride and shuffle-partition experiments) | Planned (Stage 3 and later) |
+| Area | Implemented (prototype, Stages 1–2, SQL analyses, Docker image, stride and shuffle-partition experiments, pandas baseline) | Planned (Stage 3 and later) |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
 | Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance; strides 14, 7 and 3 built and run for the stride experiment | stride 1 (excluded for now, [experiments.md](experiments.md) 1.3) |
 | Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check; three Spark SQL analyses of the paired results (project author, §8) | — |
-| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)) | optional caching experiment; a single-process pandas baseline |
+| Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)); the pandas baseline (the Spark pipeline against a single-process pandas implementation at stride 7, end to end; one batch meeting every acceptance criterion; no drift) with the pandas pipeline, `measure --pipeline`, the batch collector and the session helpers ([pandas-baseline.md](pandas-baseline.md)) | optional caching experiment |
 | Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
 | Systems extension | — | MySQL job table, Kafka job queue, worker and reconciler, Redis result cache, Docker Compose, recovery and caching experiments (§11) |
-| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
+| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
 
@@ -592,8 +633,12 @@ committed before any measured run. Design, run log, records and answers:
   and its last protocol followed a two-hour break (14.3); CPU time, spilling
   and GC were not measured. Its code and tests are by Claude Code; its
   predictions were drafted with Claude Code and approved by the project
-  author, who ran its formal session and wrote its answers. The caching
-  experiment is optional. The three Spark SQL analyses are done (§8).
+  author, who ran its formal session and wrote its answers. The pandas
+  baseline ([pandas-baseline.md](pandas-baseline.md)) compared the Spark
+  pipeline end to end with a single-process pandas implementation at stride 7,
+  in one batch that met every acceptance criterion; sharing the model function
+  does not isolate Spark's overhead, and only one workload was measured. The
+  caching experiment is optional. The three Spark SQL analyses are done (§8).
 - 239 of the 1,790 stride-21 windows (13%), and 30% of NVDA's and 33% of TSLA's,
   use the price of an unverified extreme day. Results are also shown without
   them as a **sensitivity analysis**: the flagged windows are a non-random
