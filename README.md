@@ -18,7 +18,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Docker image for the pipeline | Implemented |
 | Stride experiment: runtime and memory at strides 21, 14 and 7 ([docs/experiments.md](docs/experiments.md)) | Complete; drift detected, stride 3 exploratory only |
 | Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Complete; B (200 partitions, coalescing off) slower than A and C; no clear memory difference; outputs within tolerance |
-| Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Design, code and predictions committed (Part A); measurements pending |
+| Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment | Optional |
 | Figures and final write-up | Planned |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
@@ -29,7 +29,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 2. **[docs/spec.md](docs/spec.md)**: the research questions (§2), the model and
    its assumptions (§3), how results are checked (§6), the window design (§7),
    the full results of the stride-21 run and summaries of the stride and
-   shuffle-partition experiments (§8).
+   shuffle-partition experiments and the pandas baseline (§8).
 3. **[docs/data-sources.md](docs/data-sources.md)**: where the data comes from,
    the checks run on it, and what is not verified.
 4. **[docs/experiments.md](docs/experiments.md)**: the stride experiment, with
@@ -44,11 +44,13 @@ are not forecasts, and the model ignores fees, financing and execution.
    its session, and the [collector](analysis/collect_partition_measurements.py)
    builds its measurements CSV and checks its acceptance criteria.
 6. **[docs/pandas-baseline.md](docs/pandas-baseline.md)**: the pandas
-   baseline's design, rules and predictions (Part A, committed before any
-   measured run), an end-to-end comparison of the Spark pipeline with a
+   baseline, an end-to-end comparison of the Spark pipeline with a
    single-process pandas implementation of the same computation, with its
-   [session helpers](docs/baseline-session.zsh) and
-   [collector](analysis/collect_baseline_measurements.py).
+   design, rules and predictions (committed before any measured run), run log,
+   measurements and answers; the [session helpers](docs/baseline-session.zsh)
+   ran its session, and the
+   [collector](analysis/collect_baseline_measurements.py) builds its
+   measurements CSV and checks its acceptance criteria.
 7. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
@@ -122,6 +124,19 @@ overlap, so these numbers describe one history, not independent samples; spec
   join stayed a sort-merge join where AQE chose a broadcast join in A and C.
   No drift was detected; the machine checks were recorded only before the
   first protocol, and the last protocol followed a two-hour break.
+- The pandas baseline
+  ([docs/pandas-baseline.md](docs/pandas-baseline.md)) compared the Spark
+  pipeline at Spark's defaults end to end with a single-process pandas
+  implementation of the same computation, on the stride-7 workload on
+  2026-10-22 (UTC): eight runs each, in the order Spark–pandas–pandas–Spark,
+  all passing every check. The pandas implementation's median wall time was
+  15.4 s against Spark's 26.4 s (41.8% shorter), and its median peak total RSS
+  1.97 against 2.68 GiB (26.6% lower), in the same direction in both halves of
+  the order; its outputs matched Spark's within the tolerance. Its model phase
+  took longer than Spark's and its other phases less time. Both call the same
+  model function but handle data, aggregate and write in their own ways, so
+  the comparison does not isolate Spark's overhead. The prediction had put
+  pandas at about 40 s, slower than Spark; no drift was detected.
 
 ## Running
 
@@ -244,8 +259,8 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   before any measured run; a shuffle-partition experiment, likewise committed
   in advance, that compared three partition settings and recorded the
   partition counts Spark used; and a pandas baseline, committed the same way,
-  that compares the Spark pipeline end to end with a single-process pandas
-  implementation, with its measurements pending.
+  that compared the Spark pipeline end to end with a single-process pandas
+  implementation.
 
 ## AI assistance
 
@@ -275,11 +290,11 @@ together with how it was checked.
 ## Next steps
 
 1. **Performance experiments** (mine): the stride and shuffle-partition
-   experiments are complete ([docs/experiments.md](docs/experiments.md),
-   [docs/partition-experiment.md](docs/partition-experiment.md)). The pandas
-   baseline's Part A is committed
-   ([docs/pandas-baseline.md](docs/pandas-baseline.md)), and its formal
-   session is next. A caching experiment is optional.
+   experiments and the pandas baseline are complete
+   ([docs/experiments.md](docs/experiments.md),
+   [docs/partition-experiment.md](docs/partition-experiment.md),
+   [docs/pandas-baseline.md](docs/pandas-baseline.md)). A caching experiment
+   is optional.
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4).
