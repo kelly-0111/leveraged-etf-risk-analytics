@@ -87,7 +87,11 @@ Job 9, with a 60 s lease:
 Job 9 executed twice and accepted one result. Had the job still been queued at 30 s, with
 its first confirmation lost, the reconciler would have published it then. The duplicate
 message would later find the job running or finished, and the claim would refuse it.
-`test_a_crash_between_claim_and_commit` runs this sequence offline and against Kafka.
+`test_the_job_9_timeline` (tests/test_jobs_queue.py) follows this table row by row with
+the in-memory queue, on SQLite and, when configured, on MySQL. That includes the lost
+confirmation at 0 s and the pass at 30 s that leaves the running job alone.
+`test_a_crash_between_claim_and_commit` runs the crash and the takeover, from a confirmed
+publication, offline and against Kafka.
 
 ## What the worker does with a delivery
 
@@ -130,8 +134,10 @@ message would later find the job running or finished, and the claim would refuse
   - the job-id format, including a 5,000-digit payload and ids beyond the range, each
     followed by a valid job that must still run;
   - the worker's commits, rewinds and bounded retries;
-  - whole scenarios, including a seeded run with lost publications and crashes at every
-    fault point.
+  - whole scenarios, including the job-9 timeline above and a seeded run with lost
+    publications and crashes at every one of the worker's fault points
+    (`WORKER_FAULT_POINTS`; the store's own fault points are covered in
+    tests/test_jobs_store.py).
   Tests that run a loop (`serve()`, the reconciler's `run()`) stop it themselves, after a
   number of tries or a few seconds, so a broken guard makes them fail rather than hang.
 - [`tests/test_jobs_kafka.py`](../tests/test_jobs_kafka.py) checks the settings offline.
@@ -143,7 +149,26 @@ message would later find the job running or finished, and the claim would refuse
   - a 5,000-digit payload ahead of a job: both committed, and the job runs;
   - a message left uncommitted after the retries, for a restarted worker;
   - two end-to-end scenarios.
-- Status on 2026-10-23:
+- [`tests/mutation_check.py`](../tests/mutation_check.py) breaks one guard or setting at a
+  time, in a scratch copy of the repository, and expects the job tests to fail within a
+  timeout. It has 31 mutations; one, conflict detection, needs MySQL.
+  - **Coverage:**
+    - the store's guards ([job-table.md](job-table.md));
+    - the claim's cleared publication and version bump;
+    - the publication's version guard;
+    - the worker's acknowledgement, rewind, bounded retries and malformed-message commit;
+    - the job-id format, length and range;
+    - the grace period;
+    - the five Kafka settings above.
+  - **Running it:** `uv run --group jobs python tests/mutation_check.py --list` names them,
+    and setting the service variables adds the MySQL and Kafka runs.
+- [`etf_risk.services`](../src/etf_risk/services.py) supports the live runs:
+  - `ready mysql kafka` waits until a login and `SELECT 1` succeed and the broker answers a
+    metadata request. The Compose healthchecks only show that the ports are open.
+  - `peaks mysql kafka` prints each container's cgroup `memory.peak` against its limit.
+  - `others` counts containers of other projects in Docker's VM, without naming them.
+- Status when this queue was merged (PR #8, revision e2806bd), on 2026-10-23. At that point
+  the clients were installed with `uv run --with`, not from the lock:
   - **Offline:** 200 passed, and the 17 tests that need MySQL, Kafka or confluent-kafka
     were skipped.
   - **With Kafka 4.3.1** (the job table on SQLite): 210 passed, and the 7 tests that
@@ -154,8 +179,9 @@ message would later find the job running or finished, and the claim would refuse
   - **The whole suite:** 411 passed and 15 skipped. That run came before the bounded
     retries, the job-id validation and the test fixes; the rest of the suite does not
     use these files.
-  - **Mutation checks:** 22 guards and settings were broken on purpose, one at a time,
-    in 25 test runs: three were run both offline and against Kafka. Each run had a
+  - **Mutation checks:** 22 guards and settings were broken by hand, one at a time, in 25
+    test runs: three were run both offline and against Kafka. They were not recorded as a
+    list; `tests/mutation_check.py` rebuilds the set from these notes. Each run had a
     timeout. The 22 include 4 for the job-id format and range. Tests failed in all 25
     runs; none ran into the timeout. Before the fixes, three ran until it:
     - a claim that keeps the publication, through `serve()`'s unbounded retries;
@@ -165,5 +191,44 @@ message would later find the job running or finished, and the claim would refuse
   - **Memory:** spec §11 records the peaks. MySQL reached 511 of its 512 MiB over about
     two hours of repeated runs, and 472 MiB after two runs on a fresh container. That
     is limited headroom, not evidence that longer runs stay within the limit.
+- Revalidation on 2026-10-23, with the clients from the lock (`--group jobs`), on revision
+  9f347d1 of `feature/extension-baseline`:
+  - **Offline:** 204 passed, and the 16 tests that need MySQL or Kafka were skipped. That
+    is three new tests, plus one that needs only confluent-kafka and now runs.
+  - **With MySQL 8.4.13 and Kafka 4.3.1** on fresh containers: 385 passed, none failed or
+    skipped, in 59 s. That is the 379 cases of e2806bd plus the three new tests on both
+    stores.
+  - **The whole suite** (all dependency groups, through `uv run`): 473 passed and 16
+    skipped.
+  - **Mutation checks** (`tests/mutation_check.py`, 31 mutations):
+    - **Offline:** 30 of 30 caught; conflict detection was skipped, since it needs MySQL.
+    - **Against MySQL and Kafka:** 31 of 31 caught, on the same code just before it was
+      committed. No run reached its timeout.
+    - **Gaps found on the way:** the first offline run found two mutations that no test
+      caught, the token in `_exhaust` and the commit of a malformed last message. The two
+      tests named above now catch them.
+  - **Memory**, from cgroup `memory.peak`:
+    - after one full run on fresh containers: MySQL 332 MiB (65%), Kafka 355 MiB (56%);
+    - after the mutation session on one fresh pair (one full run plus 31 shorter ones):
+      MySQL 441 MiB (86%), Kafka 380 MiB (59%).
+
+    Four containers of another Compose project were running in Docker's VM at the time, so
+    these are not budget measurements (spec §11 asks for none).
+
+## Code provenance
+
+Every run record identifies the job package's code. `provenance.code_state()` hashes every
+Python module and SQL schema under `src/etf_risk/`, including `jobs/` and its schema files,
+keyed by package-relative path, for example `jobs/store.py`. Records written before
+2026-10-23 hash only the top-level modules. All of `jobs/` was written with Claude Code
+(Opus 5.5), as each module's docstring says. It came in through two PRs:
+
+| Module | Commits | PR | Verified by |
+|---|---|---|---|
+| `store.py`, `schema/mysql.sql`, `schema/sqlite.sql`, `worker.py`, `simulated.py`, `__init__.py` | eec1032 (milestone 1), e2806bd (milestone 2) | #7, #8 | test_jobs_store, test_jobs_worker, test_jobs_queue, test_jobs_reconciler; mutation_check |
+| `mysql.py` | eec1032 | #7 | test_jobs_mysql (offline and against MySQL 8.4.13) |
+| `queue.py`, `kafka.py`, `reconciler.py` | e2806bd | #8 | test_jobs_queue, test_jobs_reconciler, test_jobs_kafka (offline and against Kafka 4.3.1); mutation_check |
+
+The status notes of both PRs came in separate commits: 6cfd971 for #7 and cd72957 for #8.
 
 *AI contribution: written with Claude Code (Opus 5.5).*
