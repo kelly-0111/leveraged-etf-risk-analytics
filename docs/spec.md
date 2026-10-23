@@ -126,7 +126,7 @@ Dollar rebalance sums stay only for the reference comparison.
 | Quality report | `data/processed/<snapshot>/quality_report.json` | `ingest.py` | per-ticker check results, a verification-status block, and the list of unverified extreme days |
 | Window definitions | `data/windows/<snapshot>/<name>/` (`windows.parquet`, `config.json`) | `windows.py` | one row per window: `window_kind, ticker, window_days, entry_date, first_return_date, exit_date, entry_row, stride, calendar_year, contains_unverified_day, unverified_day_count, entry_on_unverified_day`; the config records the SHA-256 of every return file, of `quality_report.json` and of `windows.parquet`, the self-check results, the flag rule, each return file's raw-manifest hash, and the code that built it (commit, whether the worktree was clean, SHA-256 of every source file and of `uv.lock`) |
 | Run output | `data/outputs/windows/<snapshot>/<name>/<run id>/` | `spark_pipeline.py`, `verify.py` | `window_stats/` (one row per window, no model), `path_days/` (per window, leverage and day; partitioned by ticker), `path_summary/` (per window and leverage), `paired/` (per window, 1x and 2x; for a breached 2x path the full-window 2x drawdown and turnover columns are null and the partial values sit in `*_pre_breach` columns with `days_ok_2x`), `checks.json`, `run.json` (including the code provenance and the JVM's measured maximum heap), and `verify.json` from the sample check |
-| Measurement records | `data/outputs/windows/<snapshot>/<name>/protocol-<UTC time>.json`, `<run id>.log` (the stride experiment: under `data/outputs-experiments/`) | `measure.py` | per run: wall time, in-process phase timings, peak summed RSS in total and per process type, stop-rule status and its limits |
+| Measurement records | `data/outputs/windows/<snapshot>/<name>/protocol-<UTC time>.json`, `<run id>.log` (the stride experiment: under `data/outputs-experiments/`) | `measure.py` | per run: wall time, in-process phase timings, peak summed RSS in total and per process type, stop-rule status and its limits; since 2026-10-23 also the process types' rule (`process_kinds`), under which a Java process is `spark_jvm` only if its command line runs Spark |
 | Measurements CSV | `data/outputs-experiments/measurements.csv` | `analysis/collect_measurements.py` | one row per started run of the stride experiment: identity and role, input size, Spark settings, summed stage task counts, wall and phase times, peak RSS by process type, sampling, code ([experiments.md](experiments.md) 5.6) |
 | Execution plans | `plans.json` in a run folder | `spark_pipeline.py --record-plans` (`plans.py`) | for every SQL execution of the run: its phase and final plan text, each shuffle exchange's requested and runtime partition counts, each AQE shuffle read's mark and partition count ([partition-experiment.md](partition-experiment.md) 4.2); in format 2, also each execution's description and scan nodes ([caching-experiment.md](caching-experiment.md) 4.2) |
 | Shuffle-partition batch | `data/outputs-partitions/<batch>/` | `measure.py` through `docs/partition-session.zsh`; `analysis/collect_partition_measurements.py` | protocols and runs of configurations A, B and C, `positions.tsv`, `run-log.txt`, and the collector's `measurements.csv` and `acceptance.json` ([partition-experiment.md](partition-experiment.md) 2.4, 4.3) |
@@ -711,13 +711,15 @@ measured run. Design, run log, records and answers:
   them as a **sensitivity analysis**: the flagged windows are a non-random
   subset (periods with extreme market days), so the comparison shows how much
   results depend on those periods, not whether those days are data errors.
-- `test_measure_runs_the_pandas_pipeline_in_fresh_processes` can fail
-  intermittently: `measure`'s sampler, every 0.25 s, can catch one of the
-  pandas pipeline's short helper commands for its run record (`git`, `uname`,
-  `file`, `java -version`) and records it as a further process kind. The
-  failure was reproduced in 1 of 20 runs; the pipeline's outputs and the pandas
-  baseline's records are not affected. A fix, in the test or in how `measure`
-  classifies a `java` process, is open ([demo.md](demo.md)).
+- Fixed on 2026-10-23: `test_measure_runs_the_pandas_pipeline_in_fresh_processes`
+  failed intermittently (1 in 20 runs) when `measure`'s sampler, every 0.25 s,
+  caught the `java -version` that the pipelines start for their run record and
+  counted it as the Spark JVM. `measure` now counts a Java process as
+  `spark_jvm` only if its command line runs Spark (`org.apache.spark`), and the
+  test accepts short helpers as `other` while still failing on a Spark process.
+  Earlier records keep the old rule, under which every process named java
+  counted as `spark_jvm`; newer ones carry the rule in their `process_kinds`
+  field ([demo.md](demo.md)).
 - Open transcript-hook items (separator rule, save timing, folders for
   interruption notices) and the NumPy deprecation warnings are unchanged.
 

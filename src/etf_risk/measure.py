@@ -25,12 +25,22 @@ may be higher than recorded; summed RSS counts shared pages once per process, so
 sum can also overstate real use; 60% is an experimental safety limit chosen for this
 machine, not a measured or guaranteed safe bound.
 
+Process types (PROCESS_KINDS): the started process is the driver; a Java process is
+the Spark JVM only if its command line runs Spark (org.apache.spark, as the JVM that
+PySpark starts through spark-submit does); PySpark's workers and daemon are Python
+workers; any other descendant is other, among them the short helpers that both
+pipelines start for their run record (git, uname, file, java -version). Until
+2026-10-23 every process named java counted as the Spark JVM, so an earlier record
+may count a sampled java -version there; records since then carry the rule in
+their process_kinds field.
+
 Output: each run's run.json gains a "measurement" section; protocol-<UTC time>.json
 and one <run id>.log per run are written next to the run folders.
 
 AI contribution: written with Claude Code (Opus 5.5). Verified with
-tests/test_measure.py (sampler, status rules, and a protocol that must stop) and,
-for --pipeline, tests/test_pandas_pipeline.py.
+tests/test_measure.py (sampler, process types, status rules, and a protocol that
+must stop) and, for --pipeline and the process types of real runs,
+tests/test_pandas_pipeline.py.
 """
 from __future__ import annotations
 
@@ -59,15 +69,23 @@ LIMITS = [
     "Peaks per process type are each the maximum over the run, taken at different moments; they do not add up "
     "to the total peak.",
 ]
+PROCESS_KINDS = {   # recorded with every run since 2026-10-23; earlier records counted every java process as spark_jvm
+    "driver": "the pipeline process that measure started",
+    "spark_jvm": "a Java process whose command line runs Spark (org.apache.spark)",
+    "python_worker": "a PySpark worker or daemon process",
+    "other": "any other descendant, such as the git, uname, file and java -version helpers of the run record",
+}
+SPARK_MARKER = "org.apache.spark"   # in the command line of the JVM that PySpark starts (deploy.SparkSubmit)
 
 
 def process_kind(proc: psutil.Process, root_pid: int) -> str:
+    """The type of `proc` in the tree under `root_pid` (PROCESS_KINDS). A Java process is the Spark JVM only if
+    its command line runs Spark: the short `java -version` that both pipelines start for their record is other."""
     if proc.pid == root_pid:
         return "driver"
-    name = proc.name().lower()
-    if "java" in name:
-        return "spark_jvm"
     cmdline = " ".join(proc.cmdline()).lower()
+    if "java" in proc.name().lower():
+        return "spark_jvm" if SPARK_MARKER in cmdline else "other"
     if "pyspark.daemon" in cmdline or "pyspark/daemon" in cmdline or "pyspark.worker" in cmdline:
         return "python_worker"
     return "other"
@@ -92,28 +110,32 @@ class TreeSampler(threading.Thread):
             root = psutil.Process(self.pid)
         except psutil.NoSuchProcess:
             return
-        while not self._stop_event.is_set():
-            try:
-                procs = [root, *root.children(recursive=True)]
-            except psutil.NoSuchProcess:
-                break
-            total, by_kind, counted = 0, {}, 0
-            for p in procs:
-                try:
-                    rss, kind = p.memory_info().rss, process_kind(p, self.pid)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-                total += rss
-                by_kind[kind] = by_kind.get(kind, 0) + rss
-                counted += 1
-            self.samples += 1
-            self.max_processes = max(self.max_processes, counted)
-            self.peak_total = max(self.peak_total, total)
-            for kind, value in by_kind.items():
-                self.peak_by_kind[kind] = max(self.peak_by_kind.get(kind, 0), value)
-            if total > self.threshold and self.first_exceeded_at is None:
-                self.first_exceeded_at = time.perf_counter() - self._t0
+        while not self._stop_event.is_set() and self.sample(root):
             self._stop_event.wait(self.interval)
+
+    def sample(self, root: psutil.Process) -> bool:
+        """Take one sample of `root` and its descendants; False once `root` is gone."""
+        try:
+            procs = [root, *root.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            return False
+        total, by_kind, counted = 0, {}, 0
+        for p in procs:
+            try:
+                rss, kind = p.memory_info().rss, process_kind(p, self.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            total += rss
+            by_kind[kind] = by_kind.get(kind, 0) + rss
+            counted += 1
+        self.samples += 1
+        self.max_processes = max(self.max_processes, counted)
+        self.peak_total = max(self.peak_total, total)
+        for kind, value in by_kind.items():
+            self.peak_by_kind[kind] = max(self.peak_by_kind.get(kind, 0), value)
+        if total > self.threshold and self.first_exceeded_at is None:
+            self.first_exceeded_at = time.perf_counter() - self._t0
+        return True
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -169,7 +191,7 @@ def run_protocol(make_command: Callable[[str], Sequence[str]], run_dir_of: Calla
             "peak_rss_by_kind_bytes": sampler.peak_by_kind, "samples": sampler.samples,
             "sample_interval_seconds": interval, "max_processes_seen": sampler.max_processes,
             "threshold_bytes": int(threshold), "threshold_first_exceeded_after_seconds": sampler.first_exceeded_at,
-            "limits": LIMITS,
+            "limits": LIMITS, "process_kinds": PROCESS_KINDS,
         }
         run_json = run_dir_of(run_id) / "run.json"
         record = json.loads(run_json.read_text()) if run_json.exists() else {"run_id": run_id, "status": "no run.json written"}
@@ -193,7 +215,7 @@ def run_protocol(make_command: Callable[[str], Sequence[str]], run_dir_of: Calla
         "protocol_started": stamp, "code": code_state(), "repeats_requested": repeats, "runs_started": len(runs),
         "stopped_early": stop_reason is not None, "stop_reason": stop_reason,
         "total_ram_bytes": total_ram, "threshold_fraction": threshold_fraction, "threshold_bytes": int(threshold),
-        "sample_interval_seconds": interval, "limits": LIMITS, "runs": runs,
+        "sample_interval_seconds": interval, "limits": LIMITS, "process_kinds": PROCESS_KINDS, "runs": runs,
         "summary_over_measured_runs": {
             "runs": [r["run_id"] for r in measured],
             "wall_seconds": spread([r["wall_seconds"] for r in measured]),

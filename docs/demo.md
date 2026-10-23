@@ -20,8 +20,7 @@ uv sync
 uv run --group measure --group plots pytest
 ```
 
-Every test passes, without network, in about five minutes. One test can fail intermittently (see
-[the note at the end](#a-known-intermittent-test-failure)).
+Every test passes, without network, in about five minutes.
 
 ## 2. The figures and their check
 
@@ -112,21 +111,26 @@ what is wrong, and computes and writes nothing (exit 2). `--check` exits with 0 
 selected figure was compared and matches, with 1 when a value differs, and with 3 when a selected
 figure was not compared.
 
-## A known intermittent test failure
+## An intermittent test failure, fixed
 
-`test_measure_runs_the_pandas_pipeline_in_fresh_processes` in `tests/test_pandas_pipeline.py` can
-fail with `AssertionError: assert {'driver', 'spark_jvm'} == {'driver'}`, or with `'other'` in
-place of `'spark_jvm'`. The test times the pandas pipeline with `etf_risk.measure` and expects to
-see only the pipeline's own process. About 0.4–0.6 s after it starts, though, the pipeline runs
-short helper commands for its run record (`git` twice, `uname` and `file` through
-`platform.platform()`, and `java -version`). When one of measure's samples, taken every 0.25 s,
-falls while a helper is running, measure records it: `java` as `spark_jvm`, the others as `other`.
+`test_measure_runs_the_pandas_pipeline_in_fresh_processes` in `tests/test_pandas_pipeline.py` used
+to fail now and then with `AssertionError: assert {'driver', 'spark_jvm'} == {'driver'}`. The test
+times the pandas pipeline with `etf_risk.measure` and expected to see only the pipeline's own
+process. About 0.4–0.6 s after it starts, though, the pipeline runs short helper commands for its
+run record (`git` twice, `uname` and `file` through `platform.platform()`, and `java -version`).
+When one of measure's samples, taken every 0.25 s, fell while a helper was running, measure
+recorded it, and counted `java -version` as the Spark JVM. The test failed this way in 1 of 20
+runs; the failure first seen, in a full test run, kept no traceback, so that it had the same cause
+is likely but not shown.
 
-- **Reproduced:** the test failed this way in 1 of 20 runs, and measure's sampler recorded a helper
-  in 2 of 15 pipeline runs on an idle machine and in 4 of 15 under CPU load.
-- **Not established:** the failure first seen, in a full test run, kept no traceback, so that it had
-  the same cause is likely but not shown.
-- **Not affected:** the pipeline's outputs, and the pandas baseline's records, in which all eight P
-  runs recorded only the pipeline's process.
-- **Not fixed:** the test's assertion could tolerate the helpers, or measure could count a `java`
-  process as `spark_jvm` only when it runs Spark; neither change has been made.
+- **The fix:** `measure` counts a Java process as `spark_jvm` only if its command line runs Spark
+  (`org.apache.spark`, as the JVM that PySpark starts does); `java -version` and the other helpers
+  count as `other`. The test accepts `other` and still fails on `spark_jvm` or `python_worker`.
+- **The tests:** deterministic ones in `tests/test_measure.py` classify stand-in processes, among
+  them a sample taken while `java -version` runs, and the test session's real Spark JVM; one in
+  `tests/test_pandas_pipeline.py` checks that measure still records the Spark JVM of a run of the
+  Spark pipeline.
+- **The records:** earlier records keep the old rule, under which every process named java counted
+  as `spark_jvm`; records since 2026-10-23 carry the rule in their `process_kinds` field. The pandas
+  baseline's eight P runs recorded only the pipeline's process, and the pipelines' outputs never
+  depended on the rule.

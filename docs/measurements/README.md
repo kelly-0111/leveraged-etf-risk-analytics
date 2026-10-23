@@ -17,7 +17,11 @@ prices, returns or other market data, and no local paths._
 | `caching-experiment.csv` | [caching-experiment.md](../caching-experiment.md) 14.5 | `data/outputs-caching/batch-1/measurements.csv` | 24 | 79 |
 
 Each row is a started run, warm-ups included. The figures summarize only the measured runs: not
-warm-ups, ended `ok`, and in a used protocol where the CSV marks one.
+warm-ups, ended `ok`, and in a used protocol where the CSV marks one. The peaks per process type
+(`peak_rss_<type>_bytes`) follow the rule of their time, under which every process named java
+counted as the Spark JVM. Since 2026-10-23 `etf_risk.measure` counts a Java process as the Spark JVM
+only if its command line runs Spark, so later records can differ for short helpers such as
+`java -version`; these copies stay as they were collected.
 
 **Checks.** `uv run --group plots python -m etf_risk.plots --check --figures X1 X2 X3 X4` compares
 the numbers computed from these files with the experiment documents' summary tables. Where the
