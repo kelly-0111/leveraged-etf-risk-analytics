@@ -16,7 +16,7 @@ its own (KafkaTopic, tests/jobs_backends.py):
 
     docker compose -f docker/compose.yaml up -d --wait kafka mysql
     ETF_RISK_KAFKA_BOOTSTRAP=127.0.0.1:9094 ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 \\
-        uv run --with 'confluent-kafka==2.16.0' --with 'pymysql[rsa]==1.1.1' python -m pytest tests/test_jobs_*.py
+        uv run --group jobs python -m pytest tests/test_jobs_*.py
     docker compose -f docker/compose.yaml down -v
 
 AI contribution: written with Claude Code (Opus 5.5).

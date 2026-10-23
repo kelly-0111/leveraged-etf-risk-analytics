@@ -11,7 +11,7 @@ including connections competing for one job.
 To run everything on a local server (docker/compose.yaml):
 
     docker compose -f docker/compose.yaml up -d --wait mysql
-    ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 uv run --with 'pymysql[rsa]==1.1.1' \\
+    ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 uv run --group jobs \\
         pytest tests/test_jobs_store.py tests/test_jobs_worker.py tests/test_jobs_mysql.py
     docker compose -f docker/compose.yaml down -v
 

@@ -165,7 +165,9 @@ src/etf_risk/
                                   optional caches (--cache)
   verify.py          implemented  sample check against an independent Python slicing of each window
   measure.py         implemented  fresh-process timed runs, process-tree memory sampling, stop rule
-  provenance.py      implemented  code state for every record (commit, worktree state, SHA-256 of sources and uv.lock); repo-relative paths
+  provenance.py      implemented  code state for every record (commit, worktree state, SHA-256 of uv.lock and of every module
+                                  and SQL schema under src/etf_risk/, jobs/ included, by package-relative path, since
+                                  2026-10-23; earlier records hash the top-level modules only); repo-relative paths
   plans.py           implemented  a run's final execution plans, AQE partition counts, descriptions and scan nodes
                                   (spark_pipeline --record-plans)
   pandas_pipeline.py implemented  the pipeline's results in one process with pandas, without Spark (the pandas baseline)
@@ -173,6 +175,8 @@ src/etf_risk/
   jobs/              implemented  optional job queue (§11): job table schema (MySQL, SQLite mirror), guarded state
                                   transitions (store.py), MySQL and Kafka adapters, worker and its consume loop,
                                   reconciler, simulated pipeline and in-memory queue
+  services.py        implemented  the extension's Compose services from this machine: readiness (a MySQL login, Kafka
+                                  metadata), cgroup memory peaks, and a count of other projects' containers
 analysis/            implemented  three Spark SQL analyses of a run's paired table (project author):
                                   sql_overview.py, sql_comparison.py, sql_sensitivity.py;
                                   collect_measurements.py (with Claude Code): the stride experiment's measurements CSV;
@@ -184,7 +188,8 @@ tests/               implemented  model, validation, ingest, download, windows, 
                                   flags, plan recording, the partition collector and session helpers, the pandas
                                   pipeline against the Spark pipeline, the baseline collector and session helpers,
                                   the caching option, the caching collector and session helpers, the job table,
-                                  worker, queue and reconciler (on SQLite; on MySQL and Kafka when configured)
+                                  worker, queue and reconciler (on SQLite; on MySQL and Kafka when configured), the
+                                  services helper, and the job queue's mutation checks (tests/mutation_check.py)
 .claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
 Dockerfile, docker/  implemented  pipeline image and its build and run scripts (data mounted, never copied in);
                                   compose.yaml with the extension's services (MySQL and Kafka so far)
@@ -664,7 +669,7 @@ measured run. Design, run log, records and answers:
 | Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check; three Spark SQL analyses of the paired results (project author, §8) | — |
 | Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)); the pandas baseline (the Spark pipeline against a single-process pandas implementation at stride 7, end to end; one batch meeting every acceptance criterion; no drift) with the pandas pipeline, `measure --pipeline`, the batch collector and the session helpers ([pandas-baseline.md](pandas-baseline.md)); the caching experiment (no cache, the window-member rows, and those plus the four read-back tables at stride 7; one batch meeting every acceptance criterion; no drift) with the `--cache` option, cache records and checks from Spark's storage information and the plans, the batch collector and the session helpers ([caching-experiment.md](caching-experiment.md)) | — |
 | Figures | twelve figures from the result files (`plots.py`): the model results, the sensitivity analysis, the data and windows, and the four performance experiments; their numbers checked against the documented values, inputs validated before anything is drawn, and the measurement CSVs of X1–X4 committed ([results.md](results.md), [measurements/README.md](measurements/README.md)) | — |
-| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0, psutil 7.2.2 and matplotlib 3.11.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
+| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0, psutil 7.2.2 and matplotlib 3.11.2 pinned exactly; the job queue's clients PyMySQL 1.1.1 and confluent-kafka 2.16.0 pinned exactly in the `jobs` group; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
 | Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases; a worker with a simulated pipeline ([job-table.md](job-table.md)); Kafka delivery with confirmed publication and manual commits, and the reconciler ([job-queue.md](job-queue.md)); MySQL 8.4.13 and Kafka 4.3.1 in Compose for the integration tests | the real pipeline in the worker, Redis result cache, recovery and caching experiments (§11) |
 | Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [job-queue.md](job-queue.md), [results.md](results.md), [demo.md](demo.md), [measurements/README.md](measurements/README.md), [AI-usage logs](ai-usage/README.md) | design decisions |
 

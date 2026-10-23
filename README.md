@@ -275,6 +275,38 @@ prints the container's cgroup memory peak, which includes page cache. Timings
 in the container (a Linux VM on macOS, data on bind mounts) are a separate
 configuration, not comparable with native measurements.
 
+### Systems extension services (runbook)
+
+These are for the optional job queue ([spec §11](docs/spec.md)).
+- **Compose services.** MySQL and Kafka run in Docker Compose
+  ([docker/compose.yaml](docker/compose.yaml)), each with a memory limit and reachable from
+  this machine only.
+- **Clients.** The job package's clients, PyMySQL and confluent-kafka, are pinned in the
+  `jobs` dependency group.
+- **Git worktrees.** In a worktree, `data/` is a symlink to the main checkout's (ignored by
+  Git): `ln -s <main checkout>/data data`.
+
+```bash
+docker compose -f docker/compose.yaml up -d --wait mysql kafka
+# The healthchecks only see open ports; this waits for a MySQL login and SELECT 1, and Kafka metadata
+uv run --group jobs python -m etf_risk.services ready mysql kafka
+# The job tests against both services (offline, they run on SQLite and skip these)
+ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 ETF_RISK_KAFKA_BOOTSTRAP=127.0.0.1:9094 \
+    uv run --group jobs python -m pytest tests/test_jobs_*.py
+# Each container's cgroup memory.peak against its limit, and the containers of other projects (a count)
+uv run python -m etf_risk.services peaks mysql kafka
+uv run python -m etf_risk.services others
+# Break each guard on purpose and expect a failing test; set the two variables to include MySQL and Kafka
+uv run --group jobs python tests/mutation_check.py --out data/outputs-mutations
+docker compose -f docker/compose.yaml down -v      # removes the data volumes as well
+```
+
+- **Memory budgets** (spec §11) are measured with no other project's containers in Docker's
+  VM; `services others --require-none` exits 1 otherwise.
+- **Still to come.** The worker, reconciler and submit commands, with the real pipeline, and
+  the Redis result cache are added in later milestones. Until then, the worker runs only the
+  simulated pipeline, inside the tests.
+
 ## Data
 
 Daily prices come from Yahoo Finance through yfinance and are not committed

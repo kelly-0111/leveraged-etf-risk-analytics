@@ -10,7 +10,7 @@
 #
 #   docker compose -f docker/compose.yaml up -d --wait mysql kafka
 #   ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 ETF_RISK_KAFKA_BOOTSTRAP=127.0.0.1:9094 \
-#       uv run --with 'pymysql[rsa]==1.1.1' --with 'confluent-kafka==2.16.0' python -m pytest tests/test_jobs_*.py
+#       uv run --group jobs python -m pytest tests/test_jobs_*.py    # PyMySQL and confluent-kafka, as locked
 #   docker compose -f docker/compose.yaml down -v        # removes the data volumes as well
 #
 # The tests create and drop a database and a topic of their own for each test. The root

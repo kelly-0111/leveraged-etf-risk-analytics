@@ -14,7 +14,7 @@ A claim tries two conditional updates of the job's row, in one transaction:
 ```sql
 -- 1. a queued job
 UPDATE jobs SET status = 'running', attempt_number = attempt_number + 1, attempt_token = :token,
-       lease_expires_at = :lease_expires_at, version = version + 1, updated_at = :now
+       lease_expires_at = :lease_expires_at, published_at = NULL, version = version + 1, updated_at = :now
  WHERE job_id = :job_id AND status = 'queued';
 -- 2. only if 1 matched no row: a running job whose lease has expired, with attempts left
 UPDATE jobs SET ... (the same)
@@ -72,9 +72,9 @@ row first decides, and the other then finds the job succeeded, or a token that i
 
 ## Transactions
 
-- Every operation is one transaction. Apart from `submit`, each writes both tables: the
-  update of `jobs` decides, and the write to `job_attempts` records; that write must touch
-  exactly one row, or the store raises and both tables roll back.
+- Every operation is one transaction. Apart from `submit` and `mark_published`, each writes
+  both tables: the update of `jobs` decides, and the write to `job_attempts` records; that
+  write must touch exactly one row, or the store raises and both tables roll back.
 - Any exception rolls the transaction back, including a simulated crash. The tests raise at
   each gap between two statements (`FAULT_POINTS`) and check both tables afterwards.
 - Every transaction locks the `jobs` row before any `job_attempts` row, and none spans a
@@ -94,14 +94,25 @@ row first decides, and the other then finds the job succeeded, or a token that i
 - [`tests/test_jobs_mysql.py`](../tests/test_jobs_mysql.py) checks the MySQL adapter offline
   and, against a server, the InnoDB behaviour the SQL relies on (setup in its docstring and in
   [`docker/compose.yaml`](../docker/compose.yaml)).
-- Status on 2026-10-22: with MySQL 8.4.13 from the Compose file and `ETF_RISK_MYSQL_URL` set,
-  all 222 cases pass, in five runs in a row; without the URL, 114 pass and the 7 tests that
-  need a server are skipped. Breaking any one of eleven guards and checks on purpose (the
-  token, lease and attempts-left conditions, the rollback, the one-row check on
-  `job_attempts` writes, the `version` bump, conflict detection, the output folder check)
-  makes at least one test fail. On top of main at e55f76b (after the caching experiment),
-  the job tests give the same counts and the whole suite passes (350 passed, 7 skipped).
-  The MySQL container's memory peak in a full run was 339 MiB of its 512 MiB budget
-  (cgroup `memory.peak`, which includes page cache).
+- [`tests/mutation_check.py`](../tests/mutation_check.py) breaks the guards and checks on
+  purpose, one at a time, in a scratch copy of the repository, and expects the job tests to
+  fail within a timeout. It covers the token, lease and attempts-left conditions, the
+  rollback, the one-row check on `job_attempts` writes, the `version` bump, conflict
+  detection, the output folder check, and the queue's guards in
+  [job-queue.md](job-queue.md).
+- Status when this table was merged (PR #7), on 2026-10-22:
+  - with MySQL 8.4.13 from the Compose file and `ETF_RISK_MYSQL_URL` set, all 222 cases
+    passed, in five runs in a row;
+  - without the URL, 114 passed and the 7 tests that need a server were skipped;
+  - breaking any one of eleven guards and checks by hand made at least one test fail.
+    Those mutations were not recorded as a list; `tests/mutation_check.py` rebuilds them
+    from this description;
+  - on top of main at e55f76b (after the caching experiment), the job tests gave the same
+    counts and the whole suite passed (350 passed, 7 skipped);
+  - the MySQL container's memory peak in a full run was 339 MiB of its 512 MiB budget
+    (cgroup `memory.peak`, which includes page cache).
+
+  The current status of the job tests, with the Kafka delivery of PR #8, is in
+  [job-queue.md](job-queue.md).
 
 *AI contribution: written with Claude Code (Opus 5.5).*

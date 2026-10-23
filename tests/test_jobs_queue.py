@@ -235,6 +235,15 @@ def test_a_message_with_no_valid_job_id_is_committed_and_the_next_job_runs(env, 
     env.check(job)
 
 
+def test_a_malformed_last_message_is_committed_too(env):
+    """With no message after it, only its own commit moves the group past it, so a restarted
+    worker does not read it again."""
+    env.queue.messages.append(b"not a job id")
+    assert env.serve(env.worker("A")) == Served(malformed=1)
+    assert env.queue.committed["workers"] == 1
+    assert env.serve(env.worker("B")) == Served()
+
+
 # Whole scenarios
 
 def test_a_lost_confirmation_leads_to_a_duplicate_that_is_refused(env):
@@ -262,6 +271,34 @@ def test_a_crash_between_claim_and_commit(env):
     assert env.serve(env.worker("B")) == Served(handled=1)
     j = env.admin.job(job)
     assert (j["status"], j["accepted_attempt"]) == (Status.SUCCEEDED, 2)
+    env.check(job)
+
+
+def test_the_job_9_timeline(env):
+    """docs/job-queue.md, "A job, two failures", row by row: the submitter's confirmation is
+    lost, A claims and dies before committing, the reconciler leaves the running job alone,
+    the restarted worker is refused while A's lease holds, and once it expires the reconciler
+    requeues and publishes the job in one pass."""
+    job = env.submit([PublishOutcome.UNCONFIRMED]).job_id                # 0 s: written, not confirmed
+    assert env.admin.job(job)["published_at"] is None and env.queue.job_ids() == [job]
+    env.clock.advance(1)                                                 # 1 s: A claims and dies
+    with pytest.raises(SimulatedCrash):
+        env.serve(env.worker("A", fault=crash_at("after_claim")))
+    assert "workers" not in env.queue.committed
+    env.clock.advance(29)                                                # 30 s: running, so nothing to publish
+    assert env.reconciler().run_once() == Pass()
+    env.clock.advance(16)                                                # 46 s: A restarted gets the same message
+    restarted = env.worker("A")
+    assert env.serve(restarted) == Served(handled=1)
+    assert env.handled[-1].reason is Refusal.LEASE_HELD and env.queue.committed["workers"] == 1
+    env.clock.advance(15)                                                # 61 s: A's lease has expired
+    assert env.reconciler().run_once() == Pass(requeued=1, published=1)
+    assert env.queue.job_ids() == [job, job]
+    env.clock.advance(1)                                                 # 62 s: attempt 2 runs and is accepted
+    assert env.serve(restarted) == Served(handled=1)
+    j, attempts = env.admin.job(job), env.admin.attempts(job)
+    assert (j["status"], j["accepted_attempt"]) == (Status.SUCCEEDED, 2)
+    assert [a["outcome"] for a in attempts] == ["expired", "accepted"]
     env.check(job)
 
 

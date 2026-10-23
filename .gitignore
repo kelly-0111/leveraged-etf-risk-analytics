@@ -219,8 +219,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Project data and run outputs (the Yahoo data's terms of use are not reviewed; see docs/data-sources.md)
-/data/
+# Project data and run outputs (the Yahoo data's terms of use are not reviewed; see docs/data-sources.md).
+# No trailing slash, so a worktree's `data` symlink to the main checkout's data/ is ignored too.
+/data
 # Spark local-mode artifacts
 spark-warehouse/
 metastore_db/
