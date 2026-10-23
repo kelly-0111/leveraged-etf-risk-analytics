@@ -799,8 +799,9 @@ least once, and a lease can expire while a slow worker still runs.
   introduced and changed if exceeded.
 - MySQL and Kafka were measured on 2026-10-23 with the job tests (cgroup
   `memory.peak`, which includes page cache).
-  - One full run on fresh containers peaked at 324–395 MiB for MySQL (two runs)
-    and 354–364 MiB for Kafka.
+  - One full run on fresh containers peaked at 324–398 MiB for MySQL and
+    354–478 MiB for Kafka, over three runs; the run of commit e2806bd gave 398 and
+    478 MiB.
   - Two full runs in a row on a fresh MySQL container reached 472 MiB, 92%.
     Kafka reached 516 MiB, 80%, in a session that also ran three mutation checks
     against it, which create many short-lived topics and consumer groups.

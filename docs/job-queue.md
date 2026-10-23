@@ -148,8 +148,9 @@ message would later find the job running or finished, and the claim would refuse
     were skipped.
   - **With Kafka 4.3.1** (the job table on SQLite): 210 passed, and the 7 tests that
     need MySQL were skipped.
-  - **With MySQL 8.4.13 as well:** 353 passed, before the job-id validation, which
-    changes nothing that reaches the database.
+  - **With MySQL 8.4.13 and Kafka 4.3.1, on the committed revision e2806bd:** 379
+    passed, none failed or skipped, in one run on fresh containers (162 cases on each
+    store). An earlier revision, before the job-id validation, had 353 passed.
   - **The whole suite:** 411 passed and 15 skipped. That run came before the bounded
     retries, the job-id validation and the test fixes; the rest of the suite does not
     use these files.
