@@ -10,9 +10,12 @@ lists MySQL variants.
 
 InThread and Paused run a store operation in a thread, Paused holding it at a fault point
 inside its transaction, so that another connection can compete with an open transaction.
+WorkerEnv adds workers and the guarantee check for one job. KafkaTopic gives a test a topic
+of its own on the broker at ETF_RISK_KAFKA_BOOTSTRAP; without it, the Kafka tests skip.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
+import json
 import os
 import re
 import secrets
@@ -21,16 +24,23 @@ import threading
 import time
 from contextlib import closing
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
-from etf_risk.jobs.simulated import ManualClock
-from etf_risk.jobs.store import SQLITE, JobStore, open_sqlite
+from etf_risk.jobs.queue import submit_job
+from etf_risk.jobs.reconciler import Reconciler
+from etf_risk.jobs.simulated import ManualClock, MemoryQueue, SimulatedPipeline, result_digest
+from etf_risk.jobs.store import SQLITE, JobStore, Outcome, Status, open_sqlite
+from etf_risk.jobs.worker import Handled, Result, Worker
 
 MYSQL_URL = os.environ.get("ETF_RISK_MYSQL_URL")
 BACKENDS = ["sqlite", "mysql"] if MYSQL_URL else ["sqlite"]
 needs_mysql = pytest.mark.skipif(not MYSQL_URL, reason="set ETF_RISK_MYSQL_URL to run against MySQL")
+KAFKA_BOOTSTRAP = os.environ.get("ETF_RISK_KAFKA_BOOTSTRAP")
+needs_kafka = pytest.mark.skipif(not KAFKA_BOOTSTRAP, reason="set ETF_RISK_KAFKA_BOOTSTRAP to run against Kafka")
 LEASE = timedelta(seconds=60)
+PARAMS = {"snapshot": "simulated", "stride": 21}
 DUMP = ("SELECT * FROM jobs ORDER BY job_id", "SELECT * FROM job_attempts ORDER BY job_id, attempt_number")
 
 
@@ -167,6 +177,135 @@ class StoreEnv(JobsEnv):
     def __init__(self, backend, tmp_path):
         super().__init__(backend, tmp_path)
         self.store = self.new_store()
+
+
+class WorkerEnv(JobsEnv):
+    """A job table, an admin store for submitting and inspecting, and workers with a connection each."""
+
+    def __init__(self, backend, tmp_path):
+        super().__init__(backend, tmp_path)
+        self.admin = self.new_store()
+        self.handled: list[Handled] = []
+        self.acks: list[int] = []
+
+    def worker(self, name, pipeline=None, fault=None, store_fault=None) -> Worker:
+        return Worker(self.new_store(fault=store_fault), pipeline or SimulatedPipeline(), self.runs,
+                      worker_id=f"worker-{name}", fault=fault)
+
+    def deliver(self, worker: Worker, job_id: int) -> Handled:
+        handled = worker.handle(job_id, lambda: self.acks.append(job_id))
+        self.handled.append(handled)
+        return handled
+
+    def check(self, job_id: int, *, lost_acceptances: int = 0) -> None:
+        """The guarantee for one job: no invariant violation; at most one accepted attempt,
+        exactly one if the job succeeded, as many as the deliveries told "accepted" plus any
+        acceptance whose worker died before it could tell; that attempt's result in its
+        folder; no two attempts sharing a folder."""
+        assert self.admin.invariant_violations() == {}
+        job, attempts = self.admin.job(job_id), self.admin.attempts(job_id)
+        accepted = [a for a in attempts if a["outcome"] is Outcome.ACCEPTED]
+        told = [h for h in self.handled if h.job_id == job_id and h.result is Result.ACCEPTED]
+        assert len(accepted) == len(told) + lost_acceptances == (1 if job["status"] is Status.SUCCEEDED else 0)
+        for a in accepted:
+            assert job["accepted_attempt"] == a["attempt_number"]
+            assert json.loads((Path(a["output_dir"]) / "result.json").read_text()) == {
+                "job_id": job_id, "attempt_number": a["attempt_number"], "run_id": a["run_id"],
+                "result_sha256": result_digest(job["params"])}
+        assert all(h.claim.attempt_number == job["accepted_attempt"] for h in told)
+        assert len({a["output_dir"] for a in attempts}) == len(attempts)
+
+
+def failing_at(point, times=None):
+    """A store fault hook raising RuntimeError when it passes point: the first `times` times,
+    or every time (None). fault.calls counts the passes."""
+    def fault(at):
+        if at == point:
+            fault.calls += 1
+            if times is None or fault.calls <= times:
+                raise RuntimeError(f"injected at {point}")
+    fault.calls = 0
+    return fault
+
+
+class QueueEnv(WorkerEnv):
+    """WorkerEnv with an in-memory queue, and helpers to submit, reconcile and serve."""
+
+    def __init__(self, backend, tmp_path):
+        super().__init__(backend, tmp_path)
+        self.queue = MemoryQueue()
+
+    def submit(self, outcomes=(), **kwargs):
+        """Submit a job (PARAMS) through submit_job(); outcomes decide its publication."""
+        return submit_job(self.admin, self.queue.publisher(outcomes), PARAMS, {}, **kwargs)
+
+    def reconciler(self, outcomes=(), **options) -> Reconciler:
+        return Reconciler(self.new_store(), self.queue.publisher(outcomes), **options)
+
+    def serve(self, worker, group="workers", **options):
+        """worker serves a new consumer of the group (a restarted worker) until the queue is idle."""
+        return worker.serve(self.queue.consumer(group), stop_when_idle=True, retry_delay=0,
+                            on_handled=self.handled.append, **options)
+
+
+class KafkaTopic:
+    """A topic of its own for one test, with fresh consumer group names; close() closes the
+    consumers it opened and deletes the topic."""
+
+    def __init__(self):
+        pytest.importorskip("confluent_kafka")
+        from etf_risk.jobs import kafka
+        self._kafka, self.bootstrap = kafka, KAFKA_BOOTSTRAP
+        self.name = f"etf-jobs-test-{secrets.token_hex(4)}"
+        self.consumers = []
+        kafka.create_topic(self.bootstrap, self.name)
+
+    def group(self) -> str:
+        return f"{self.name}-group-{secrets.token_hex(3)}"
+
+    def publisher(self, **options):
+        return self._kafka.KafkaPublisher(self.bootstrap, self.name, **options)
+
+    def produce_raw(self, value: bytes) -> None:
+        """Write a message that KafkaPublisher would not write, and wait until it is written."""
+        from confluent_kafka import Producer
+        producer = Producer({"bootstrap.servers": self.bootstrap, "acks": "all"})
+        producer.produce(self.name, value=value)
+        assert producer.flush(30) == 0, "the raw message was not written"
+
+    def consumer(self, group: str, **options):
+        consumer = self._kafka.KafkaConsumer(self.bootstrap, self.name, group, **options)
+        self.consumers.append(consumer)
+        return consumer
+
+    def close(self) -> None:
+        for consumer in self.consumers:
+            consumer.close()
+        self._kafka.delete_topic(self.bootstrap, self.name)
+
+
+def poll_deliveries(consumer, count: int, *, timeout: float = 30.0) -> list:
+    """The next `count` deliveries, or fewer if they do not come within timeout seconds. The
+    first poll of a new consumer also waits for the group to give it its partition."""
+    deliveries, deadline = [], time.monotonic() + timeout
+    while len(deliveries) < count and time.monotonic() < deadline:
+        if (delivery := consumer.poll(0.5)) is not None:
+            deliveries.append(delivery)
+    return deliveries
+
+
+def poll_after_assignment(consumer, *, settle: float = 3.0, timeout: float = 30.0) -> list:
+    """Everything the consumer receives until `settle` seconds after it got its partition."""
+    deliveries, deadline = [], time.monotonic() + timeout
+    while not consumer.assigned() and time.monotonic() < deadline:
+        if (delivery := consumer.poll(0.5)) is not None:
+            deliveries.append(delivery)
+    assert consumer.assigned(), "the consumer never got its partition"
+    until = time.monotonic() + settle
+    while time.monotonic() < until:
+        if (delivery := consumer.poll(0.5)) is not None:
+            deliveries.append(delivery)
+    return deliveries
 
 
 class InThread:

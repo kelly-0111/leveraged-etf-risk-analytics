@@ -11,28 +11,45 @@ Worker.handle(job_id, acknowledge) handles one delivery:
 A worker whose renewal, acceptance or failure write is refused has been fenced off: it
 stops and writes nothing more. Its folder stays on disk and is never referenced.
 
+Worker.serve(consumer) polls deliveries and hands each to handle(), acknowledging with a
+synchronous commit of the message's offset. A message that carries no valid job id (as
+queue.Delivery.job_id() reads it) is committed and skipped before anything touches the
+database, so it cannot block the partition or stop the worker. An error before the acknowledgement rewinds the
+consumer to the message and tries again after a delay, since an uncommitted message reaches
+the same consumer again only that way. After DELIVERY_RETRIES such tries in a row, the next
+error is raised and ends serve(). The message stays uncommitted and the consumer rewound, so
+it is read again; it is never skipped, because its job may have a recorded publication, which
+the reconciler does not publish again. An error after the acknowledgement is logged and left
+to the lease. A commit that fails is logged and the job goes on: it is claimed, so a later
+delivery of the same message is refused.
+
 Retries after acknowledgement. Once a delivery is acknowledged, no delivery is pending for
 the job. A job that fail_attempt() returned to queued, and a running job whose worker died
-after acknowledging, run again only when a new delivery arrives: in this milestone another
-handle() call, later a publication by the reconciler (see etf_risk.jobs).
+after acknowledging, run again only when a new delivery arrives: the reconciler publishes
+them (etf_risk.jobs.reconciler).
 
 Worker(fault=...) is called at each of WORKER_FAULT_POINTS; the tests raise SimulatedCrash
 there to model the worker process dying.
 
 AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_jobs_worker.py,
-on SQLite and on MySQL 8.4.13.
+tests/test_jobs_queue.py and tests/test_jobs_kafka.py, on SQLite and on MySQL 8.4.13.
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from etf_risk.jobs.queue import Consumer, Delivery
 from etf_risk.jobs.store import Claim, JobStore, Refusal, Status
+
+log = logging.getLogger(__name__)
 
 WORKER_FAULT_POINTS = (
     "before_claim",
@@ -40,6 +57,7 @@ WORKER_FAULT_POINTS = (
     "after_pipeline",    # outputs written, result not yet accepted
     "after_accept",
 )
+DELIVERY_RETRIES = 5    # tries again of one message after errors before its acknowledgement, then raise
 
 
 class Fenced(Exception):
@@ -77,6 +95,16 @@ class Handled:
     result: Result
     reason: Refusal | None = None    # when skipped
     claim: Claim | None = None       # when an attempt started
+
+
+@dataclass
+class Served:
+    """What Worker.serve() did with the deliveries it polled."""
+    handled: int = 0              # handle() returned, whatever its result
+    malformed: int = 0            # no valid job id: committed and skipped
+    rewound: int = 0              # failed before the acknowledgement: read again (within the retries)
+    failed_after_ack: int = 0     # failed after it: left to the lease and the reconciler
+    commit_failures: int = 0      # commits that raised; the job went on
 
 
 class Worker:
@@ -118,6 +146,70 @@ class Worker:
             return Handled(job_id, Result.FENCED, claim=claim)
         self._fault("after_accept")
         return Handled(job_id, Result.ACCEPTED, claim=claim)
+
+    def serve(self, consumer: Consumer, *, stop: Callable[[], bool] = lambda: False, stop_when_idle: bool = False,
+              poll_timeout: float = 1.0, retry_delay: float = 1.0, retries: int = DELIVERY_RETRIES,
+              on_handled: Callable[[Handled], None] | None = None,
+              sleep: Callable[[float], None] = time.sleep) -> Served:
+        """Handle deliveries one at a time until stop() is true (checked before each poll)
+        or, with stop_when_idle, until a poll returns nothing. One message is tried again
+        after errors before its acknowledgement at most `retries` times in a row; the next
+        such error is raised, with the message uncommitted and the consumer rewound to it.
+        BaseException, such as a simulated crash, ends serve() at once, with nothing more
+        acknowledged."""
+        served = Served()
+        failing, failures = None, 0       # the position that last failed before acknowledgement, how often in a row
+        while not stop():
+            delivery = consumer.poll(poll_timeout)
+            if delivery is None:
+                if stop_when_idle:
+                    break
+                continue
+            job_id = delivery.job_id()
+            if job_id is None:
+                log.warning("skipping a message with no valid job id at %r (%d bytes): %r", delivery.position,
+                            len(delivery.value), delivery.value[:64])
+                served.malformed += 1
+                self._commit(consumer, delivery, served)
+                continue
+            acknowledged = False
+
+            def acknowledge() -> None:
+                nonlocal acknowledged
+                acknowledged = True
+                self._commit(consumer, delivery, served)
+
+            try:
+                handled = self.handle(job_id, acknowledge)
+            except Exception:
+                if acknowledged:
+                    log.exception("job %s failed after its delivery was acknowledged; its lease will expire", job_id)
+                    served.failed_after_ack += 1
+                    continue
+                failures = failures + 1 if delivery.position == failing else 1
+                failing = delivery.position
+                consumer.rewind(delivery)         # read again, by this consumer or after a restart: never skipped
+                if failures > retries:
+                    log.error("job %s: %d errors in a row before its delivery was acknowledged; giving up,"
+                              " with the message uncommitted", job_id, failures)
+                    raise
+                log.exception("job %s failed before its delivery was acknowledged; reading it again", job_id)
+                served.rewound += 1
+                sleep(retry_delay)
+                continue
+            served.handled += 1
+            if on_handled is not None:
+                on_handled(handled)
+        return served
+
+    @staticmethod
+    def _commit(consumer: Consumer, delivery: Delivery, served: Served) -> None:
+        try:
+            consumer.commit(delivery)
+        except Exception:
+            served.commit_failures += 1
+            log.warning("could not commit the offset of %r; a later delivery of it is refused by the claim",
+                        delivery.position, exc_info=True)
 
     def _failed(self, claim: Claim, error: str, *, retryable: bool) -> Handled:
         status = self.store.fail_attempt(claim, error, retryable=retryable)

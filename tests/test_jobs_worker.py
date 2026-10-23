@@ -1,12 +1,12 @@
 """The worker with a simulated pipeline: duplicate and concurrent deliveries, crashes, expired
 leases, stale workers, retries.
 
-Every test ends with WorkerEnv.check(): no invariant violation in the tables; at most one
-accepted attempt, exactly one if the job succeeded, and as many as the deliveries told
-"accepted" (plus any acceptance whose worker died before it could tell); the accepted folder
-holds that attempt's result; no two attempts share a folder. Deliveries are explicit
-handle() calls: nothing delivers a job again by itself (see etf_risk.jobs). The tests run on
-SQLite and, with ETF_RISK_MYSQL_URL set, on MySQL (tests/jobs_backends.py).
+Every test ends with WorkerEnv.check() (tests/jobs_backends.py): no invariant violation in
+the tables; at most one accepted attempt, exactly one if the job succeeded, and as many as
+the deliveries told "accepted" (plus any acceptance whose worker died before it could tell);
+the accepted folder holds that attempt's result; no two attempts share a folder. Deliveries
+here are explicit handle() calls, with no queue (tests/test_jobs_queue.py adds one). The tests
+run on SQLite and, with ETF_RISK_MYSQL_URL set, on MySQL.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
@@ -15,43 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from etf_risk.jobs.simulated import SimulatedCrash, SimulatedPipeline, result_digest
+from etf_risk.jobs.simulated import SimulatedCrash, SimulatedPipeline
 from etf_risk.jobs.store import Outcome, Refusal, Status
-from etf_risk.jobs.worker import WORKER_FAULT_POINTS, Handled, PipelineError, Result, Worker
-from jobs_backends import BACKENDS, LEASE, JobsEnv, make_backend, run_together
-
-
-class WorkerEnv(JobsEnv):
-    """A job table, an admin store for submitting and inspecting, and workers with a connection each."""
-
-    def __init__(self, backend, tmp_path):
-        super().__init__(backend, tmp_path)
-        self.admin = self.new_store()
-        self.handled: list[Handled] = []
-        self.acks: list[int] = []
-
-    def worker(self, name, pipeline=None, fault=None) -> Worker:
-        return Worker(self.new_store(), pipeline or SimulatedPipeline(), self.runs, worker_id=f"worker-{name}",
-                      fault=fault)
-
-    def deliver(self, worker: Worker, job_id: int) -> Handled:
-        handled = worker.handle(job_id, lambda: self.acks.append(job_id))
-        self.handled.append(handled)
-        return handled
-
-    def check(self, job_id: int, *, lost_acceptances: int = 0) -> None:
-        assert self.admin.invariant_violations() == {}
-        job, attempts = self.admin.job(job_id), self.admin.attempts(job_id)
-        accepted = [a for a in attempts if a["outcome"] is Outcome.ACCEPTED]
-        told = [h for h in self.handled if h.job_id == job_id and h.result is Result.ACCEPTED]
-        assert len(accepted) == len(told) + lost_acceptances == (1 if job["status"] is Status.SUCCEEDED else 0)
-        for a in accepted:
-            assert job["accepted_attempt"] == a["attempt_number"]
-            assert json.loads((Path(a["output_dir"]) / "result.json").read_text()) == {
-                "job_id": job_id, "attempt_number": a["attempt_number"], "run_id": a["run_id"],
-                "result_sha256": result_digest(job["params"])}
-        assert all(h.claim.attempt_number == job["accepted_attempt"] for h in told)
-        assert len({a["output_dir"] for a in attempts}) == len(attempts)
+from etf_risk.jobs.worker import WORKER_FAULT_POINTS, PipelineError, Result
+from jobs_backends import BACKENDS, LEASE, WorkerEnv, make_backend, run_together
 
 
 @pytest.fixture(params=BACKENDS)

@@ -24,6 +24,7 @@ CREATE TABLE jobs (
     created_at       TEXT    NOT NULL,
     updated_at       TEXT    NOT NULL,
     finished_at      TEXT,
+    published_at     TEXT,
     CONSTRAINT jobs_status CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
     CONSTRAINT jobs_running_has_lease
         CHECK ((status = 'running') = (attempt_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
@@ -32,6 +33,7 @@ CREATE TABLE jobs (
     CONSTRAINT jobs_finished CHECK ((status IN ('succeeded', 'failed')) = (finished_at IS NOT NULL)),
     CONSTRAINT jobs_attempt_limit CHECK (max_attempts >= 1 AND attempt_number <= max_attempts),
     CONSTRAINT jobs_queued_has_attempts_left CHECK (status <> 'queued' OR attempt_number < max_attempts),
+    CONSTRAINT jobs_published_only_queued CHECK (status = 'queued' OR published_at IS NULL),
     CONSTRAINT jobs_accepted_attempt
         FOREIGN KEY (job_id, accepted_attempt) REFERENCES job_attempts (job_id, attempt_number)
 ) STRICT;

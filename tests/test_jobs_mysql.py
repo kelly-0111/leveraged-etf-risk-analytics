@@ -25,7 +25,7 @@ import pytest
 
 from etf_risk.jobs.mysql import MYSQL, MySQLDialect, connection_options, schema_statements
 from etf_risk.jobs.simulated import ManualClock
-from etf_risk.jobs.store import Claim, JobStore, Refusal, SQLiteDialect, open_sqlite
+from etf_risk.jobs.store import Claim, JobStore, Refusal, SQLiteDialect, Status, open_sqlite
 from jobs_backends import LEASE, InThread, MySQLBackend, Paused, StoreEnv, needs_mysql
 
 
@@ -57,10 +57,11 @@ class Recording(SQLiteDialect):
 def test_every_statement_the_store_sends_converts_to_pymysql_parameters(tmp_path):
     with closing(open_sqlite(tmp_path / "jobs.sqlite", create=True)) as conn:
         statements = send_every_statement(JobStore(conn, Recording(), clock=ManualClock(), lease=LEASE), tmp_path)
-    # 18 statements in the operations (insert, two claim guards, claim's read, takeover, attempt
-    # insert, refusal read, exhaust and its attempt, renew and its attempt, accept, its attempt and
-    # its read, fail and its attempt, job(), attempts()) and the 7 invariant queries
-    assert len(statements) == 25
+    # 24 statements in the operations (insert, mark_published, two claim guards, claim's read,
+    # takeover, attempt insert, refusal read, exhaust and its attempt, renew and its attempt,
+    # accept, its attempt and its read, fail and its attempt, requeue and its attempt, requeue's
+    # read, expired_leases(), unconfirmed(), job(), attempts()) and the 7 invariant queries
+    assert len(statements) == 31
     for text in statements:
         converted = MYSQL.sql(text)
         assert sorted(re.findall(r":(\w+)", text)) == sorted(re.findall(r"%\((\w+)\)s", converted))
@@ -71,6 +72,7 @@ def send_every_statement(store, root):
     """Takes the store through every path of every operation; returns the statements it sent."""
     clock = store.clock
     job = store.submit({"n": 1}, {})
+    assert store.mark_published(job, 0) and store.unconfirmed() == []
     a = store.claim(job, "worker-A", root)
     assert store.renew(a) and store.claim(job, "worker-B", root) is Refusal.LEASE_HELD
     clock.advance(LEASE.total_seconds())
@@ -82,6 +84,14 @@ def send_every_statement(store, root):
     store.claim(last, "worker-A", root)
     clock.advance(LEASE.total_seconds())
     assert store.claim(last, "worker-B", root) is Refusal.EXHAUSTED
+    lapsing = store.submit({"n": 4}, {}, max_attempts=2)
+    first = store.claim(lapsing, "worker-A", root)
+    clock.advance(LEASE.total_seconds())
+    assert [lease.job_id for lease in store.expired_leases()] == [lapsing]
+    assert store.requeue_expired(lapsing, first.token) is Status.QUEUED      # the requeue and its attempt
+    second = store.claim(lapsing, "worker-B", root)
+    clock.advance(LEASE.total_seconds())
+    assert store.requeue_expired(lapsing, second.token) is Status.FAILED     # its read, then exhaust
     assert store.job(job) is not None and store.attempts(job) and store.invariant_violations() == {}
     return store.dialect.statements
 

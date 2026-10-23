@@ -26,6 +26,7 @@ CREATE TABLE jobs (
     created_at       DATETIME(6)     NOT NULL,
     updated_at       DATETIME(6)     NOT NULL,
     finished_at      DATETIME(6)     NULL,      -- only when succeeded or failed
+    published_at     DATETIME(6)     NULL,      -- Kafka confirmed a publication of the job as now queued
     PRIMARY KEY (job_id),
     CONSTRAINT jobs_status CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
     CONSTRAINT jobs_running_has_lease
@@ -34,7 +35,8 @@ CREATE TABLE jobs (
     CONSTRAINT jobs_failed_has_error CHECK ((status = 'failed') = (error IS NOT NULL)),
     CONSTRAINT jobs_finished CHECK ((status IN ('succeeded', 'failed')) = (finished_at IS NOT NULL)),
     CONSTRAINT jobs_attempt_limit CHECK (max_attempts >= 1 AND attempt_number <= max_attempts),
-    CONSTRAINT jobs_queued_has_attempts_left CHECK (status <> 'queued' OR attempt_number < max_attempts)
+    CONSTRAINT jobs_queued_has_attempts_left CHECK (status <> 'queued' OR attempt_number < max_attempts),
+    CONSTRAINT jobs_published_only_queued CHECK (status = 'queued' OR published_at IS NULL)
 ) ENGINE = InnoDB;
 
 CREATE TABLE job_attempts (
