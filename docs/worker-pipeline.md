@@ -250,9 +250,11 @@ never repeated on its own.
 
 - **Offline:** the whole suite: 551 passed and 29 skipped (the tests that need MySQL, Kafka or
   ETF_RISK_LIVE_PIPELINE). The Spark-marked end-to-end test passed.
-- **Against MySQL 8.4.13 and Kafka 4.3.1** on fresh containers: the job suites, 420 passed.
-  That includes the live reconnect tests (`KILL CONNECTION`, and a ping after an idle period)
-  and the standby test.
+- **Against MySQL 8.4.13 and Kafka 4.3.1** on fresh containers: the job suites, run with the
+  README's command (all of `tests/test_jobs_*.py`) on 6d8a232, 463 passed and 10 skipped. The
+  10 skipped are the acceptance cases: they also need ETF_RISK_LIVE_PIPELINE, and their own
+  runs are reported under "Acceptance runs" below. The 463 include the live reconnect tests
+  (`KILL CONNECTION`, and a ping after an idle period) and the standby test.
 - **Acceptance runs** (test_jobs_live_pipeline.py, 10 cases):
   - **First run:** 4 passed. 6 failed on three faults of the test harness: an attribute that
     hid a method, the test's own MySQL connection lost during the stalls, and a standby that
