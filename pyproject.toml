@@ -18,6 +18,7 @@ download = [
 ]
 jobs = [
     "confluent-kafka==2.16.0",  # exact: the job queue's Kafka settings and live tests depend on it
+    "psutil==7.2.2",            # exact, as in `measure`: the worker finds and ends a step's processes with it
     "pymysql[rsa]==1.1.1",      # exact: the job table's MySQL adapter and live tests depend on it
 ]
 measure = [

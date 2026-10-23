@@ -9,6 +9,14 @@
 -- AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_jobs_store.py
 -- (constraints, schema drift).
 
+CREATE TABLE job_store (
+    id               INTEGER PRIMARY KEY,
+    store_id         TEXT    NOT NULL,
+    schema_version   INTEGER NOT NULL,
+    created_at       TEXT    NOT NULL,
+    CONSTRAINT job_store_one_row CHECK (id = 1)
+) STRICT;
+
 CREATE TABLE jobs (
     job_id           INTEGER PRIMARY KEY,
     params           TEXT    NOT NULL,
@@ -47,6 +55,7 @@ CREATE TABLE job_attempts (
     output_dir       TEXT    NOT NULL,
     outcome          TEXT    NOT NULL,
     error            TEXT,
+    result_digest    TEXT,
     claimed_at       TEXT    NOT NULL,
     lease_expires_at TEXT    NOT NULL,
     renewals         INTEGER NOT NULL,
@@ -57,5 +66,6 @@ CREATE TABLE job_attempts (
     CONSTRAINT job_attempts_job FOREIGN KEY (job_id) REFERENCES jobs (job_id),
     CONSTRAINT job_attempts_outcome CHECK (outcome IN ('running', 'accepted', 'failed', 'expired')),
     CONSTRAINT job_attempts_ended CHECK ((outcome = 'running') = (ended_at IS NULL)),
-    CONSTRAINT job_attempts_failed_has_error CHECK ((outcome = 'failed') = (error IS NOT NULL))
+    CONSTRAINT job_attempts_failed_has_error CHECK ((outcome = 'failed') = (error IS NOT NULL)),
+    CONSTRAINT job_attempts_accepted_has_digest CHECK ((outcome = 'accepted') = (result_digest IS NOT NULL))
 ) STRICT;

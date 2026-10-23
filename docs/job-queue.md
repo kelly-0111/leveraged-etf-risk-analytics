@@ -13,7 +13,9 @@ exactly one accepted result. A job may execute more than once.
    the broker's confirmation. If the confirmation arrives, `published_at` is recorded.
 2. **Deliver** ([`Worker.serve`](../src/etf_risk/jobs/worker.py)). A worker's consumer
    polls the id. The worker claims the job, then commits the message's offset. That is
-   the acknowledgement. It then runs the pipeline and accepts the result.
+   the acknowledgement. It then runs the pipeline and accepts the result with its run
+   digest. Since M2 that is the real pipeline: windows → spark_pipeline → verify under a
+   watchdog and the host's execution lock ([worker-pipeline.md](worker-pipeline.md)).
 3. **Reconcile** ([`reconciler.py`](../src/etf_risk/jobs/reconciler.py)). Every few
    seconds, the reconciler requeues jobs whose lease expired, then publishes queued jobs
    with no recorded publication.
@@ -35,6 +37,7 @@ models only what the job system relies on.
 | `RECONCILE_INTERVAL` | 5 s | time between passes |
 | `DELIVERY_RETRIES` | 5, 1 s apart | how often `serve()` tries one message again after errors before its acknowledgement; the next error is raised, and the message stays uncommitted |
 | Job id in a message | decimal, 1 to `MAX_JOB_ID` = 2⁶³ − 1: at most 19 digits, no sign, spaces or leading zeros | the largest id both job tables hold (SQLite's INTEGER is signed 64-bit). Any other payload is malformed |
+| Consumer group timing, socket timeouts | classic protocol; session 15 s; heartbeats 3 s; max poll 967 s; sockets 10 s | pinned since M2; reasons in [worker-pipeline.md](worker-pipeline.md), "Kafka group timing" |
 
 ## Recording a publication: the version guard
 
@@ -114,15 +117,17 @@ publication, offline and against Kafka.
 
 ## Known limits
 
-- **A long outage stops the worker.** With the defaults, an error before the
-  acknowledgement that lasts longer than about five seconds, such as an unreachable
-  database, ends `serve()` with that error. Something must then restart the worker: by hand
-  for now, and a Compose restart policy once the worker runs there.
-- **A crashed worker frees its partition late.** It leaves the group only after the
-  session timeout (45 s by default). The live tests close their consumers instead, which
-  leaves the group at once.
-- **`max.poll.interval.ms` (300 s by default).** It is long enough for the simulated
-  pipeline. The real pipeline's runs need a check against it.
+- **A long outage ends `serve()`.** With the defaults, an error before the acknowledgement
+  that lasts longer than about five seconds, such as an unreachable database, ends `serve()`
+  with that error. The `worker` command then serves again in the same process, with backoff
+  ([worker-pipeline.md](worker-pipeline.md), "Starting, stopping and sweeping"). The store
+  reconnects at its next operation. A worker killed outright still needs a standby or a
+  restart from outside.
+- **A crashed worker frees its partition after the session timeout,** pinned at 15 s since
+  M2 (it was librdkafka's default of 45 s). A worker that stops gracefully closes its
+  consumer and leaves the group at once.
+- **`max.poll.interval.ms`** is pinned at 967 s since M2, above the longest attempt plus the
+  kill grace ([worker-pipeline.md](worker-pipeline.md), "Kafka group timing").
 - **One partition, one job at a time**, as §11 plans: no claims about throughput.
 
 ## What is checked where
@@ -151,7 +156,8 @@ publication, offline and against Kafka.
   - two end-to-end scenarios.
 - [`tests/mutation_check.py`](../tests/mutation_check.py) breaks one guard or setting at a
   time, in a scratch copy of the repository, and expects the job tests to fail within a
-  timeout. It has 31 mutations; one, conflict detection, needs MySQL.
+  timeout. It has 49 mutations; two, conflict detection and a ping that reconnects, need
+  MySQL. M1 added the first 31 and M2 the other 18.
   - **Coverage:**
     - the store's guards ([job-table.md](job-table.md));
     - the claim's cleared publication and version bump;
@@ -159,7 +165,13 @@ publication, offline and against Kafka.
     - the worker's acknowledgement, rewind, bounded retries and malformed-message commit;
     - the job-id format, length and range;
     - the grace period;
-    - the five Kafka settings above.
+    - the Kafka settings above, including the group protocol;
+    - since M2: the digest at acceptance and its repeat; reconnecting inside a transaction,
+      disconnects treated as conflicts, and `ping(reconnect=True)`; the time relations; the
+      watchdog's loop order and sequence check; trees found by process group instead of
+      session; the host lock and the survivor wait; the clock handshake; the step
+      environment; the startup sweep; the renewal before acceptance; and the result rule's
+      check count ([worker-pipeline.md](worker-pipeline.md)).
   - **Running it:** `uv run --group jobs python tests/mutation_check.py --list` names them,
     and setting the service variables adds the MySQL and Kafka runs.
 - [`etf_risk.services`](../src/etf_risk/services.py) supports the live runs:
@@ -228,6 +240,8 @@ keyed by package-relative path, for example `jobs/store.py`. Records written bef
 | `store.py`, `schema/mysql.sql`, `schema/sqlite.sql`, `worker.py`, `simulated.py`, `__init__.py` | eec1032 (milestone 1), e2806bd (milestone 2) | #7, #8 | test_jobs_store, test_jobs_worker, test_jobs_queue, test_jobs_reconciler; mutation_check |
 | `mysql.py` | eec1032 | #7 | test_jobs_mysql (offline and against MySQL 8.4.13) |
 | `queue.py`, `kafka.py`, `reconciler.py` | e2806bd | #8 | test_jobs_queue, test_jobs_reconciler, test_jobs_kafka (offline and against Kafka 4.3.1); mutation_check |
+| `store.py`, `mysql.py`, `kafka.py`, `worker.py`, `simulated.py`, `reconciler.py`, both schemas (M2a changes); `events.py`, `timing.py`, `../runs.py` | e7040f7 | M2 (`feature/worker-pipeline`) | test_jobs_store, test_jobs_reconnect, test_jobs_timing, test_jobs_events, test_runs, the live MySQL and Kafka tests; mutation_check |
+| `pipeline.py`, `launcher.py`, `processes.py`, `params.py`, `cli.py`, `__main__.py` | d2d8615 | M2 | test_jobs_pipeline, test_jobs_launcher, test_jobs_sweep, test_jobs_params, test_jobs_cli, test_jobs_worker_spark, test_jobs_live_pipeline |
 
 The status notes of both PRs came in separate commits: 6cfd971 for #7 and cd72957 for #8.
 

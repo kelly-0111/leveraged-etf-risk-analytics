@@ -17,7 +17,7 @@ import pytest
 from etf_risk.jobs.simulated import SimulatedCrash
 from etf_risk.jobs.store import (CONFLICT_RETRIES, FAULT_POINTS, SCHEMA_DIR, TRANSITIONS, Claim, Outcome, Refusal,
                                  SQLiteDialect, Status, StoreInvariantError, run_id)
-from jobs_backends import BACKENDS, LEASE, InThread, Paused, SQLiteBackend, StoreEnv, make_backend, run_together
+from jobs_backends import BACKENDS, DIGEST, LEASE, InThread, Paused, SQLiteBackend, StoreEnv, make_backend, run_together
 
 
 @pytest.fixture(params=BACKENDS)
@@ -67,7 +67,7 @@ def expired_last(env):
 
 def succeeded(env):
     job, a = running(env)
-    assert env.store.accept_result(a)
+    assert env.store.accept_result(a, DIGEST)
     return job, a
 
 
@@ -89,9 +89,9 @@ SITUATIONS = {"queued": queued, "published": published, "running": running, "exp
 OPERATIONS = {
     "claim": lambda env, job, a: env.store.claim(job, "worker-B", env.runs),
     "renew": lambda env, job, a: env.store.renew(a),
-    "accept": lambda env, job, a: env.store.accept_result(a),
+    "accept": lambda env, job, a: env.store.accept_result(a, DIGEST),
     "fail": lambda env, job, a: env.store.fail_attempt(a, "transient", retryable=True),
-    "foreign_token": lambda env, job, a: env.store.accept_result(replace(a, token="f" * 32)),
+    "foreign_token": lambda env, job, a: env.store.accept_result(replace(a, token="f" * 32), DIGEST),
     "mark_published": lambda env, job, a: env.store.mark_published(job, env.store.job(job)["version"]),
     "requeue_expired": lambda env, job, a: env.store.requeue_expired(job, a.token),   # the reconciler saw A's token
 }
@@ -227,7 +227,7 @@ def test_an_expired_lease_stays_with_its_token_until_a_takeover(env):
     env.clock.advance(3 * LEASE.total_seconds())
     assert env.store.renew(a)                                     # nobody took over
     assert env.store.claim(job, "worker-B", env.runs) is Refusal.LEASE_HELD
-    assert env.store.accept_result(a)
+    assert env.store.accept_result(a, DIGEST)
     assert env.store.job(job)["accepted_attempt"] == 1
 
 
@@ -236,9 +236,9 @@ def test_a_stale_worker_is_fenced_off_after_a_takeover(env):
     b = env.store.claim(job, "worker-B", env.runs)
     assert not env.store.renew(a)
     assert env.store.fail_attempt(a, "late failure", retryable=True) is None
-    assert not env.store.accept_result(a)
-    assert env.store.accept_result(b)
-    assert not env.store.accept_result(a)                         # still refused once B's result is accepted
+    assert not env.store.accept_result(a, DIGEST)
+    assert env.store.accept_result(b, DIGEST)
+    assert not env.store.accept_result(a, DIGEST)                         # still refused once B's result is accepted
     j = env.store.job(job)
     assert j["status"] is Status.SUCCEEDED and j["accepted_attempt"] == 2
     assert [x["outcome"] for x in env.store.attempts(job)] == [Outcome.EXPIRED, Outcome.ACCEPTED]
@@ -249,9 +249,9 @@ def test_a_stale_token_stays_fenced_after_a_retry_claimed_the_job(env):
     job, a = requeued(env)                                        # A's attempt failed; the job is queued again
     b = env.store.claim(job, "worker-B", env.runs)
     before = env.dump()
-    assert not env.store.renew(a) and not env.store.accept_result(a)
+    assert not env.store.renew(a) and not env.store.accept_result(a, DIGEST)
     assert env.store.fail_attempt(a, "late", retryable=False) is None
-    assert env.dump() == before and env.store.accept_result(b)
+    assert env.dump() == before and env.store.accept_result(b, DIGEST)
 
 
 def test_attempts_run_out_when_leases_keep_expiring(env):
@@ -327,7 +327,7 @@ def test_the_old_holder_accepting_while_another_worker_takes_over(env):
     """A's lease has expired. A accepts while B claims: the transaction holding the job's row
     first decides. Here A does, so B's takeover waits and then finds the job succeeded."""
     job, a = expired(env)
-    accepting = Paused(env, lambda store: store.accept_result(a), "accept_result.jobs_updated").start()
+    accepting = Paused(env, lambda store: store.accept_result(a, DIGEST), "accept_result.jobs_updated").start()
     taking_over = InThread(env, lambda store: store.claim(job, "worker-B", env.runs)).start()
     assert accepting.resume() is True and taking_over.outcome() is Refusal.SUCCEEDED
     assert env.store.job(job)["accepted_attempt"] == 1 and env.store.invariant_violations() == {}
@@ -337,10 +337,10 @@ def test_a_takeover_while_the_old_holder_tries_to_accept(env):
     """The other order: B's takeover holds the row first, so A's acceptance meets B's token."""
     job, a = expired(env)
     taking_over = Paused(env, lambda store: store.claim(job, "worker-B", env.runs), "claim.jobs_updated").start()
-    accepting = InThread(env, lambda store: store.accept_result(a)).start()
+    accepting = InThread(env, lambda store: store.accept_result(a, DIGEST)).start()
     b = taking_over.resume()
     assert isinstance(b, Claim) and accepting.outcome() is False
-    assert env.store.job(job)["status"] is Status.RUNNING and env.store.accept_result(b)
+    assert env.store.job(job)["status"] is Status.RUNNING and env.store.accept_result(b, DIGEST)
     assert env.store.invariant_violations() == {}
 
 
@@ -348,9 +348,9 @@ def test_a_takeover_while_the_old_holder_tries_to_accept(env):
 
 def test_accepting_again_changes_nothing(env):
     job, a = running(env)
-    assert env.store.accept_result(a)
+    assert env.store.accept_result(a, DIGEST)
     before = env.dump()
-    assert env.store.accept_result(a)
+    assert env.store.accept_result(a, DIGEST)
     assert env.dump() == before
 
 
@@ -358,8 +358,8 @@ def test_the_same_acceptance_twice_at_once_accepts_one_result(env):
     """A repeat of A's acceptance races the original: one transaction accepts, the other then
     finds A's own result accepted and reports true as well."""
     job, a = running(env)
-    original = Paused(env, lambda store: store.accept_result(a), "accept_result.jobs_updated").start()
-    repeat = InThread(env, lambda store: store.accept_result(a)).start()
+    original = Paused(env, lambda store: store.accept_result(a, DIGEST), "accept_result.jobs_updated").start()
+    repeat = InThread(env, lambda store: store.accept_result(a, DIGEST)).start()
     assert original.resume() is True and repeat.outcome() is True
     j = env.store.job(job)
     assert j["accepted_attempt"] == 1 and j["version"] == 2       # the claim and one acceptance
@@ -403,9 +403,9 @@ def test_acceptance_repeated_after_a_failed_commit(env, applied):
     store = env.new_store(connection=connection)
     connection.armed = True
     with pytest.raises(ConnectionError):
-        store.accept_result(a)
+        store.accept_result(a, DIGEST)
     assert env.store.job(job)["status"] is (Status.SUCCEEDED if applied else Status.RUNNING)
-    assert store.accept_result(a) is True                          # repeating is safe either way
+    assert store.accept_result(a, DIGEST) is True                          # repeating is safe either way
     assert env.store.job(job)["accepted_attempt"] == 1 and env.store.invariant_violations() == {}
 
 
@@ -465,7 +465,7 @@ def test_a_bookkeeping_write_that_misses_its_row_rolls_back_the_job_update(env):
                         t=env.backend.dialect.time(env.clock.now()), job=job)   # the tables now disagree
     before = env.dump()
     with pytest.raises(StoreInvariantError):
-        env.store.accept_result(a)
+        env.store.accept_result(a, DIGEST)
     assert env.dump() == before                                    # the job was not marked succeeded
 
 
@@ -524,7 +524,7 @@ def test_an_operation_gives_up_after_its_conflict_retries(sqlite_env):
     job, a = running(env)
     before = env.dump()
     with pytest.raises(InjectedConflict):
-        env.store.accept_result(a)
+        env.store.accept_result(a, DIGEST)
     assert fault.seen == CONFLICT_RETRIES and env.dump() == before
 
 
@@ -546,10 +546,12 @@ def ddl_names(sql):
 def test_both_schema_files_declare_the_same_tables_columns_and_constraints():
     mysql = ddl_names((SCHEMA_DIR / "mysql.sql").read_text())
     assert mysql == ddl_names((SCHEMA_DIR / "sqlite.sql").read_text())
-    assert set(mysql) == {"jobs", "job_attempts"}
+    assert set(mysql) == {"job_store", "jobs", "job_attempts"}
     assert {"attempt_token", "lease_expires_at", "accepted_attempt", "version", "published_at",
             "constraint jobs_accepted_attempt", "constraint jobs_published_only_queued"} <= mysql["jobs"]
-    assert {"renewals", "constraint job_attempts_run_id"} <= mysql["job_attempts"]
+    assert {"renewals", "result_digest", "constraint job_attempts_run_id",
+            "constraint job_attempts_accepted_has_digest"} <= mysql["job_attempts"]
+    assert mysql["job_store"] == {"id", "store_id", "schema_version", "created_at", "constraint job_store_one_row"}
 
 
 def test_the_schema_allows_exactly_the_statuses_and_outcomes_of_the_code():
@@ -588,16 +590,19 @@ def test_inconsistent_job_rows_are_rejected(env, status, n, token, lease, accept
     assert env.backend.violation(raised.value) == ("check", constraint)
 
 
-@pytest.mark.parametrize("change, constraint", [
-    ("outcome = 'accepted'", "job_attempts_ended"),                        # ended, but no end time
+@pytest.mark.parametrize("change, constraint", [                    # each breaks exactly one constraint
+    ("outcome = 'accepted', result_digest = :d", "job_attempts_ended"),   # ended, but no end time
     ("ended_at = :t", "job_attempts_ended"),                                # running, with an end time
     ("outcome = 'failed', ended_at = :t", "job_attempts_failed_has_error"),
     ("outcome = 'lost', ended_at = :t", "job_attempts_outcome"),
+    ("outcome = 'accepted', ended_at = :t", "job_attempts_accepted_has_digest"),   # accepted with no digest
+    ("result_digest = :d", "job_attempts_accepted_has_digest"),                     # a digest while running
 ])
 def test_inconsistent_attempt_rows_are_rejected(env, change, constraint):
     running(env)
     with pytest.raises(env.backend.errors) as raised:
-        env.backend.execute(f"UPDATE job_attempts SET {change}", t=env.backend.dialect.time(env.clock.now()))
+        env.backend.execute(f"UPDATE job_attempts SET {change}", t=env.backend.dialect.time(env.clock.now()),
+                            d=DIGEST)
     assert env.backend.violation(raised.value) == ("check", constraint)
 
 
@@ -620,11 +625,38 @@ def test_the_invariant_check_reports_what_the_constraints_cannot_see(env):
     t = env.backend.dialect.time(env.clock.now())
     env.backend.execute(                                           # a second accepted attempt, in the same folder
         "INSERT INTO job_attempts (job_id, attempt_number, attempt_token, worker_id, run_id, output_dir, outcome,"
-        " claimed_at, lease_expires_at, renewals, ended_at)"
-        " VALUES (:job, 2, :token, 'worker-X', 'job-x', :folder, 'accepted', :t, :t, 0, :t)",
-        job=job, token="e" * 32, folder=str(a.output_dir), t=t)
+        " result_digest, claimed_at, lease_expires_at, renewals, ended_at)"
+        " VALUES (:job, 2, :token, 'worker-X', 'job-x', :folder, 'accepted', :digest, :t, :t, 0, :t)",
+        job=job, token="e" * 32, folder=str(a.output_dir), digest=DIGEST, t=t)
     assert env.store.invariant_violations() == {
         "succeeded without exactly one accepted attempt": [job],
         "attempt rows differ from attempt_number": [job],
         "attempts share an output folder": [job],
     }
+
+
+# The store's identity and the accepted result's digest
+
+def test_the_store_id_is_written_once_and_read_back(env):
+    with pytest.raises(LookupError, match="no store id yet"):
+        env.store.store_id()
+    store_id = env.store.ensure_identity()
+    assert re.fullmatch(r"[0-9a-f]{32}", store_id) and env.store.ensure_identity() == store_id
+    assert env.new_store().store_id() == store_id
+    t = env.backend.dialect.time(env.clock.now())
+    with pytest.raises(env.backend.errors) as raised:
+        env.backend.execute("INSERT INTO job_store (id, store_id, schema_version, created_at)"
+                            " VALUES (2, :s, 2, :t)", s="0" * 32, t=t)
+    assert env.backend.violation(raised.value) == ("check", "job_store_one_row")
+
+
+def test_acceptance_records_the_run_digest_and_needs_one(env):
+    job, a = running(env)
+    before = env.dump()
+    with pytest.raises(ValueError, match="not a run digest"):
+        env.store.accept_result(a, "D" * 64)
+    assert env.dump() == before
+    assert env.store.accept_result(a, DIGEST)
+    assert env.store.attempts(job)[0]["result_digest"] == DIGEST
+    assert env.store.accept_result(a, DIGEST)                     # a repeat with the same digest: accepted
+    assert not env.store.accept_result(a, "e" * 64)               # with another digest: not this result

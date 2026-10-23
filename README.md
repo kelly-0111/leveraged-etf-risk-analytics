@@ -303,9 +303,32 @@ docker compose -f docker/compose.yaml down -v      # removes the data volumes as
 
 - **Memory budgets** (spec §11) are measured with no other project's containers in Docker's
   VM; `services others --require-none` exits 1 otherwise.
-- **Still to come.** The worker, reconciler and submit commands, with the real pipeline, and
-  the Redis result cache are added in later milestones. Until then, the worker runs only the
-  simulated pipeline, inside the tests.
+
+The job queue with the real pipeline ([docs/worker-pipeline.md](docs/worker-pipeline.md)) runs
+on the same two services. The worker, a standby worker and the reconciler each get a terminal
+of their own, and stop with Ctrl-C (a graceful stop). Outputs go to
+`data/outputs/jobs/<store id>/`, and event logs to `data/outputs/jobs/events/`.
+
+```bash
+export ETF_RISK_JOBS_DB=mysql://root:jobs-test@127.0.0.1:3307/etf_jobs
+docker compose -f docker/compose.yaml up -d --wait mysql kafka
+uv run --group jobs python -m etf_risk.services ready mysql kafka
+uv run --group jobs python -m etf_risk.jobs init-db          # database, tables and store id; safe to repeat
+uv run --group jobs python -m etf_risk.jobs create-topic
+uv run --group jobs python -m etf_risk.jobs reconciler       # terminal 2
+uv run --group jobs python -m etf_risk.jobs worker --worker-id A    # terminal 3
+uv run --group jobs python -m etf_risk.jobs worker --worker-id B    # terminal 4: a standby
+uv run --group jobs python -m etf_risk.jobs submit --snapshot full-2026-10-12 --kind calendar-year
+uv run --group jobs python -m etf_risk.jobs status --check  # the tables; exit 1 on an invariant violation
+uv run --group jobs python -m etf_risk.jobs cleanup         # dry run: folders of attempts that ended unaccepted
+uv run --group jobs python -m etf_risk.jobs export data/outputs/jobs-export   # before `down -v`
+docker compose -f docker/compose.yaml down -v
+```
+
+- **Acceptance runs.** The milestone's acceptance runs take minutes each:
+  `ETF_RISK_LIVE_PIPELINE=1` together with the two service variables runs
+  `tests/test_jobs_live_pipeline.py`.
+- **Still to come.** The Redis result cache.
 
 ## Data
 

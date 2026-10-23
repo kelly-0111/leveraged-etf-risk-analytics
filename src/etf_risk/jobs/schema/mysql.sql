@@ -8,8 +8,22 @@
 -- tables for the offline tests, and tests/test_jobs_store.py checks that both files name
 -- the same columns and constraints.
 --
+-- job_store holds one row: the job table's identity, a random id written once by the store
+-- (JobStore.ensure_identity). Job ids and run ids start again at 1 when the tables are
+-- created anew, so output folders, process markers and caches name an attempt by store id
+-- and run id together.
+--
 -- AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_jobs_store.py
 -- (constraints, schema drift) and tests/test_jobs_mysql.py, on MySQL 8.4.13.
+
+CREATE TABLE job_store (
+    id               TINYINT UNSIGNED NOT NULL,
+    store_id         CHAR(32)        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    schema_version   INT UNSIGNED    NOT NULL,
+    created_at       DATETIME(6)     NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT job_store_one_row CHECK (id = 1)
+) ENGINE = InnoDB;
 
 CREATE TABLE jobs (
     job_id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -48,6 +62,7 @@ CREATE TABLE job_attempts (
     output_dir       VARCHAR(1024)   NOT NULL,
     outcome          VARCHAR(16)     CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     error            TEXT            NULL,      -- why this attempt failed, only when failed
+    result_digest    CHAR(64)        CHARACTER SET ascii COLLATE ascii_bin NULL,  -- run digest (etf_risk.runs), only when accepted
     claimed_at       DATETIME(6)     NOT NULL,
     lease_expires_at DATETIME(6)     NOT NULL,  -- as last claimed or renewed; the guards read the copy in jobs
     renewals         INT UNSIGNED    NOT NULL,
@@ -58,7 +73,8 @@ CREATE TABLE job_attempts (
     CONSTRAINT job_attempts_job FOREIGN KEY (job_id) REFERENCES jobs (job_id),
     CONSTRAINT job_attempts_outcome CHECK (outcome IN ('running', 'accepted', 'failed', 'expired')),
     CONSTRAINT job_attempts_ended CHECK ((outcome = 'running') = (ended_at IS NULL)),
-    CONSTRAINT job_attempts_failed_has_error CHECK ((outcome = 'failed') = (error IS NOT NULL))
+    CONSTRAINT job_attempts_failed_has_error CHECK ((outcome = 'failed') = (error IS NOT NULL)),
+    CONSTRAINT job_attempts_accepted_has_digest CHECK ((outcome = 'accepted') = (result_digest IS NOT NULL))
 ) ENGINE = InnoDB;
 
 -- Declared once job_attempts exists: the accepted result is one of the job's own attempts.

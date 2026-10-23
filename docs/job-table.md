@@ -85,6 +85,25 @@ row first decides, and the other then finds the job succeeded, or a token that i
 - In MySQL, an operation rolled back by a deadlock or a lock wait timeout runs again, up to
   three runs in all.
 
+## The accepted result, the store's identity and lost connections (M2)
+
+- **The digest.** Acceptance records the result's run digest
+  ([`runs.py`](../src/etf_risk/runs.py): the SHA-256 of a canonical manifest of the run
+  folder's files) in its `job_attempts` update, inside the token-guarded transaction.
+  `job_attempts_accepted_has_digest` requires a digest exactly for accepted attempts. A
+  repeat after a failed COMMIT counts as accepted only for the same token and digest. The
+  decision and the content it accepted are bound together.
+- **The store id.** `job_store` holds one row, the store id, written once by `init-db`. Job
+  and run ids start again at 1 when the tables are created anew, so folders, process markers
+  and caches name an attempt by store id and run id together.
+- **Lost connections.** Given a connection factory, the store replaces a broken connection
+  only at the start of an operation, never inside a transaction. A transaction whose
+  connection broke between two statements is abandoned: its later statements would otherwise
+  commit one by one on a new connection, and the second statement of `accept_result` could
+  then mark an attempt accepted while the job stayed running. A broken connection gets no
+  ROLLBACK, and the failed operation is not replayed. Details are in
+  [worker-pipeline.md](worker-pipeline.md).
+
 ## What is checked where
 
 - [`tests/test_jobs_store.py`](../tests/test_jobs_store.py) and

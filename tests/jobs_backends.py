@@ -33,6 +33,7 @@ from etf_risk.jobs.reconciler import Reconciler
 from etf_risk.jobs.simulated import ManualClock, MemoryQueue, SimulatedPipeline, result_digest
 from etf_risk.jobs.store import SQLITE, JobStore, Outcome, Status, open_sqlite
 from etf_risk.jobs.worker import Handled, Result, Worker
+from etf_risk.runs import folder_digest
 
 MYSQL_URL = os.environ.get("ETF_RISK_MYSQL_URL")
 BACKENDS = ["sqlite", "mysql"] if MYSQL_URL else ["sqlite"]
@@ -41,6 +42,7 @@ KAFKA_BOOTSTRAP = os.environ.get("ETF_RISK_KAFKA_BOOTSTRAP")
 needs_kafka = pytest.mark.skipif(not KAFKA_BOOTSTRAP, reason="set ETF_RISK_KAFKA_BOOTSTRAP to run against Kafka")
 LEASE = timedelta(seconds=60)
 PARAMS = {"snapshot": "simulated", "stride": 21}
+DIGEST = "d" * 64          # a run digest for store tests that accept without a pipeline
 DUMP = ("SELECT * FROM jobs ORDER BY job_id", "SELECT * FROM job_attempts ORDER BY job_id, attempt_number")
 
 
@@ -201,7 +203,8 @@ class WorkerEnv(JobsEnv):
         """The guarantee for one job: no invariant violation; at most one accepted attempt,
         exactly one if the job succeeded, as many as the deliveries told "accepted" plus any
         acceptance whose worker died before it could tell; that attempt's result in its
-        folder; no two attempts sharing a folder."""
+        folder, whose run digest is the one recorded with the acceptance; no two attempts
+        sharing a folder."""
         assert self.admin.invariant_violations() == {}
         job, attempts = self.admin.job(job_id), self.admin.attempts(job_id)
         accepted = [a for a in attempts if a["outcome"] is Outcome.ACCEPTED]
@@ -212,6 +215,7 @@ class WorkerEnv(JobsEnv):
             assert json.loads((Path(a["output_dir"]) / "result.json").read_text()) == {
                 "job_id": job_id, "attempt_number": a["attempt_number"], "run_id": a["run_id"],
                 "result_sha256": result_digest(job["params"])}
+            assert a["result_digest"] == folder_digest(a["output_dir"])
         assert all(h.claim.attempt_number == job["accepted_attempt"] for h in told)
         assert len({a["output_dir"] for a in attempts}) == len(attempts)
 

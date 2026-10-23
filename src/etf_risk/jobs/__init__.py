@@ -1,4 +1,4 @@
-"""The job queue of the optional systems extension (spec §11), with a simulated pipeline.
+"""The job queue of the optional systems extension (spec §11).
 
 - The job table: the schema (schema/mysql.sql, mirrored for SQLite in schema/sqlite.sql),
   the state transitions (store.py), and the MySQL dialect and connection (mysql.py).
@@ -6,10 +6,17 @@
   (kafka.py), and the in-memory queue for the offline tests (simulated.py).
 - The worker, which handles one delivered job at a time (worker.py), and the
   reconciler (reconciler.py).
+- The real pipeline (pipeline.py): windows → spark_pipeline → verify, each step under a
+  launcher (launcher.py), whose watchdog and the host's execution lock keep two Spark trees
+  from running at once. The processes of a step are found and ended through their session
+  and marker (processes.py). Also in this group: the job's parameters and input checksums
+  (params.py), the time settings and their relations (timing.py), the event logs
+  (events.py), and the commands (cli.py; python -m etf_risk.jobs).
+- The simulated pipeline (simulated.py) stays for the offline tests of the state logic.
 
-Redis and the real pipeline come later. docs/job-table.md explains claim(), the token
-checks and the transactions with two workers. docs/job-queue.md explains publication,
-delivery and the reconciler with a timeline.
+The result cache (Redis) comes later. docs/job-table.md explains claim(), the token checks
+and the transactions with two workers. docs/job-queue.md explains publication, delivery,
+the reconciler and the real pipeline, with timelines.
 
 Guarantee. Each job accepts at most one result, and a job that succeeds has exactly one
 accepted result. A job may execute more than once: a delivery can repeat, and a lease can

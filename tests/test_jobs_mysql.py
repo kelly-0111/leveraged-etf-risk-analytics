@@ -26,7 +26,7 @@ import pytest
 from etf_risk.jobs.mysql import MYSQL, MySQLDialect, connection_options, schema_statements
 from etf_risk.jobs.simulated import ManualClock
 from etf_risk.jobs.store import Claim, JobStore, Refusal, SQLiteDialect, Status, open_sqlite
-from jobs_backends import LEASE, InThread, MySQLBackend, Paused, StoreEnv, needs_mysql
+from jobs_backends import DIGEST, LEASE, MYSQL_URL, InThread, MySQLBackend, Paused, StoreEnv, needs_mysql
 
 
 # Offline
@@ -77,7 +77,7 @@ def send_every_statement(store, root):
     assert store.renew(a) and store.claim(job, "worker-B", root) is Refusal.LEASE_HELD
     clock.advance(LEASE.total_seconds())
     b = store.claim(job, "worker-B", root)                         # a takeover
-    assert not store.accept_result(a) and store.accept_result(b)   # refused (its read), then accepted
+    assert not store.accept_result(a, DIGEST) and store.accept_result(b, DIGEST)   # refused (its read), then accepted
     failing = store.submit({"n": 2}, {}, max_attempts=1)
     assert store.fail_attempt(store.claim(failing, "worker-A", root), "boom", retryable=True) is not None
     last = store.submit({"n": 3}, {}, max_attempts=1)
@@ -96,10 +96,11 @@ def send_every_statement(store, root):
     return store.dialect.statements
 
 
-def test_the_schema_splits_into_its_three_statements():
+def test_the_schema_splits_into_its_four_statements():
     statements = schema_statements()
     assert [s.split()[:3] for s in statements] == [
-        ["CREATE", "TABLE", "jobs"], ["CREATE", "TABLE", "job_attempts"], ["ALTER", "TABLE", "jobs"]]
+        ["CREATE", "TABLE", "job_store"], ["CREATE", "TABLE", "jobs"], ["CREATE", "TABLE", "job_attempts"],
+        ["ALTER", "TABLE", "jobs"]]
     assert all("--" not in s and s.count("(") == s.count(")") for s in statements)
 
 
@@ -117,6 +118,16 @@ def test_lock_conflicts_are_recognised_by_their_error_codes():
         pymysql_error(1205, "Lock wait timeout exceeded"))
     assert not MYSQL.is_conflict(pymysql_error(1062, "Duplicate entry"))
     assert not MYSQL.is_conflict(OSError(1213, "not from PyMySQL"))
+
+
+def test_a_lost_connection_is_recognised_by_its_error_codes_and_never_as_a_conflict():
+    operational = type("OperationalError", (Exception,), {"__module__": "pymysql.err"})
+    interface = type("InterfaceError", (Exception,), {"__module__": "pymysql.err"})
+    for code in (2003, 2006, 2013, 1053, 1927, 4031):
+        assert MYSQL.is_disconnect(operational(code, "gone")) and not MYSQL.is_conflict(operational(code, "gone"))
+    assert MYSQL.is_disconnect(interface(0, ""))
+    assert not MYSQL.is_disconnect(operational(1213, "Deadlock found"))
+    assert not MYSQL.is_disconnect(ConnectionResetError(54, "not from PyMySQL"))
 
 
 # Against MySQL
@@ -223,3 +234,67 @@ def test_a_claim_gives_up_while_the_lock_stays_held(mysql_env):
         waiting.outcome()                                           # three runs, each timed out
     assert raised.value.args[0] == 1205 and dialect.conflicts == 2  # two ran it again; the third is raised
     assert isinstance(holder.resume(), Claim) and env.store.invariant_violations() == {}
+
+
+# Reconnecting after a lost connection (store.py, "Connections")
+
+SESSION_CHECK = ("SELECT @@SESSION.transaction_isolation, @@SESSION.innodb_lock_wait_timeout,"
+                 " @@SESSION.wait_timeout")
+
+
+@pytest.fixture
+def reconnecting_store(mysql_env):
+    """A store that connects through mysql.connector() with the services' session settings."""
+    from etf_risk.jobs import mysql
+    stores = []
+
+    def make():
+        connect = mysql.connector(MYSQL_URL, database=mysql_env.backend.database, **mysql.SERVICE_SESSION)
+        stores.append(JobStore(None, MYSQL, clock=mysql_env.clock, lease=LEASE, connect=connect))
+        return stores[-1]
+    yield make
+    for store in stores:
+        if store.connection is not None:
+            store.connection.close()
+
+
+def kill(env, connection):
+    env.backend.execute(f"KILL CONNECTION {int(connection.thread_id())}")
+
+
+def session_settings(connection):
+    with connection.cursor() as cursor:
+        cursor.execute(SESSION_CHECK)
+        return cursor.fetchone()
+
+
+@needs_mysql
+def test_a_killed_connection_is_replaced_at_the_next_operation_with_its_session_settings(mysql_env,
+                                                                                      reconnecting_store):
+    import pymysql
+    store = reconnecting_store()
+    job = store.submit({"n": 1}, {})
+    first = store.connection
+    assert session_settings(first) == ("REPEATABLE-READ", 2, 120)
+    kill(mysql_env, first)
+    with pytest.raises(pymysql.err.OperationalError) as lost:
+        store.claim(job, "worker-A", mysql_env.runs)
+    assert MYSQL.is_disconnect(lost.value) and store.connection is None   # dropped, nothing replayed
+    assert store.job(job)["status"] is Status.QUEUED                      # the next operation reconnected
+    assert store.connection is not first and session_settings(store.connection) == ("REPEATABLE-READ", 2, 120)
+    assert store.claim(job, "worker-A", mysql_env.runs).attempt_number == 1
+
+
+@needs_mysql
+def test_an_idle_connection_killed_meanwhile_is_replaced_by_the_ping_with_its_session_settings(
+        mysql_env, reconnecting_store, monkeypatch):
+    """PyMySQL's own ping(reconnect=True) would reconnect with the server's defaults (a lock
+    wait timeout of 50 s); the store pings without it and reconnects through its factory."""
+    from etf_risk.jobs import store as store_module
+    store = reconnecting_store()
+    job = store.submit({"n": 1}, {})
+    first = store.connection
+    kill(mysql_env, first)
+    monkeypatch.setattr(store_module, "IDLE_PING", 0.0)                   # every operation pings first
+    assert store.job(job)["status"] is Status.QUEUED                      # no error: pinged and replaced
+    assert store.connection is not first and session_settings(store.connection) == ("REPEATABLE-READ", 2, 120)

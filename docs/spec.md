@@ -8,9 +8,10 @@ its results, a Docker image, the stride experiment
 ([caching-experiment.md](caching-experiment.md)), and the figures, results
 write-up and demo of Stage 4 ([results.md](results.md), [demo.md](demo.md)); in
 progress: an optional systems extension with MySQL, Kafka and Redis (§11), of
-which the job queue exists with a simulated pipeline: the job table, a worker,
-Kafka delivery and the reconciler ([job-table.md](job-table.md),
-[job-queue.md](job-queue.md)).
+which the job queue exists: the job table, Kafka delivery and the reconciler
+([job-table.md](job-table.md), [job-queue.md](job-queue.md)), and a worker that runs
+the real pipeline under a watchdog and a host execution lock
+([worker-pipeline.md](worker-pipeline.md)).
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -21,7 +22,7 @@ is reviewed.
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
 | Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | **Implemented**: three SQL analyses, the Docker image, the stride experiment ([experiments.md](experiments.md)), the shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)), the pandas baseline ([pandas-baseline.md](pandas-baseline.md)) and the caching experiment ([caching-experiment.md](caching-experiment.md)) |
-| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | **In progress**: the job queue with a simulated pipeline: the MySQL job table, a worker, Kafka delivery and the reconciler ([job-table.md](job-table.md), [job-queue.md](job-queue.md)); the real pipeline, Redis and the experiments planned |
+| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | **In progress**: the job queue: the MySQL job table, Kafka delivery and the reconciler ([job-table.md](job-table.md), [job-queue.md](job-queue.md)), and a worker running the real pipeline ([worker-pipeline.md](worker-pipeline.md)); Redis and the experiments planned |
 | Stage 4 | Figures, final documentation and demo | **Implemented**: twelve figures drawn from the result files by `plots.py` and checked against the documented values, with the measurement CSVs of X1–X4 committed ([measurements/README.md](measurements/README.md)); the results write-up, whose conclusions the author approved ([results.md](results.md)); the demo ([demo.md](demo.md)) |
 
 ## 1. Purpose and scope
@@ -174,7 +175,10 @@ src/etf_risk/
   plots.py           implemented  the twelve figures from result files, checked against the documented values (Stage 4)
   jobs/              implemented  optional job queue (§11): job table schema (MySQL, SQLite mirror), guarded state
                                   transitions (store.py), MySQL and Kafka adapters, worker and its consume loop,
-                                  reconciler, simulated pipeline and in-memory queue
+                                  reconciler; the real pipeline (pipeline.py) with its launcher's watchdog and host
+                                  lock (launcher.py, processes.py), job parameters, time settings, event logs, the
+                                  commands (python -m etf_risk.jobs); simulated pipeline and in-memory queue
+  runs.py            implemented  a run folder's manifest and run digest (the accepted result's identity)
   services.py        implemented  the extension's Compose services from this machine: readiness (a MySQL login, Kafka
                                   metadata), cgroup memory peaks, and a count of other projects' containers
 analysis/            implemented  three Spark SQL analyses of a run's paired table (project author):
@@ -661,7 +665,7 @@ measured run. Design, run log, records and answers:
 
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stages 1–4: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline, figures and write-up; the extension's job queue with a simulated pipeline) | Planned |
+| Area | Implemented (prototype, Stages 1–4: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline, figures and write-up; the extension's job queue with the real pipeline in the worker) | Planned |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
@@ -670,7 +674,7 @@ measured run. Design, run log, records and answers:
 | Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)); the pandas baseline (the Spark pipeline against a single-process pandas implementation at stride 7, end to end; one batch meeting every acceptance criterion; no drift) with the pandas pipeline, `measure --pipeline`, the batch collector and the session helpers ([pandas-baseline.md](pandas-baseline.md)); the caching experiment (no cache, the window-member rows, and those plus the four read-back tables at stride 7; one batch meeting every acceptance criterion; no drift) with the `--cache` option, cache records and checks from Spark's storage information and the plans, the batch collector and the session helpers ([caching-experiment.md](caching-experiment.md)) | — |
 | Figures | twelve figures from the result files (`plots.py`): the model results, the sensitivity analysis, the data and windows, and the four performance experiments; their numbers checked against the documented values, inputs validated before anything is drawn, and the measurement CSVs of X1–X4 committed ([results.md](results.md), [measurements/README.md](measurements/README.md)) | — |
 | Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0, psutil 7.2.2 and matplotlib 3.11.2 pinned exactly; the job queue's clients PyMySQL 1.1.1 and confluent-kafka 2.16.0 pinned exactly in the `jobs` group; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
-| Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases; a worker with a simulated pipeline ([job-table.md](job-table.md)); Kafka delivery with confirmed publication and manual commits, and the reconciler ([job-queue.md](job-queue.md)); MySQL 8.4.13 and Kafka 4.3.1 in Compose for the integration tests | the real pipeline in the worker, Redis result cache, recovery and caching experiments (§11) |
+| Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases, a store id, and run digests recorded at acceptance ([job-table.md](job-table.md)); a worker running windows → spark_pipeline → verify with renewals, an absolute-deadline watchdog, a host execution lock, process-tree cleanup, reconnects and the job commands ([worker-pipeline.md](worker-pipeline.md)); Kafka delivery with confirmed publication and manual commits, and the reconciler ([job-queue.md](job-queue.md)); MySQL 8.4.13 and Kafka 4.3.1 in Compose for the integration tests | Redis result cache, recovery and caching experiments (§11) |
 | Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [job-queue.md](job-queue.md), [results.md](results.md), [demo.md](demo.md), [measurements/README.md](measurements/README.md), [AI-usage logs](ai-usage/README.md) | design decisions |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
@@ -733,11 +737,18 @@ measured run. Design, run log, records and answers:
 An exploratory layer around the batch pipeline: analysis jobs are submitted,
 queued, run by a worker and tracked, and summary queries can be served from a
 cache. Nothing in sections 3–10 depends on it, and each of its stages can be the
-last. The Docker image (§9) and the job queue with a simulated pipeline exist:
-the job table, its state transitions and a worker ([job-table.md](job-table.md)),
-and Kafka delivery with the reconciler ([job-queue.md](job-queue.md)), tested
-on SQLite and against MySQL 8.4.13 and Kafka 4.3.1. Everything else below is
-planned and may change at review.
+last. These exist:
+- the Docker image (§9);
+- the job table, its state transitions and the store id
+  ([job-table.md](job-table.md));
+- Kafka delivery with the reconciler ([job-queue.md](job-queue.md));
+- a worker that runs the real pipeline: renewals, an absolute-deadline watchdog,
+  a host execution lock, process-tree cleanup, reconnects, the run digest
+  recorded at acceptance, and the job commands
+  ([worker-pipeline.md](worker-pipeline.md)).
+
+These are tested on SQLite and against MySQL 8.4.13 and Kafka 4.3.1. Everything
+else below is planned and may change at review.
 
 | Component | Role | Notes |
 |---|---|---|
@@ -836,6 +847,21 @@ least once, and a lease can expire while a slow worker still runs.
     longer was measured. Neither budget was exceeded, so both stand for now, but
     each batch of the recovery experiments should start on a fresh MySQL
     container and record its own peak.
+- With the real pipeline in the worker (M2, 2026-10-23;
+  [worker-pipeline.md](worker-pipeline.md)), measured while four containers of
+  another project shared Docker's VM and the host had about 1.3 GiB available.
+  These figures are not budget checks, which need no other containers in the VM.
+  - **Each step's process tree,** peak summed RSS over two acceptance runs:
+    calendar-year 0.12, 0.66–0.79 and 0.45–0.49 GiB; stride 21 0.12, 1.19–1.36
+    and 0.57–0.58 GiB (windows, spark_pipeline, verify). The host lock lets one
+    step run at a time.
+  - **The job processes:** the worker 63 MiB and the reconciler 52 MiB.
+  - **MySQL:** 501 MiB, 98%, after a mutation session (one full run and 49
+    shorter ones) on a fresh container. That is the same limited headroom as
+    above.
+  - **A restart resets the cgroup counter.** `docker compose restart` gives the
+    container a new `memory.peak`, so the recovery harness reads peaks before
+    each restart it injects.
 - Docker Desktop's VM has 3.83 GiB here. Timings inside containers form a
   separate configuration and are not compared with the native measurements (§8).
 
