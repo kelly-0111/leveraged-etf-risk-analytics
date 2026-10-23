@@ -102,6 +102,20 @@ def test_a_stale_token_is_refused_even_when_the_new_holders_lease_has_expired_to
     assert env.admin.requeue_expired(job, b.token) is Status.QUEUED             # B's own token: requeued
 
 
+def test_a_stale_token_is_refused_on_the_last_attempt_too(env):
+    """The same on the path that fails a job. The reconciler read A's token, B took the job
+    over on its last attempt, and B's lease expired as well. Without the token guard in the
+    update that exhausts a job, A's stale token would fail the job through B's attempt."""
+    job, a = lapsed(env, max_attempts=2)
+    lease = env.admin.expired_leases()[0]                                       # A's token
+    b = env.admin.claim(job, "worker-B", env.runs)                              # a takeover: attempt 2 of 2
+    env.clock.advance(LEASE.total_seconds())                                    # B's lease expires too
+    before = env.dump()
+    assert env.admin.requeue_expired(lease.job_id, lease.token) is None
+    assert env.dump() == before
+    assert env.admin.requeue_expired(job, b.token) is Status.FAILED             # B's own token: none left
+
+
 # mark_published: recording a confirmed publication
 
 def test_a_confirmed_publication_is_recorded_once(env):
