@@ -49,11 +49,13 @@ sys.path.insert(0, str(REPO / "src"))
 from etf_risk.provenance import code_state  # noqa: E402
 
 COPIED = ("src", "tests", "pyproject.toml", "uv.lock")
-JOB_TESTS = ("tests/test_jobs_store.py", "tests/test_jobs_worker.py", "tests/test_jobs_queue.py",
-             "tests/test_jobs_reconciler.py", "tests/test_jobs_kafka.py", "tests/test_jobs_mysql.py")
+JOB_TESTS = ("tests/test_jobs_store.py", "tests/test_jobs_reconnect.py", "tests/test_jobs_worker.py",
+             "tests/test_jobs_queue.py", "tests/test_jobs_reconciler.py", "tests/test_jobs_timing.py",
+             "tests/test_jobs_kafka.py", "tests/test_jobs_mysql.py")
 NEEDS = {"mysql": "ETF_RISK_MYSQL_URL", "kafka": "ETF_RISK_KAFKA_BOOTSTRAP"}
 STORE, WORKER, QUEUE = "src/etf_risk/jobs/store.py", "src/etf_risk/jobs/worker.py", "src/etf_risk/jobs/queue.py"
 RECONCILER, KAFKA, MYSQL = "src/etf_risk/jobs/reconciler.py", "src/etf_risk/jobs/kafka.py", "src/etf_risk/jobs/mysql.py"
+TIMING = "src/etf_risk/jobs/timing.py"
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,21 @@ _EXHAUST = ("'running' AND attempt_token = :token\"\n                \" AND leas
             " attempt_number >= max_attempts\",")
 _CLAIM = ("published_at = NULL,\"\n                    \" version = version + 1, updated_at = :now\"\n"
           "                    \" WHERE job_id = :job_id AND status = 'queued'\", **take)")
+_REPEAT = ("a.attempt_token = :token\"\n                \" AND a.result_digest = :digest\",")
+_IN_TRANSACTION = ("        if self._in_transaction:                         # inside a transaction: this connection or none\n"
+                   "            cursor = self.connection.cursor()\n"
+                   "            cursor.execute(self.dialect.sql(sql), params)\n"
+                   "            return cursor\n")
+_IN_TRANSACTION_RETRY = ("        if self._in_transaction:\n"
+                         "            try:\n"
+                         "                cursor = self.connection.cursor()\n"
+                         "                cursor.execute(self.dialect.sql(sql), params)\n"
+                         "            except BaseException as error:\n"
+                         "                if not self._forget_if_broken(error):\n"
+                         "                    raise\n"
+                         "                cursor = self._open().cursor()\n"
+                         "                cursor.execute(self.dialect.sql(sql), params)\n"
+                         "            return cursor\n")
 
 MUTATIONS = (
     # The store's guards (docs/job-table.md).
@@ -103,9 +120,22 @@ MUTATIONS = (
     removing("publication-version", STORE, "AND published_at IS NULL AND version = :version\",",
              " AND version = :version", "a late confirmation is recorded after the job moved on"),
     Mutation("accept-repeat-token", STORE,
-             "\" WHERE j.job_id = :job_id AND j.status = 'succeeded' AND a.attempt_token = :token\",",
-             "\" WHERE j.job_id = :job_id AND j.status = 'succeeded'\",",
+             "\" WHERE j.job_id = :job_id AND j.status = 'succeeded' AND a.attempt_token = :token\"",
+             "\" WHERE j.job_id = :job_id AND j.status = 'succeeded'\"",
              "a repeated acceptance is reported for any token"),
+    removing("accept-repeat-digest", STORE, _REPEAT, "\n                \" AND a.result_digest = :digest\"",
+             "a repeated acceptance is reported for any digest"),
+    removing("accept-records-digest", STORE, "SET outcome = 'accepted', result_digest = :digest, ended_at",
+             " result_digest = :digest,", "acceptance does not record the run digest"),
+    Mutation("digest-check", STORE, "if not is_digest(result_digest):", "if False:",
+             "anything is accepted as a run digest"),
+    Mutation("reconnect-inside-transaction", STORE, _IN_TRANSACTION, _IN_TRANSACTION_RETRY,
+             "a statement inside a transaction runs again on a new connection"),
+    Mutation("disconnect-as-conflict", STORE, "or not self.dialect.is_conflict(error):",
+             "or not (self.dialect.is_conflict(error) or self.dialect.is_disconnect(error)):",
+             "an operation that lost its connection is replayed"),
+    Mutation("ping-reconnect", MYSQL, "connection.ping(reconnect=False)", "connection.ping(reconnect=True)",
+             "a ping reconnects without the session settings", needs=("mysql",)),
     Mutation("rollback", STORE, 'cursor.execute("ROLLBACK")', 'cursor.execute("COMMIT")',
              "a failed transaction commits what it wrote"),
     Mutation("one-row-check", STORE, "if count != 1:", "if count > 1:", "a job_attempts write may touch no row"),
@@ -139,6 +169,12 @@ MUTATIONS = (
              "a new group skips earlier jobs"),
     Mutation("acks", KAFKA, '"acks": "all"', '"acks": "1"', "the producer stops asking for acks=all"),
     Mutation("idempotence", KAFKA, '"enable.idempotence": True', '"enable.idempotence": False', "idempotence off"),
+    Mutation("group-protocol", KAFKA, '"group.protocol": "classic"', '"group.protocol": "consumer"',
+             "the session timeout is ignored"),
+    # The time settings' relations (etf_risk.jobs.timing).
+    Mutation("fence-margin-check", TIMING,
+             "if self.fence_margin < self.watchdog_tick + self.kill_grace + self.safety:", "if False:",
+             "a fence margin too short for the watchdog is accepted"),
 )
 
 

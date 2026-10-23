@@ -16,7 +16,8 @@ guard, which checks again what the read saw.
     claim            queued -> running                         status queued
                      running -> running (takeover)             lease expired, attempts left
     renew            running -> running                        status running, the attempt's token
-    accept_result    running -> succeeded                      status running, the attempt's token
+    accept_result    running -> succeeded, recording the       status running, the attempt's token
+                     result's run digest
     fail_attempt     running -> queued (retryable, attempts    status running, the attempt's token
                      left) or running -> failed
     requeue_expired  running -> queued (for the reconciler)    status running, the token read before,
@@ -39,6 +40,27 @@ repeated run safe. A failed COMMIT may still have taken effect, so the operation
 leaves the decision to the caller: repeating accept_result() reports an acceptance that did
 happen, and an attempt whose claim was lost this way is taken over once its lease expires.
 
+The accepted result. accept_result() records the run digest of the attempt's result
+(etf_risk.runs) in the same update that marks the attempt accepted, and a CHECK constraint
+requires a digest exactly for accepted attempts. The decision and the content it accepted
+are therefore bound in one transaction. A repeat after a failed COMMIT counts as accepted
+only for the same token and the same digest.
+
+Identity. job_store holds one row: a random store id, written once (ensure_identity()). Job
+and run ids start again at 1 when the tables are created anew, so whatever lives outside the
+database names an attempt by store id and run id together: output folders, process markers
+and cache keys.
+
+Connections. Given a way to connect (connect=...), the store replaces a connection that
+broke. It does so only at the start of an operation: before BEGIN, or before a read that
+runs on its own. It also replaces a connection idle for IDLE_PING seconds whose ping fails.
+It never reconnects inside a transaction. A transaction whose connection broke between two
+statements is abandoned with that connection, since its later statements would otherwise
+commit one by one on a new one. A broken connection gets no ROLLBACK, because the server
+rolls back the open transaction when the session ends. The operation that saw the break
+raises (no replay); the next one connects again. Which errors mean a broken connection is
+the dialect's decision (is_disconnect).
+
 MySQL behaviour this SQL is written for, for the MySQL integration tests to confirm: an
 UPDATE reads the latest committed version of the row and locks it, so concurrent claims
 of one job take effect one after the other; affected rows count only changed rows unless
@@ -58,6 +80,7 @@ import functools
 import json
 import secrets
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -66,10 +89,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
+from etf_risk.runs import is_digest
+
 SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
+SCHEMA_VERSION = 2      # 2: job_store and job_attempts.result_digest
 DEFAULT_LEASE = timedelta(seconds=60)
 DEFAULT_MAX_ATTEMPTS = 3
 CONFLICT_RETRIES = 3    # runs of one write operation in all, while the database reports lock conflicts
+IDLE_PING = 60.0        # seconds: a connection idle this long is pinged before the next operation
 
 
 class Status(StrEnum):
@@ -187,6 +214,8 @@ class Dialect(Protocol):
     def time(self, value: datetime) -> Any: ...         # a UTC time as the driver takes it
     def parse_time(self, value: Any) -> datetime: ...
     def is_conflict(self, error: BaseException) -> bool: ...   # rolled back over a lock conflict: run again
+    def is_disconnect(self, error: BaseException) -> bool: ...  # the connection is gone: open a new one, later
+    def ping(self, connection: Any) -> None: ...                # raises if the connection is no longer usable
 
 
 class SQLiteDialect:
@@ -212,6 +241,14 @@ class SQLiteDialect:
     @staticmethod
     def is_conflict(error: BaseException) -> bool:
         return False
+
+    @staticmethod
+    def is_disconnect(error: BaseException) -> bool:
+        return False                                    # a file database has no connection to lose
+
+    @staticmethod
+    def ping(connection: Any) -> None:
+        return None
 
 
 SQLITE = SQLiteDialect()
@@ -278,18 +315,54 @@ def _retry_conflicts(operation: Callable[..., Any]) -> Callable[..., Any]:
 
 
 class JobStore:
-    """The job table's operations, each one transaction on the given connection.
+    """The job table's operations, each one transaction on the store's connection.
 
-    fault, when given, is called with a name from FAULT_POINTS between the statements of a
-    transaction; the tests raise there."""
+    connection is an open connection, or None when connect is given. connect, when given,
+    opens a new connection with the session settings it needs: the store calls it for its
+    first operation and again after a connection broke (see Connections above). Without it a
+    broken connection stays broken. fault, when given, is called with a name from
+    FAULT_POINTS between the statements of a transaction; the tests raise there."""
 
-    def __init__(self, connection: Any, dialect: Dialect, *, clock: Clock | None = None,
-                 lease: timedelta = DEFAULT_LEASE, fault: Callable[[str], None] | None = None):
+    def __init__(self, connection: Any | None, dialect: Dialect, *, clock: Clock | None = None,
+                 lease: timedelta = DEFAULT_LEASE, fault: Callable[[str], None] | None = None,
+                 connect: Callable[[], Any] | None = None):
+        if connection is None and connect is None:
+            raise ValueError("give the store a connection or a way to connect")
         self.connection = connection
+        self.connect = connect
         self.dialect = dialect
         self.clock = clock or SystemClock()
         self.lease = lease
         self._fault = fault or (lambda point: None)
+        self._in_transaction = False
+        self._last_used = time.monotonic()
+        self._store_id: str | None = None
+
+    # Identity
+
+    @_retry_conflicts
+    def ensure_identity(self) -> str:
+        """Write the job table's store id if it has none yet, and return it."""
+        with self._transaction():
+            row = self._fetch_one("SELECT store_id FROM job_store WHERE id = 1")
+            if row is None:
+                store_id = secrets.token_hex(16)
+                self._execute("INSERT INTO job_store (id, store_id, schema_version, created_at)"
+                              " VALUES (1, :store_id, :version, :now)",
+                              store_id=store_id, version=SCHEMA_VERSION, now=self._time(self.clock.now()))
+            else:
+                store_id = row["store_id"]
+        self._store_id = store_id
+        return store_id
+
+    def store_id(self) -> str:
+        """The job table's identity (see Identity above), read once and then kept."""
+        if self._store_id is None:
+            row = self._fetch_one("SELECT store_id FROM job_store WHERE id = 1")
+            if row is None:
+                raise LookupError("the job table has no store id yet: set it up with ensure_identity() (init-db)")
+            self._store_id = row["store_id"]
+        return self._store_id
 
     @_retry_conflicts
     def submit(self, params: dict, input_checksums: dict, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> int:
@@ -384,9 +457,13 @@ class JobStore:
             return True
 
     @_retry_conflicts
-    def accept_result(self, claim: Claim) -> bool:
-        """Accept this attempt's result. True if it is the job's accepted result, now or
-        already (a repeat after a failed COMMIT that took effect); False: fenced off."""
+    def accept_result(self, claim: Claim, result_digest: str) -> bool:
+        """Accept this attempt's result, whose files have the run digest result_digest
+        (etf_risk.runs), recorded with the acceptance. True if it is the job's accepted
+        result, now or already (a repeat, with the same token and digest, after a failed
+        COMMIT that took effect); False: fenced off."""
+        if not is_digest(result_digest):
+            raise ValueError(f"not a run digest: {result_digest!r}")
         now = self._time(self.clock.now())
         with self._transaction():
             if self._execute(
@@ -397,15 +474,17 @@ class JobStore:
                     job_id=claim.job_id, token=claim.token, attempt_number=claim.attempt_number,
                     now=now).rowcount:
                 self._fault("accept_result.jobs_updated")
-                self._write_one("UPDATE job_attempts SET outcome = 'accepted', ended_at = :now"
+                self._write_one("UPDATE job_attempts SET outcome = 'accepted', result_digest = :digest, ended_at = :now"
                                 " WHERE job_id = :job_id AND attempt_number = :attempt_number AND outcome = 'running'",
-                                job_id=claim.job_id, attempt_number=claim.attempt_number, now=now)
+                                job_id=claim.job_id, attempt_number=claim.attempt_number, digest=result_digest,
+                                now=now)
                 return True
             return self._fetch_one(
                 "SELECT 1 FROM jobs j JOIN job_attempts a"
                 " ON a.job_id = j.job_id AND a.attempt_number = j.accepted_attempt"
-                " WHERE j.job_id = :job_id AND j.status = 'succeeded' AND a.attempt_token = :token",
-                job_id=claim.job_id, token=claim.token) is not None
+                " WHERE j.job_id = :job_id AND j.status = 'succeeded' AND a.attempt_token = :token"
+                " AND a.result_digest = :digest",
+                job_id=claim.job_id, token=claim.token, digest=result_digest) is not None
 
     @_retry_conflicts
     def fail_attempt(self, claim: Claim, error: str, *, retryable: bool) -> Status | None:
@@ -478,6 +557,19 @@ class JobStore:
         return [self._decode(row) for row in self._fetch_all(
             "SELECT * FROM job_attempts WHERE job_id = :job_id ORDER BY attempt_number", job_id=job_id)]
 
+    def all_jobs(self) -> list[dict]:
+        return [self._decode(row) for row in self._fetch_all("SELECT * FROM jobs ORDER BY job_id")]
+
+    def all_attempts(self) -> list[dict]:
+        return [self._decode(row) for row in self._fetch_all(
+            "SELECT * FROM job_attempts ORDER BY job_id, attempt_number")]
+
+    def current_attempts(self) -> dict[int, tuple[int, str]]:
+        """Running jobs: job id -> (current attempt number, its token). An attempt is valid
+        and active exactly while it is listed here (the startup sweep keeps its processes)."""
+        return {row["job_id"]: (row["attempt_number"], row["attempt_token"]) for row in self._fetch_all(
+            "SELECT job_id, attempt_number, attempt_token FROM jobs WHERE status = 'running' ORDER BY job_id")}
+
     def invariant_violations(self) -> dict[str, list[int]]:
         """The jobs breaking each invariant in INVARIANT_QUERIES, read in one transaction;
         empty when all hold. The tests run it after every scenario; the recovery experiments
@@ -524,25 +616,77 @@ class JobStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
-        cursor = self.connection.cursor()
-        cursor.execute(self.dialect.begin)
+        cursor = self._open().cursor()                  # the start of an operation: the only place to reconnect
+        try:
+            cursor.execute(self.dialect.begin)
+        except BaseException as error:
+            self._forget_if_broken(error)
+            raise
+        self._in_transaction = True
         try:
             yield
             cursor.execute("COMMIT")
         except BaseException as error:
             # BaseException too: a simulated crash must not leave the transaction open (a real
             # crash closes the connection, and the database rolls back the same way). After a
-            # failed COMMIT the ROLLBACK may find nothing left to undo, or fail itself.
-            try:
-                cursor.execute("ROLLBACK")
-            except Exception as rollback_error:
-                error.add_note(f"the ROLLBACK after this error failed too: {rollback_error!r}")
+            # failed COMMIT the ROLLBACK may find nothing left to undo, or fail itself. A broken
+            # connection gets no ROLLBACK and no further statement: the server rolls back the
+            # open transaction when its session ends.
+            if not self._forget_if_broken(error):
+                try:
+                    cursor.execute("ROLLBACK")
+                except Exception as rollback_error:
+                    error.add_note(f"the ROLLBACK after this error failed too: {rollback_error!r}")
+                    self._forget_if_broken(rollback_error)
             raise
+        finally:
+            self._in_transaction = False
+            self._last_used = time.monotonic()
 
     def _execute(self, sql: str, **params: Any) -> Any:
-        cursor = self.connection.cursor()
-        cursor.execute(self.dialect.sql(sql), params)
-        return cursor
+        if self._in_transaction:                         # inside a transaction: this connection or none
+            cursor = self.connection.cursor()
+            cursor.execute(self.dialect.sql(sql), params)
+            return cursor
+        try:                                             # a read on its own is an operation of its own
+            cursor = self._open().cursor()
+            cursor.execute(self.dialect.sql(sql), params)
+            return cursor
+        except BaseException as error:
+            self._forget_if_broken(error)
+            raise
+        finally:
+            self._last_used = time.monotonic()
+
+    def _open(self) -> Any:
+        """The connection for a new operation, after replacing one that broke, or one that sat
+        idle for IDLE_PING seconds and no longer answers a ping."""
+        if self.connection is not None and self.connect is not None \
+                and time.monotonic() - self._last_used >= IDLE_PING:
+            try:
+                self.dialect.ping(self.connection)
+            except Exception as error:
+                if not self._forget_if_broken(error):
+                    raise
+        if self.connection is None:
+            if self.connect is None:
+                raise ConnectionError("the job store's connection broke, and the store was given no way to reconnect")
+            self.connection = self.connect()
+            self._last_used = time.monotonic()
+        return self.connection
+
+    def _forget_if_broken(self, error: BaseException) -> bool:
+        """Drop the connection if error means it is gone; whether it was dropped."""
+        if self.connection is None:
+            return True
+        if not (self.dialect.is_disconnect(error) or getattr(self.connection, "open", True) is False):
+            return False
+        try:
+            self.connection.close()
+        except Exception:
+            pass
+        self.connection = None
+        return True
 
     def _write_one(self, sql: str, **params: Any) -> None:
         """A job_attempts write that must touch exactly one row; otherwise the transaction rolls back."""

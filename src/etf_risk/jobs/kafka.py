@@ -10,6 +10,18 @@ Settings, each pinned by tests/test_jobs_kafka.py:
   auto.offset.reset=earliest: a consumer group that has never committed starts at the
   first message, so a job published before its group first starts is still delivered;
   librdkafka's default, latest, would skip it.
+- consumer group timing, from etf_risk.jobs.timing:
+  - group.protocol=classic, since session.timeout.ms is ignored under "consumer";
+  - session.timeout.ms 15 s and heartbeat.interval.ms 3 s: a stopped or crashed worker leaves
+    the group well before its lease can expire;
+  - max.poll.interval.ms above the attempt limit plus the kill grace: serve() does not poll
+    while a pipeline runs, and a run that outlasted the interval would make librdkafka leave
+    the group, so a standby could start a second job on this machine. The offset is
+    committed before the run, so the job itself would not be delivered again.
+- socket.timeout.ms 10 s for both, so a commit or publication waits for a broker at most that
+  long per request.
+Consumer errors that are not fatal, such as a poll after the poll interval was exceeded, are
+logged and written to the worker's event log (consumer_error).
 
 confluent-kafka is imported only when an adapter is created. It is in the `jobs`
 dependency group (pyproject.toml, locked in uv.lock), not among the core dependencies: the
@@ -25,28 +37,39 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+from etf_risk.jobs.events import NO_EVENTS, EventLog
 from etf_risk.jobs.queue import CONFIRMATION_TIMEOUT, Delivery, encode
+from etf_risk.jobs.timing import DEFAULT_TIMING, Timing
 
 log = logging.getLogger(__name__)
 
 
-def producer_config(bootstrap: str, *, confirmation_timeout: timedelta = CONFIRMATION_TIMEOUT) -> dict:
+def _ms(seconds: float) -> int:
+    return int(round(seconds * 1000))
+
+
+def producer_config(bootstrap: str, *, confirmation_timeout: timedelta = CONFIRMATION_TIMEOUT,
+                    timing: Timing = DEFAULT_TIMING) -> dict:
     return {"bootstrap.servers": bootstrap, "acks": "all", "enable.idempotence": True, "linger.ms": 0,
-            "message.timeout.ms": int(confirmation_timeout.total_seconds() * 1000)}
+            "message.timeout.ms": int(confirmation_timeout.total_seconds() * 1000),
+            "socket.timeout.ms": _ms(timing.socket_timeout)}
 
 
-def consumer_config(bootstrap: str, group: str) -> dict:
+def consumer_config(bootstrap: str, group: str, *, timing: Timing = DEFAULT_TIMING) -> dict:
     return {"bootstrap.servers": bootstrap, "group.id": group, "enable.auto.commit": False,
-            "enable.auto.offset.store": False, "auto.offset.reset": "earliest"}
+            "enable.auto.offset.store": False, "auto.offset.reset": "earliest", "group.protocol": "classic",
+            "session.timeout.ms": _ms(timing.session_timeout), "heartbeat.interval.ms": _ms(timing.heartbeat_interval),
+            "max.poll.interval.ms": _ms(timing.max_poll_interval), "socket.timeout.ms": _ms(timing.socket_timeout)}
 
 
 class KafkaPublisher:
-    def __init__(self, bootstrap: str, topic: str, *, confirmation_timeout: timedelta = CONFIRMATION_TIMEOUT):
+    def __init__(self, bootstrap: str, topic: str, *, confirmation_timeout: timedelta = CONFIRMATION_TIMEOUT,
+                 timing: Timing = DEFAULT_TIMING):
         from confluent_kafka import Producer
         self.topic = topic
         self._wait = confirmation_timeout.total_seconds() + 1.0   # the report comes by the message timeout
-        self._producer = Producer({**producer_config(bootstrap, confirmation_timeout=confirmation_timeout),
-                                   "logger": log})
+        self._producer = Producer({**producer_config(bootstrap, confirmation_timeout=confirmation_timeout,
+                                                     timing=timing), "logger": log})
 
     def publish(self, job_id: int) -> bool:
         """Send the job id and wait for the broker's confirmation. True only if it arrived;
@@ -69,12 +92,16 @@ class KafkaPublisher:
 
 
 class KafkaConsumer:
-    def __init__(self, bootstrap: str, topic: str, group: str, *, settings: dict | None = None):
-        """settings override consumer_config(); the tests use it to show why earliest matters."""
+    def __init__(self, bootstrap: str, topic: str, group: str, *, settings: dict | None = None,
+                 timing: Timing = DEFAULT_TIMING, events: EventLog = NO_EVENTS):
+        """settings override consumer_config(); the tests use it to show why earliest matters,
+        and to shorten the poll interval."""
         from confluent_kafka import Consumer
-        self._consumer = Consumer({**consumer_config(bootstrap, group), **(settings or {}), "logger": log})
+        self._consumer = Consumer({**consumer_config(bootstrap, group, timing=timing), **(settings or {}),
+                                   "logger": log})
         self._consumer.subscribe([topic])
         self._closed = False
+        self.events = events
 
     def poll(self, timeout: float) -> Delivery | None:
         from confluent_kafka import KafkaException
@@ -85,6 +112,7 @@ class KafkaConsumer:
             if message.error().fatal():
                 raise KafkaException(message.error())
             log.warning("consumer error: %s", message.error())
+            self.events.log("consumer_error", code=message.error().name(), reason=message.error().str())
             return None
         return Delivery(message.value() or b"", (message.topic(), message.partition(), message.offset()))
 

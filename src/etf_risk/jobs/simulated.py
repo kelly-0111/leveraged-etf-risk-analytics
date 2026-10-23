@@ -16,6 +16,7 @@ from pathlib import Path
 from etf_risk.jobs.queue import Delivery, encode
 from etf_risk.jobs.store import Claim
 from etf_risk.jobs.worker import Fenced, PipelineError
+from etf_risk.runs import folder_digest
 
 
 class SimulatedCrash(BaseException):
@@ -49,8 +50,9 @@ class SimulatedPipeline:
     Fenced once it returns False), then fails if fail_at names the step (it maps a step to
     whether that failure is retryable), then appends a line to steps.log in the run folder.
     After the last step it writes result.json: the attempt that wrote it and the job's
-    result digest. on_step lets a test step the clock or run another worker in the middle
-    of this run. runs lists the run ids of the executions this pipeline started."""
+    result digest. It returns the run folder's digest (etf_risk.runs), which acceptance
+    records. on_step lets a test step the clock or run another worker in the middle of this
+    run. runs lists the run ids of the executions this pipeline started."""
 
     def __init__(self, steps: int = 3, *, fail_at: dict[int, bool] | None = None,
                  on_step: Callable[[int, Claim], None] | None = None):
@@ -59,7 +61,7 @@ class SimulatedPipeline:
         self.on_step = on_step
         self.runs: list[str] = []
 
-    def run(self, claim: Claim, run_dir: Path, heartbeat: Callable[[], bool]) -> None:
+    def run(self, claim: Claim, run_dir: Path, heartbeat: Callable[[], bool]) -> str:
         self.runs.append(claim.run_id)
         for step in range(1, self.steps + 1):
             if self.on_step is not None:
@@ -73,6 +75,7 @@ class SimulatedPipeline:
         (run_dir / "result.json").write_text(json.dumps(
             {"job_id": claim.job_id, "attempt_number": claim.attempt_number, "run_id": claim.run_id,
              "result_sha256": result_digest(claim.params)}, sort_keys=True))
+        return folder_digest(run_dir)
 
 
 class PublishOutcome(StrEnum):

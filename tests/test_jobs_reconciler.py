@@ -17,7 +17,7 @@ from etf_risk.jobs.queue import CONFIRMATION_TIMEOUT
 from etf_risk.jobs.reconciler import PUBLICATION_GRACE, RECONCILE_INTERVAL, Pass, Reconciler
 from etf_risk.jobs.simulated import PublishOutcome, SimulatedCrash, SimulatedPipeline
 from etf_risk.jobs.store import ExpiredLease, Outcome, Status
-from jobs_backends import BACKENDS, LEASE, PARAMS, QueueEnv, make_backend, run_together
+from jobs_backends import BACKENDS, DIGEST, LEASE, PARAMS, QueueEnv, make_backend, run_together
 
 GRACE = PUBLICATION_GRACE.total_seconds()
 
@@ -54,7 +54,7 @@ def test_an_expired_lease_is_requeued_with_no_publication_recorded(env):
     assert (j["status"], j["attempt_token"], j["lease_expires_at"], j["published_at"]) == (
         Status.QUEUED, None, None, None)
     assert [x["outcome"] for x in env.admin.attempts(job)] == [Outcome.EXPIRED]
-    assert not env.admin.renew(a) and not env.admin.accept_result(a)           # A is fenced off
+    assert not env.admin.renew(a) and not env.admin.accept_result(a, DIGEST)           # A is fenced off
     assert env.admin.claim(job, "worker-B", env.runs).attempt_number == 2
     assert env.admin.invariant_violations() == {}
 
@@ -85,7 +85,7 @@ def test_a_requeue_whose_token_no_longer_holds_changes_nothing(env):
     b = env.admin.claim(job, "worker-B", env.runs)                              # a takeover happens,
     before = env.dump()
     assert env.admin.requeue_expired(lease.job_id, lease.token) is None         # and its change finds B's token
-    assert env.dump() == before and env.admin.accept_result(b)
+    assert env.dump() == before and env.admin.accept_result(b, DIGEST)
 
 
 def test_a_stale_token_is_refused_even_when_the_new_holders_lease_has_expired_too(env):

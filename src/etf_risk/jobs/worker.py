@@ -7,9 +7,13 @@ Worker.handle(job_id, acknowledge) handles one delivery:
    run; a worker that dies before acknowledging gets the job delivered again (spec §11);
 3. run the pipeline in the attempt's own new folder, <output root>/<run id>, renewing the
    lease whenever the pipeline calls its heartbeat;
-4. accept the result, or record the failure.
+4. accept the result with the run digest the pipeline returns (etf_risk.runs), or record the
+   failure.
 A worker whose renewal, acceptance or failure write is refused has been fenced off: it
-stops and writes nothing more. Its folder stays on disk and is never referenced.
+stops and writes nothing more. Its folder stays on disk and is never referenced. After a
+lost database connection, acceptance and the failure write are tried again until the
+pipeline's own deadline (fence_at), if it keeps one; both are safe to repeat (store.py).
+Events (claimed, refused, accepted, fenced, failed, requeued, ...) go to an EventLog.
 
 Worker.serve(consumer) polls deliveries and hands each to handle(), acknowledging with a
 synchronous commit of the message's offset. A message that carries no valid job id (as
@@ -44,8 +48,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+from etf_risk.jobs.events import NO_EVENTS, EventLog
 from etf_risk.jobs.queue import Consumer, Delivery
 from etf_risk.jobs.store import Claim, JobStore, Refusal, Status
 
@@ -72,9 +77,22 @@ class PipelineError(Exception):
         self.retryable = retryable
 
 
+class Heartbeat:
+    """heartbeat() renews the attempt's lease (JobStore.renew): False once the attempt has
+    been fenced off. claimed_mono is the worker's time.monotonic() just before the claim;
+    the lease cannot have started earlier, which gives a pipeline its first deadline."""
+
+    def __init__(self, store: JobStore, claim: Claim, claimed_mono: float):
+        self.store, self.claim, self.claimed_mono = store, claim, claimed_mono
+
+    def __call__(self) -> bool:
+        return self.store.renew(self.claim)
+
+
 class Pipeline(Protocol):
-    def run(self, claim: Claim, run_dir: Path, heartbeat: Callable[[], bool]) -> None:
-        """Write the attempt's outputs into run_dir, a new empty folder.
+    def run(self, claim: Claim, run_dir: Path, heartbeat: Heartbeat) -> str:
+        """Write the attempt's outputs into run_dir, a new empty folder, and return the run
+        digest of its result (etf_risk.runs), which acceptance records.
 
         Call heartbeat() more often than the lease lasts. It renews the lease and returns
         False once the attempt has been fenced off: then stop at once and raise Fenced.
@@ -109,19 +127,25 @@ class Served:
 
 class Worker:
     def __init__(self, store: JobStore, pipeline: Pipeline, output_root: str | Path, *,
-                 worker_id: str | None = None, fault: Callable[[str], None] | None = None):
+                 worker_id: str | None = None, fault: Callable[[str], None] | None = None,
+                 events: EventLog = NO_EVENTS, sleep: Callable[[float], None] = time.sleep):
         self.store = store
         self.pipeline = pipeline
         self.output_root = Path(output_root)
         self.worker_id = worker_id or f"worker-{os.getpid()}-{secrets.token_hex(3)}"
         self._fault = fault or (lambda point: None)
+        self.events = events
+        self._sleep = sleep
 
     def handle(self, job_id: int, acknowledge: Callable[[], None]) -> Handled:
         self._fault("before_claim")
+        claimed_mono = time.monotonic()
         claim = self.store.claim(job_id, self.worker_id, self.output_root)
         if isinstance(claim, Refusal):
+            self.events.log("refused", job_id=job_id, reason=claim.value)
             acknowledge()
             return Handled(job_id, Result.SKIPPED, reason=claim)
+        self.events.log("claimed", job_id=job_id, attempt=claim.attempt_number, run_id=claim.run_id)
         self._fault("after_claim")
         acknowledge()
         try:
@@ -133,8 +157,9 @@ class Worker:
         except OSError as error:
             return self._failed(claim, f"cannot create the output folder: {error}", retryable=True)
         try:
-            self.pipeline.run(claim, claim.output_dir, lambda: self.store.renew(claim))
-        except Fenced:
+            digest = self.pipeline.run(claim, claim.output_dir, Heartbeat(self.store, claim, claimed_mono))
+        except Fenced as fenced:
+            self.events.log("fenced", job_id=job_id, attempt=claim.attempt_number, during="pipeline", why=str(fenced))
             return Handled(job_id, Result.FENCED, claim=claim)
         except PipelineError as error:
             return self._failed(claim, str(error), retryable=error.retryable)
@@ -142,10 +167,26 @@ class Worker:
             # Not a failure the pipeline reported: recorded with its type, and retried like one.
             return self._failed(claim, f"{type(error).__name__}: {error}", retryable=True)
         self._fault("after_pipeline")
-        if not self.store.accept_result(claim):
+        if not self._until_deadline(lambda: self.store.accept_result(claim, digest), claim, "accept_result"):
+            self.events.log("fenced", job_id=job_id, attempt=claim.attempt_number, during="accept_result")
             return Handled(job_id, Result.FENCED, claim=claim)
+        self.events.log("accepted", job_id=job_id, attempt=claim.attempt_number, digest=digest)
         self._fault("after_accept")
         return Handled(job_id, Result.ACCEPTED, claim=claim)
+
+    def _until_deadline(self, operation: Callable[[], Any], claim: Claim, name: str) -> Any:
+        """operation(), tried again after a lost connection while the pipeline's deadline
+        (fence_at, time.monotonic()) has not passed; any other error, or no deadline, raises."""
+        while True:
+            try:
+                return operation()
+            except Exception as error:
+                deadline = getattr(self.pipeline, "fence_at", None)
+                if deadline is None or time.monotonic() >= deadline or not self.store.dialect.is_disconnect(error):
+                    raise
+                self.events.log("retry", job_id=claim.job_id, attempt=claim.attempt_number, operation=name,
+                                error=f"{type(error).__name__}: {error}")
+                self._sleep(1.0)
 
     def serve(self, consumer: Consumer, *, stop: Callable[[], bool] = lambda: False, stop_when_idle: bool = False,
               poll_timeout: float = 1.0, retry_delay: float = 1.0, retries: int = DELIVERY_RETRIES,
@@ -169,9 +210,11 @@ class Worker:
             if job_id is None:
                 log.warning("skipping a message with no valid job id at %r (%d bytes): %r", delivery.position,
                             len(delivery.value), delivery.value[:64])
+                self.events.log("malformed", position=repr(delivery.position), size=len(delivery.value))
                 served.malformed += 1
                 self._commit(consumer, delivery, served)
                 continue
+            self.events.log("delivered", job_id=job_id, position=repr(delivery.position))
             acknowledged = False
 
             def acknowledge() -> None:
@@ -184,6 +227,7 @@ class Worker:
             except Exception:
                 if acknowledged:
                     log.exception("job %s failed after its delivery was acknowledged; its lease will expire", job_id)
+                    self.events.log("failed_after_ack", job_id=job_id)
                     served.failed_after_ack += 1
                     continue
                 failures = failures + 1 if delivery.position == failing else 1
@@ -192,8 +236,10 @@ class Worker:
                 if failures > retries:
                     log.error("job %s: %d errors in a row before its delivery was acknowledged; giving up,"
                               " with the message uncommitted", job_id, failures)
+                    self.events.log("gave_up", job_id=job_id, failures=failures)
                     raise
                 log.exception("job %s failed before its delivery was acknowledged; reading it again", job_id)
+                self.events.log("rewound", job_id=job_id, failures=failures)
                 served.rewound += 1
                 sleep(retry_delay)
                 continue
@@ -202,16 +248,19 @@ class Worker:
                 on_handled(handled)
         return served
 
-    @staticmethod
-    def _commit(consumer: Consumer, delivery: Delivery, served: Served) -> None:
+    def _commit(self, consumer: Consumer, delivery: Delivery, served: Served) -> None:
         try:
             consumer.commit(delivery)
-        except Exception:
+        except Exception as error:
             served.commit_failures += 1
+            self.events.log("commit_failed", position=repr(delivery.position), error=f"{type(error).__name__}: {error}")
             log.warning("could not commit the offset of %r; a later delivery of it is refused by the claim",
                         delivery.position, exc_info=True)
 
     def _failed(self, claim: Claim, error: str, *, retryable: bool) -> Handled:
-        status = self.store.fail_attempt(claim, error, retryable=retryable)
+        status = self._until_deadline(lambda: self.store.fail_attempt(claim, error, retryable=retryable),
+                                      claim, "fail_attempt")
         result = {None: Result.FENCED, Status.QUEUED: Result.REQUEUED, Status.FAILED: Result.FAILED}[status]
+        self.events.log(result.value, job_id=claim.job_id, attempt=claim.attempt_number, retryable=retryable,
+                        error=error[-2000:])
         return Handled(claim.job_id, result, claim=claim)

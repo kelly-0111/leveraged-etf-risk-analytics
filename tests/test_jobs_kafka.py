@@ -31,6 +31,7 @@ from etf_risk.jobs.queue import CONFIRMATION_TIMEOUT, submit_job
 from etf_risk.jobs.reconciler import Pass, Reconciler
 from etf_risk.jobs.simulated import SimulatedCrash
 from etf_risk.jobs.store import Refusal, Status
+from etf_risk.jobs.timing import DEFAULT_TIMING
 from etf_risk.jobs.worker import Result, Served
 from jobs_backends import (BACKENDS, LEASE, PARAMS, KafkaTopic, WorkerEnv, failing_at, make_backend, needs_kafka,
                            poll_after_assignment, poll_deliveries)
@@ -42,12 +43,24 @@ def test_the_producer_waits_for_the_broker_and_is_idempotent():
     config = producer_config("broker:9092")
     assert (config["acks"], config["enable.idempotence"]) == ("all", True)
     assert config["message.timeout.ms"] == CONFIRMATION_TIMEOUT.total_seconds() * 1000 == 10_000
+    assert config["socket.timeout.ms"] == 10_000
 
 
 def test_the_consumer_commits_only_when_told_and_a_new_group_starts_at_the_earliest_message():
     config = consumer_config("broker:9092", "workers")
     assert (config["group.id"], config["enable.auto.commit"], config["enable.auto.offset.store"],
             config["auto.offset.reset"]) == ("workers", False, False, "earliest")
+
+
+def test_the_group_timing_fits_the_lease_and_the_longest_run():
+    """A stopped worker leaves the group before its lease can expire; a legitimate run never
+    outlasts the poll interval (etf_risk.jobs.timing)."""
+    config, t = consumer_config("broker:9092", "workers"), DEFAULT_TIMING
+    assert (config["group.protocol"], config["session.timeout.ms"], config["heartbeat.interval.ms"],
+            config["max.poll.interval.ms"], config["socket.timeout.ms"]) == ("classic", 15_000, 3_000, 967_000, 10_000)
+    assert 6_000 <= config["session.timeout.ms"] < t.lease * 1000
+    assert 3 * config["heartbeat.interval.ms"] <= config["session.timeout.ms"] <= config["max.poll.interval.ms"]
+    assert config["max.poll.interval.ms"] > (t.attempt_limit + t.kill_grace) * 1000
 
 
 def test_an_unreachable_broker_gives_false():
