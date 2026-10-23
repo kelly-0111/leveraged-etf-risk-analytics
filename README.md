@@ -20,30 +20,35 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Shuffle-partition experiment: three Spark partition settings at stride 7 ([docs/partition-experiment.md](docs/partition-experiment.md)) | Complete; B (200 partitions, coalescing off) slower than A and C; no clear memory difference; outputs within tolerance |
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
-| Figures and final write-up | Planned |
+| Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress: the job queue with a simulated pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md)); the real pipeline, Redis and the experiments planned ([spec](docs/spec.md), §11) |
 
 ## Reading guide
 
 1. **This README**: status, key results and how to run everything.
-2. **[docs/spec.md](docs/spec.md)**: the research questions (§2), the model and
+2. **[docs/results.md](docs/results.md)**: the final write-up, with the findings
+   for each research question, the twelve figures, the limitations and the
+   conclusions; [docs/demo.md](docs/demo.md) walks through the tests, the
+   figures, the SQL analyses and a small pipeline run, and says what a fresh
+   clone can reproduce.
+3. **[docs/spec.md](docs/spec.md)**: the research questions (§2), the model and
    its assumptions (§3), how results are checked (§6), the window design (§7),
    the full results of the stride-21 run and summaries of the stride,
    shuffle-partition and caching experiments and the pandas baseline (§8).
-3. **[docs/data-sources.md](docs/data-sources.md)**: where the data comes from,
+4. **[docs/data-sources.md](docs/data-sources.md)**: where the data comes from,
    the checks run on it, and what is not verified.
-4. **[docs/experiments.md](docs/experiments.md)**: the stride experiment, with
+5. **[docs/experiments.md](docs/experiments.md)**: the stride experiment, with
    its design and predictions (committed before any measured run), run log,
    deviations, measurements and answers;
    [`collect_measurements.py`](analysis/collect_measurements.py) builds its
    measurements CSV from the run records.
-5. **[docs/partition-experiment.md](docs/partition-experiment.md)**: the
+6. **[docs/partition-experiment.md](docs/partition-experiment.md)**: the
    shuffle-partition experiment, with its design, rules and predictions
    (committed before any measured run), run log, deviations, measurements,
    plans and answers; the [session helpers](docs/partition-session.zsh) ran
    its session, and the [collector](analysis/collect_partition_measurements.py)
    builds its measurements CSV and checks its acceptance criteria.
-6. **[docs/pandas-baseline.md](docs/pandas-baseline.md)**: the pandas
+7. **[docs/pandas-baseline.md](docs/pandas-baseline.md)**: the pandas
    baseline, an end-to-end comparison of the Spark pipeline with a
    single-process pandas implementation of the same computation, with its
    design, rules and predictions (committed before any measured run), run log,
@@ -51,7 +56,7 @@ are not forecasts, and the model ignores fees, financing and execution.
    ran its session, and the
    [collector](analysis/collect_baseline_measurements.py) builds its
    measurements CSV and checks its acceptance criteria.
-7. **[docs/caching-experiment.md](docs/caching-experiment.md)**: the caching
+8. **[docs/caching-experiment.md](docs/caching-experiment.md)**: the caching
    experiment, which compared no cache, a cache of the window-member rows, and
    one of those rows plus the four read-back tables, with its design, rules and
    predictions (committed before any measured run), run log, measurements,
@@ -59,26 +64,28 @@ are not forecasts, and the model ignores fees, financing and execution.
    ran its session, and the
    [collector](analysis/collect_caching_measurements.py) builds its
    measurements CSV and checks its acceptance criteria.
-8. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
+9. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
    often 2x beats twice the 1x return) and
    [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
    windows that use an unverified day).
-9. **The code**, in data-flow order: in `src/etf_risk/`, `download` → `ingest`
-   (with `validate`) → `windows` → `spark_pipeline` (which runs `model`) →
-   `verify`; `measure` times runs, `plans` records a run's execution plans,
-   and `pandas_pipeline` computes the same results in one process without
-   Spark. The optional job queue (job table, worker, Kafka delivery,
-   reconciler) is in `jobs/` ([docs/job-table.md](docs/job-table.md),
-   [docs/job-queue.md](docs/job-queue.md)). Module overview: spec §5.
-10. **How AI was used**: [AI assistance](#ai-assistance) below.
+10. **The code**, in data-flow order: in `src/etf_risk/`, `download` →
+    `ingest` (with `validate`) → `windows` → `spark_pipeline` (which runs
+    `model`) → `verify`; `measure` times runs, `plans` records a run's
+    execution plans, `pandas_pipeline` computes the same results in one process
+    without Spark, and `plots` draws the figures from the result files. The
+    optional job queue (job table, worker, Kafka delivery, reconciler) is in
+    `jobs/` ([docs/job-table.md](docs/job-table.md),
+    [docs/job-queue.md](docs/job-queue.md)). Module overview: spec §5.
+11. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
 
 From the run of record: snapshot `full-2026-10-12` (daily history through
 2025-12-31), 252-day windows starting every 21 trading days. The windows
 overlap, so these numbers describe one history, not independent samples; spec
-§8 has the details.
+§8 has the details, and [docs/results.md](docs/results.md) the figures and the
+conclusions.
 
 - All 46 check tests passed with no violation on 1,790 windows, and the
   independent Python check matched all 1,074 paths it compared. Every window
@@ -341,7 +348,10 @@ together with how it was checked.
    [docs/caching-experiment.md](docs/caching-experiment.md)).
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
-3. **Figures and the final write-up** (Stage 4).
+3. **Figures and the final write-up** (Stage 4) are complete
+   ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)); the
+   intermittent failure of one measurement test, described in the demo, still
+   needs a fix.
 4. **Optional systems extension** (spec §11): Docker Compose with MySQL, Kafka
    and Redis for a job queue and a result cache, with recovery and caching
    experiments. The job queue works with a simulated pipeline

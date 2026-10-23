@@ -1,14 +1,16 @@
 # Leveraged ETF Risk Analytics — specification
 
-Last updated 2026-10-22. Implemented: the pipeline, three Spark SQL analyses of
+Last updated 2026-10-23. Implemented: the pipeline, three Spark SQL analyses of
 its results, a Docker image, the stride experiment
 ([experiments.md](experiments.md)), the shuffle-partition experiment
 ([partition-experiment.md](partition-experiment.md)), the pandas baseline
-([pandas-baseline.md](pandas-baseline.md)) and the caching experiment
-([caching-experiment.md](caching-experiment.md)); in progress: an optional
-systems extension with MySQL, Kafka and Redis (§11), of which the job queue
-exists with a simulated pipeline: the job table, a worker, Kafka delivery and
-the reconciler ([job-table.md](job-table.md), [job-queue.md](job-queue.md)).
+([pandas-baseline.md](pandas-baseline.md)), the caching experiment
+([caching-experiment.md](caching-experiment.md)), and the figures, results
+write-up and demo of Stage 4 ([results.md](results.md), [demo.md](demo.md)); in
+progress: an optional systems extension with MySQL, Kafka and Redis (§11), of
+which the job queue exists with a simulated pipeline: the job table, a worker,
+Kafka delivery and the reconciler ([job-table.md](job-table.md),
+[job-queue.md](job-queue.md)).
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -20,7 +22,7 @@ is reviewed.
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
 | Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | **Implemented**: three SQL analyses, the Docker image, the stride experiment ([experiments.md](experiments.md)), the shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)), the pandas baseline ([pandas-baseline.md](pandas-baseline.md)) and the caching experiment ([caching-experiment.md](caching-experiment.md)) |
 | Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | **In progress**: the job queue with a simulated pipeline: the MySQL job table, a worker, Kafka delivery and the reconciler ([job-table.md](job-table.md), [job-queue.md](job-queue.md)); the real pipeline, Redis and the experiments planned |
-| Stage 4 | Figures, final documentation and demo | Planned |
+| Stage 4 | Figures, final documentation and demo | **Implemented**: twelve figures drawn from the result files by `plots.py` and checked against the documented values, with the measurement CSVs of X1–X4 committed ([measurements/README.md](measurements/README.md)); the results write-up, whose conclusions the author approved ([results.md](results.md)); the demo ([demo.md](demo.md)) |
 
 ## 1. Purpose and scope
 
@@ -117,7 +119,7 @@ Dollar rebalance sums stay only for the reference comparison.
 
 ### Implemented
 
-| Artifact | Location (gitignored) | Produced by | Contents |
+| Artifact | Location (gitignored unless marked) | Produced by | Contents |
 |---|---|---|---|
 | Raw snapshot | `data/raw/yahoo/<snapshot>/` | `download.py` | one CSV per ticker (Date, Open, High, Low, Close, Adj Close, Volume, Dividends, Stock Splits; QQQ also has Capital Gains, all zero in `full-2026-10-12` and unused) and `manifest.json` (download time, tool versions, request settings, rows, dates, SHA-256 per file); the prototype snapshot sits in `data/raw/yahoo/` with `verification.json` |
 | Daily returns | `data/processed/<snapshot>/daily_returns/<TICKER>.parquet` | `ingest.py` | `ticker` string, `date` date32, `adjusted_price` double, `daily_return` double (null on the first row); schema metadata naming the source, snapshot and checksums |
@@ -130,6 +132,8 @@ Dollar rebalance sums stay only for the reference comparison.
 | Shuffle-partition batch | `data/outputs-partitions/<batch>/` | `measure.py` through `docs/partition-session.zsh`; `analysis/collect_partition_measurements.py` | protocols and runs of configurations A, B and C, `positions.tsv`, `run-log.txt`, and the collector's `measurements.csv` and `acceptance.json` ([partition-experiment.md](partition-experiment.md) 2.4, 4.3) |
 | Pandas-baseline batch | `data/outputs-baseline/<batch>/` | `measure.py --pipeline` through `docs/baseline-session.zsh`; `analysis/collect_baseline_measurements.py` | protocols and runs of S (the Spark pipeline) and P (the pandas pipeline), `positions.tsv`, `run-log.txt`, and the collector's `measurements.csv` and `acceptance.json` ([pandas-baseline.md](pandas-baseline.md) 2.4, 4.3) |
 | Caching batch | `data/outputs-caching/<batch>/` | `measure.py` through `docs/caching-session.zsh`; `analysis/collect_caching_measurements.py` | protocols and runs of configurations A, B and C (`spark_pipeline --cache`), `positions.tsv`, `run-log.txt`, and the collector's `measurements.csv` and `acceptance.json` ([caching-experiment.md](caching-experiment.md) 2.4, 4.3) |
+| Figures | `docs/figures/` (committed) | `plots.py` | twelve PNGs (M1–M5, S1, D1–D2, X1–X4) and `figures.json`: each input's path and SHA-256, and each figure's checked numbers ([results.md](results.md) 8) |
+| Measurement CSV copies | `docs/measurements/` (committed) | copied from the four collectors' outputs | reviewed copies of the experiments' measurements CSVs, which X1–X4 read ([measurements/README.md](measurements/README.md)) |
 
 Snapshots: `full-2026-10-12` (five tickers, each from its first trading day to
 2025-12-31; used for the main analysis) and the 2020–2025 snapshot of the four
@@ -145,7 +149,8 @@ extreme days are unverified**, including AAPL 2000-09-29 (−51.9%).
 
 ### Planned
 
-- **Figures** (Stage 4): generated from the result files, never edited by hand.
+None: the figures, planned here until Stage 4, are listed above. They are
+generated from the result files and never edited by hand.
 
 ## 5. Module hierarchy and data flow
 
@@ -164,7 +169,7 @@ src/etf_risk/
   plans.py           implemented  a run's final execution plans, AQE partition counts, descriptions and scan nodes
                                   (spark_pipeline --record-plans)
   pandas_pipeline.py implemented  the pipeline's results in one process with pandas, without Spark (the pandas baseline)
-  plots.py           planned      figures from result files (Stage 4)
+  plots.py           implemented  the twelve figures from result files, checked against the documented values (Stage 4)
   jobs/              implemented  optional job queue (§11): job table schema (MySQL, SQLite mirror), guarded state
                                   transitions (store.py), MySQL and Kafka adapters, worker and its consume loop,
                                   reconciler, simulated pipeline and in-memory queue
@@ -185,8 +190,6 @@ Dockerfile, docker/  implemented  pipeline image and its build and run scripts (
                                   compose.yaml with the extension's services (MySQL and Kafka so far)
 ```
 
-Names of planned modules are provisional.
-
 ```mermaid
 flowchart TD
     Y[Yahoo Finance] -->|download.py| R[Raw snapshot<br/>CSV + manifest]
@@ -203,12 +206,16 @@ flowchart TD
     B --> E2[shuffle-partition experiment<br/>batch CSV and criteria]
     B --> E3[pandas baseline<br/>batch CSV and criteria]
     B --> E4[caching experiment<br/>batch CSV and criteria]
-    O -.-> F[plots.py<br/>figures]
-    classDef planned stroke-dasharray: 5 5
-    class F planned
+    O --> F[plots.py<br/>twelve figures]
+    P --> F
+    W --> F
+    E --> F
+    E2 --> F
+    E3 --> F
+    E4 --> F
 ```
 
-Boxes with solid borders are implemented; dashed boxes are planned.
+Every box is implemented.
 `measure.py` starts each timed `spark_pipeline.py` run as a fresh process.
 
 Inside `spark_pipeline.py`: every SHA-256 in the window config is verified
@@ -649,16 +656,17 @@ measured run. Design, run log, records and answers:
 
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stages 1–3: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline; the extension's job queue with a simulated pipeline) | Planned |
+| Area | Implemented (prototype, Stages 1–4: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline, figures and write-up; the extension's job queue with a simulated pipeline) | Planned |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
 | Windows | 252-day rolling windows on a shared NYSE start grid (run at stride 21); calendar-year supplement; full-period windows for the prototype; unverified-day flags over all price dates (conservative rule); self-checked, checksummed definitions with code provenance; strides 14, 7 and 3 built and run for the stride experiment | stride 1 (excluded for now, [experiments.md](experiments.md) 1.3) |
 | Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check; three Spark SQL analyses of the paired results (project author, §8) | — |
 | Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)); the pandas baseline (the Spark pipeline against a single-process pandas implementation at stride 7, end to end; one batch meeting every acceptance criterion; no drift) with the pandas pipeline, `measure --pipeline`, the batch collector and the session helpers ([pandas-baseline.md](pandas-baseline.md)); the caching experiment (no cache, the window-member rows, and those plus the four read-back tables at stride 7; one batch meeting every acceptance criterion; no drift) with the `--cache` option, cache records and checks from Spark's storage information and the plans, the batch collector and the session helpers ([caching-experiment.md](caching-experiment.md)) | — |
-| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
+| Figures | twelve figures from the result files (`plots.py`): the model results, the sensitivity analysis, the data and windows, and the four performance experiments; their numbers checked against the documented values, inputs validated before anything is drawn, and the measurement CSVs of X1–X4 committed ([results.md](results.md), [measurements/README.md](measurements/README.md)) | — |
+| Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0, psutil 7.2.2 and matplotlib 3.11.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
 | Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases; a worker with a simulated pipeline ([job-table.md](job-table.md)); Kafka delivery with confirmed publication and manual commits, and the reconciler ([job-queue.md](job-queue.md)); MySQL 8.4.13 and Kafka 4.3.1 in Compose for the integration tests | the real pipeline in the worker, Redis result cache, recovery and caching experiments (§11) |
-| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [job-queue.md](job-queue.md), [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
+| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [job-queue.md](job-queue.md), [results.md](results.md), [demo.md](demo.md), [measurements/README.md](measurements/README.md), [AI-usage logs](ai-usage/README.md) | design decisions |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
 
@@ -703,6 +711,13 @@ measured run. Design, run log, records and answers:
   them as a **sensitivity analysis**: the flagged windows are a non-random
   subset (periods with extreme market days), so the comparison shows how much
   results depend on those periods, not whether those days are data errors.
+- `test_measure_runs_the_pandas_pipeline_in_fresh_processes` can fail
+  intermittently: `measure`'s sampler, every 0.25 s, can catch one of the
+  pandas pipeline's short helper commands for its run record (`git`, `uname`,
+  `file`, `java -version`) and records it as a further process kind. The
+  failure was reproduced in 1 of 20 runs; the pipeline's outputs and the pandas
+  baseline's records are not affected. A fix, in the test or in how `measure`
+  classifies a `java` process, is open ([demo.md](demo.md)).
 - Open transcript-hook items (separator rule, save timing, folders for
   interruption notices) and the NumPy deprecation warnings are unchanged.
 
