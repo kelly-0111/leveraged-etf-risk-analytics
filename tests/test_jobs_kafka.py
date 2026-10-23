@@ -215,3 +215,25 @@ def test_a_persistent_error_leaves_the_message_for_a_restarted_worker(env, topic
     assert serve(env, env.worker("B"), topic.consumer(group), 1) == Served(handled=1)
     assert env.admin.job(job)["status"] is Status.SUCCEEDED
     env.check(job)
+
+
+@needs_kafka
+def test_a_standby_gets_the_next_job_only_once_the_busy_worker_outlasts_its_poll_interval(topic):
+    """Why max.poll.interval.ms must exceed the longest run (etf_risk.jobs.timing): serve()
+    does not poll while a pipeline runs. A standby in the same group cannot take the only
+    partition while the busy worker stays within its poll interval, since the group's
+    rebalance waits for that worker. Once it stays away longer, librdkafka makes it leave the
+    group, and the standby gets the next message."""
+    group, interval = topic.group(), 7.0
+    short = {"max.poll.interval.ms": int(interval * 1000), "session.timeout.ms": 6000, "heartbeat.interval.ms": 2000}
+    publisher = topic.publisher()
+    assert publisher.publish(1) and publisher.publish(2)
+    primary = topic.consumer(group, settings=short)
+    [first] = poll_deliveries(primary, 1)
+    primary.commit(first)
+    last_poll = time.monotonic()                                    # from here the primary is busy: no poll
+    standby = topic.consumer(group, settings=short)
+    [second] = poll_deliveries(standby, 1, timeout=60)
+    waited = time.monotonic() - last_poll
+    assert second.job_id() == 2
+    assert interval - 1.0 <= waited <= interval + 30.0, waited

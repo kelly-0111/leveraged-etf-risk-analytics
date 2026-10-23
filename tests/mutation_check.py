@@ -51,11 +51,14 @@ from etf_risk.provenance import code_state  # noqa: E402
 COPIED = ("src", "tests", "pyproject.toml", "uv.lock")
 JOB_TESTS = ("tests/test_jobs_store.py", "tests/test_jobs_reconnect.py", "tests/test_jobs_worker.py",
              "tests/test_jobs_queue.py", "tests/test_jobs_reconciler.py", "tests/test_jobs_timing.py",
-             "tests/test_jobs_kafka.py", "tests/test_jobs_mysql.py")
+             "tests/test_jobs_kafka.py", "tests/test_jobs_mysql.py", "tests/test_jobs_launcher.py",
+             "tests/test_jobs_pipeline.py", "tests/test_jobs_sweep.py")
 NEEDS = {"mysql": "ETF_RISK_MYSQL_URL", "kafka": "ETF_RISK_KAFKA_BOOTSTRAP"}
 STORE, WORKER, QUEUE = "src/etf_risk/jobs/store.py", "src/etf_risk/jobs/worker.py", "src/etf_risk/jobs/queue.py"
 RECONCILER, KAFKA, MYSQL = "src/etf_risk/jobs/reconciler.py", "src/etf_risk/jobs/kafka.py", "src/etf_risk/jobs/mysql.py"
 TIMING = "src/etf_risk/jobs/timing.py"
+LAUNCHER, PROCESSES = "src/etf_risk/jobs/launcher.py", "src/etf_risk/jobs/processes.py"
+PIPELINE = "src/etf_risk/jobs/pipeline.py"
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,31 @@ MUTATIONS = (
     Mutation("fence-margin-check", TIMING,
              "if self.fence_margin < self.watchdog_tick + self.kill_grace + self.safety:", "if False:",
              "a fence margin too short for the watchdog is accepted"),
+    # The watchdog, the host lock and process trees (etf_risk.jobs.launcher, processes, pipeline).
+    Mutation("watchdog-reads-first", LAUNCHER, '        now = time.monotonic()\n        if self.watchdog.expired(now):\n            for line in self.lines.read():              # read only to record them: a fired watchdog ignores all\n                self.watchdog.offer(line, now)\n            return "deadline"\n        for line in self.lines.read():\n            self.watchdog.offer(line, now)',
+             '        now = time.monotonic()\n        for line in self.lines.read():\n            self.watchdog.offer(line, now)\n        if self.watchdog.expired(time.monotonic()):\n            return "deadline"',
+             "lines queued while the launcher was stopped are read before the deadline check"),
+    Mutation("watchdog-older-sequence", LAUNCHER, " or seq <= self.seq", "",
+             "a line with an older sequence number moves the deadline"),
+    Mutation("tree-by-group", PROCESSES, "if os.getsid(pid) == sid:", "if os.getpgid(pid) == sid:",
+             "a tree is its process group, which PySpark's daemon leaves"),
+    Mutation("no-host-lock", LAUNCHER, "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)", "pass",
+             "a step starts without the host's execution lock"),
+    Mutation("no-survivor-wait", LAUNCHER, "while survivors := self.registry.survivors():", "while False:",
+             "a step starts while an earlier tree survives"),
+    Mutation("no-clock-check", LAUNCHER,
+             'if not (first["monotonic"] <= now <= first["monotonic"] + CLOCK_TOLERANCE):', "if False:",
+             "the launcher accepts a worker that reads another clock"),
+    Mutation("environment-passed-through", PIPELINE,
+             "env = {name: os.environ[name] for name in ENV_ALLOWED if name in os.environ}", "env = dict(os.environ)",
+             "service URLs and passwords reach the steps"),
+    Mutation("sweep-ends-valid-attempts", PIPELINE, "        elif value in valid:\n", "        elif False:\n",
+             "the startup sweep ends a valid active attempt"),
+    Mutation("no-renewal-before-acceptance", PIPELINE,
+             '        self._renew_before(renewer, claim, before="acceptance")\n', "",
+             "a digest is returned without renewing after the steps"),
+    Mutation("result-rule-checks", PIPELINE, "        if total_violations(checks):", "        if False:",
+             "a run with check violations is accepted when its status says ok"),
 )
 
 

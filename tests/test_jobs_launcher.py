@@ -281,3 +281,18 @@ def test_a_survivor_of_a_dead_launchers_tree_blocks_the_next_step_until_it_is_go
     after = Run(tmp_path, "after", [sys.executable, "-c", f"open({str(started)!r}, 'w').close()"])
     assert after.wait()[1]["outcome"] == "exited" and started.exists()
     assert Registry(tmp_path / "registry").entries() == []       # the dead launcher's entry was cleaned up
+
+
+def test_a_lock_held_outside_any_launcher_keeps_the_step_from_starting(tmp_path):
+    """The lock, not only the survivor check: a process that is no launcher and has no tree
+    in the registry can hold it, as the recovery harness does for its reference runs. It
+    also makes "check survivors, register, start" one step across launchers."""
+    import fcntl
+    started = tmp_path / "started"
+    command = [sys.executable, "-c", f"open({str(started)!r}, 'w').close()"]
+    (tmp_path / "registry").mkdir()
+    with open(tmp_path / "host.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        code, result = Run(tmp_path, "held", command, lock_wait=1.5).wait()
+        assert (code, result["outcome"]) == (EXIT_CODES["lock_busy"], "lock_busy") and not started.exists()
+    assert Run(tmp_path, "released", command).wait()[1]["outcome"] == "exited" and started.exists()

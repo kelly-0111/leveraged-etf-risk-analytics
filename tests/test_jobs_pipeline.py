@@ -286,3 +286,17 @@ def test_the_step_environment_is_an_allowlist_with_the_marker_and_the_scratch_fo
     assert env["SPARK_SUBMIT_OPTS"] == f"-Djava.io.tmpdir={work}/jtmp -XX:-UsePerfData"
     assert env["PYSPARK_PYTHON"] == env["PYSPARK_DRIVER_PYTHON"] == sys.executable
     assert env["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
+
+
+def test_a_renewal_refused_just_before_acceptance_fences_the_attempt(tmp_path, claim):
+    """The last renewal comes after every step and the records: a takeover meanwhile means no digest is returned."""
+    beats = Switch(claim.output_dir / "manifest.json", lambda: False)   # written just before that renewal
+    with pytest.raises(Fenced, match="before acceptance"):
+        Steps(tmp_path, good()).run(claim, claim.output_dir, beats)
+    assert (claim.output_dir / "manifest.json").exists()             # written, but never accepted
+
+
+def test_the_result_rule_refuses_check_violations_even_with_status_ok(tmp_path, claim):
+    with pytest.raises(PipelineError, match="1 check violations") as failed:
+        Steps(tmp_path, good(spark=("ok", "1", "0"))).run(claim, claim.output_dir, Heartbeat())
+    assert failed.value.retryable is False
