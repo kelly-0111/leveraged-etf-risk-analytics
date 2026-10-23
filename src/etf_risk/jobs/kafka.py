@@ -11,8 +11,9 @@ Settings, each pinned by tests/test_jobs_kafka.py:
   first message, so a job published before its group first starts is still delivered;
   librdkafka's default, latest, would skip it.
 
-confluent-kafka is imported only when an adapter is created. It is not a declared
-dependency: the Kafka runs use uv run --with 'confluent-kafka==2.16.0'. Topics are created
+confluent-kafka is imported only when an adapter is created. It is in the `jobs`
+dependency group (pyproject.toml, locked in uv.lock), not among the core dependencies: the
+Kafka runs use uv run --group jobs. Topics are created
 explicitly (create_topic: one partition, no replica), since the broker in
 docker/compose.yaml does not create them on first use.
 

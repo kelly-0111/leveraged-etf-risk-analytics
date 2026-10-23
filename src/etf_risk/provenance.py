@@ -1,8 +1,12 @@
 """Record which code produced a result, including uncommitted changes.
 
 A git commit alone does not identify the code when the worktree has changes, so
-code_state() also records whether the worktree is clean and the SHA-256 of every
-module in src/etf_risk/ and of uv.lock.
+code_state() also records whether the worktree is clean and the SHA-256 of uv.lock and
+of every Python module and SQL schema under src/etf_risk/, subpackages included (the
+job queue in jobs/ and its schema files). Keys are paths relative to src/etf_risk/, so a
+top-level module keeps the key it always had ("model.py") and jobs/__init__.py does not
+collide with __init__.py. Records written before 2026-10-23 hash the top-level modules
+only.
 
 The Docker image has no .git: there the commit and the clean flag come from what
 docker/build.sh recorded at build time (code_source = "build"), and docker/run.sh
@@ -21,6 +25,7 @@ from etf_risk.ingest import sha256_file
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parents[1]
+SOURCE_SUFFIXES = (".py", ".sql")
 
 # Set in the Docker image (Dockerfile, from docker/build.sh) and by docker/run.sh.
 BUILD_COMMIT_ENV = "ETF_RISK_GIT_COMMIT"
@@ -42,6 +47,12 @@ def _git(*args: str) -> str | None:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
+def source_files() -> dict[str, Path]:
+    """Every Python module and SQL schema of the package, by path relative to it."""
+    files = (p for p in PACKAGE_DIR.rglob("*") if p.suffix in SOURCE_SUFFIXES and p.is_file())
+    return {p.relative_to(PACKAGE_DIR).as_posix(): p for p in sorted(files)}
+
+
 def code_state() -> dict:
     head = _git("rev-parse", "HEAD")
     status = _git("status", "--porcelain", "--untracked-files=all", "--", "src", "pyproject.toml", "uv.lock")
@@ -59,6 +70,6 @@ def code_state() -> dict:
         "git_worktree_clean": clean,
         "code_source": source,
         "image_id": os.environ.get(IMAGE_ID_ENV) or None,
-        "source_sha256": {p.name: sha256_file(p) for p in sorted(PACKAGE_DIR.glob("*.py"))},
+        "source_sha256": {key: sha256_file(path) for key, path in source_files().items()},
         "uv_lock_sha256": sha256_file(lock) if lock.is_file() else None,
     }
