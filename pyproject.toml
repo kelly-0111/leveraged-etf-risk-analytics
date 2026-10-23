@@ -19,6 +19,9 @@ download = [
 measure = [
     "psutil==7.2.2",  # exact: peak-memory measurements depend on it
 ]
+plots = [
+    "matplotlib==3.11.2",  # exact: the committed figures' rendering depends on it
+]
 
 [build-system]
 requires = ["hatchling"]

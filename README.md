@@ -175,7 +175,7 @@ measured.
 
 ```bash
 uv sync                                    # .venv from uv.lock
-uv run --group measure pytest              # tests, no network
+uv run --group measure --group plots pytest  # tests, no network
 
 # 1. Download a snapshot (network). Set SNAPSHOT once; the later steps use it.
 SNAPSHOT=full-$(date +%Y-%m-%d)
@@ -194,6 +194,9 @@ uv run python -m etf_risk.verify --run $RUN
 uv run python analysis/sql_overview.py $RUN
 uv run python analysis/sql_comparison.py $RUN
 uv run python analysis/sql_sensitivity.py $RUN
+# 7. The figures of this run; X1-X4 read the committed CSVs -> data/figures-$SNAPSHOT/
+uv run --group plots python -m etf_risk.plots --run $RUN --snapshot data/processed/$SNAPSHOT \
+    --windows data/windows/$SNAPSHOT/rolling-252-s21 --out data/figures-$SNAPSHOT
 ```
 
 Optional steps, with the same variables:
@@ -229,6 +232,13 @@ uv run --group measure python -m etf_risk.measure --repeats 4 -- --windows data/
   has not been run.
 - The 2020–2025 prototype regression needs the prototype CSVs, which were
   downloaded outside this repository ([data-sources.md](docs/data-sources.md)).
+- `etf_risk.plots` draws the figures of [docs/results.md](docs/results.md).
+  X1–X4 read the experiments' measurement CSVs, committed in
+  [docs/measurements](docs/measurements/README.md), so they also work from a
+  fresh clone (`--figures X1 X2 X3 X4`). An input that is missing, cannot be
+  parsed or lacks a column the figures read is named, and nothing is drawn;
+  `--check` compares the numbers with the documented values and says which
+  figures it could not compare ([docs/demo.md](docs/demo.md)).
 
 ### Docker
 
