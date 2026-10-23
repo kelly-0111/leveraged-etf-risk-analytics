@@ -647,17 +647,19 @@ and answers: [pandas-baseline.md](pandas-baseline.md).
 - Open transcript-hook items (separator rule, save timing, folders for
   interruption notices) and the NumPy deprecation warnings are unchanged.
 
-## 11. Systems extension — planned (optional)
+## 11. Systems extension — in progress (optional)
 
 An exploratory layer around the batch pipeline: analysis jobs are submitted,
 queued, run by a worker and tracked, and summary queries can be served from a
 cache. Nothing in sections 3–10 depends on it, and each of its stages can be the
-last. Only the Docker image (§9) exists so far; everything below is planned and
-may change at review.
+last. The Docker image (§9) and the first milestone of the job queue exist: the
+job table, its state transitions and a worker with a simulated pipeline, tested
+on SQLite and on MySQL 8.4.13 ([job-table.md](job-table.md)). Everything else
+below is planned and may change at review.
 
 | Component | Role | Notes |
 |---|---|---|
-| MySQL 8 | job table: the single source of truth for job state | parameters, input checksums, status, attempt number and token, lease, accepted run id, error |
+| MySQL 8 | job table: the single source of truth for job state | parameters, input checksums, status, attempt number and token, lease, accepted attempt (and so its run id), error |
 | Kafka (one broker, KRaft) | job queue: one topic carrying job ids | delivery at least once; one partition; no replica |
 | Worker | runs the existing CLIs (`etf_risk.windows` → `etf_risk.spark_pipeline` → `etf_risk.verify`) in a subprocess for each job it claims | one job at a time on this machine, for memory |
 | Reconciler | requeues jobs whose lease expired and republishes jobs whose publication was never confirmed | each change conditional on the attempt token it observed |
@@ -743,8 +745,9 @@ single instances); durability beyond one broker and one database on this
 machine; cache results for workloads other than these small, unchanging result
 tables; any change to the analysis results in §8.
 
-**Stages and authorship.** Compose infrastructure, then the job queue, the
+**Stages and authorship.** The job table and the worker, then Kafka delivery
+and the reconciler, with the Compose services added one at a time; then the
 recovery experiments and the result cache; each stops for review. The Docker
-image and the Compose infrastructure are written with Claude Code; the job
-table, worker, reconciler, cache logic and the experiments by the project
+image, the Compose services, the job table, the worker and the reconciler are
+written with Claude Code; the cache logic and the experiments by the project
 author, with tutoring.

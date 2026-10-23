@@ -1,0 +1,33 @@
+# Services of the systems extension (spec §11), each with the spec's memory budget and
+# reachable from this machine only; name the services a run needs. Nothing else in the
+# project starts them. mysql serves the job table's integration tests: a 64 MiB buffer pool,
+# performance_schema off, a 512 MiB container without swap.
+#
+#   docker compose -f docker/compose.yaml up -d --wait mysql
+#   ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 uv run --with 'pymysql[rsa]==1.1.1' \
+#       pytest tests/test_jobs_store.py tests/test_jobs_worker.py tests/test_jobs_mysql.py
+#   docker compose -f docker/compose.yaml down -v        # removes the data volumes as well
+#
+# The tests create and drop a database of their own for each test. The root password is a
+# fixed test value for a server listening on 127.0.0.1 only; ETF_RISK_MYSQL_ROOT_PASSWORD
+# overrides it. The image is pinned to MySQL 8.4.13 (the 8.4 LTS line) by its digest, as
+# pulled on 2026-10-22 (docker image inspect --format '{{index .RepoDigests 0}}' mysql:8.4).
+#
+# AI contribution: written with Claude Code (Opus 5.5).
+name: etf-risk-jobs
+services:
+  mysql:
+    image: mysql:8.4.13@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69
+    command: ["--innodb-buffer-pool-size=64M", "--performance-schema=OFF"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${ETF_RISK_MYSQL_ROOT_PASSWORD:-jobs-test}
+    ports:
+      - "127.0.0.1:3307:3306"
+    mem_limit: 512m
+    memswap_limit: 512m
+    healthcheck:
+      # Answers once the server accepts TCP connections, even before a login succeeds.
+      test: ["CMD", "mysqladmin", "ping", "--host=127.0.0.1", "--silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60

@@ -230,3 +230,5 @@ derby.log
 # Unredacted Claude Code transcripts and local privacy settings stay on this machine
 docs/ai-usage/**/transcript.raw.jsonl
 .claude/*.local.*
+# Git worktrees that Claude Code sessions create inside the repository
+.claude/worktrees/
