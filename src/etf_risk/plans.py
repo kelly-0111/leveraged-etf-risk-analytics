@@ -13,11 +13,17 @@ For every SQL execution with an id above the watermark, `capture` keeps:
   - each shuffle exchange's partitioning and requested partition count, from its node description,
     and its runtime metrics, among them "number of partitions" (the partitions it wrote);
   - each shuffle read that AQE marks (an AQEShuffleRead node): its mark (coalesced, local, skewed)
-    and its metrics, among them "number of partitions", the partitions it actually read.
+    and its metrics, among them "number of partitions", the partitions it actually read;
+  - format 2, for docs/caching-experiment.md: the execution's description, which is the job
+    description in effect when it started (its phase's, or "cache fill: <table>" for the count()
+    that fills a cache); and each scan node: an InMemoryTableScan, a read of cached data, or
+    a file scan such as "Scan parquet", with its description and metrics. Its rows are its "number
+    of output rows", or None when Spark recorded no such metric: a missing metric is never read as 0.
 An unmarked shuffle read has no node of its own: it reads all of its exchange's partitions.
 
 AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_partition_options.py
-and on a small window set (docs/partition-experiment.md 4.5).
+and tests/test_caching_options.py, and on small window sets (docs/partition-experiment.md 4.5,
+docs/caching-experiment.md 4.5).
 """
 from __future__ import annotations
 
@@ -25,7 +31,7 @@ import re
 import time
 from collections.abc import Sequence
 
-FORMAT = 1
+FORMAT = 2                     # 2 adds descriptions and scan nodes; everything of format 1 is unchanged
 DEFAULT_TIMEOUT_S = 60.0
 JOIN_NODES = ("SortMergeJoin", "BroadcastHashJoin", "ShuffledHashJoin", "BroadcastNestedLoopJoin", "CartesianProduct")
 _FINAL = re.compile(r"isFinalPlan=(true|false)")
@@ -122,10 +128,11 @@ def _execution(conv, store, e, group_of: dict[int, str]) -> dict:
     adaptive, final = plan_status(text)
     error = e.errorMessage().get() if e.errorMessage().isDefined() else ""     # "" when it succeeded
     values = dict(conv.asJava(store.executionMetrics(execution_id)))
-    exchanges, reads, joins = [], [], []
+    exchanges, reads, joins, scans = [], [], [], []
     for node in conv.asJava(store.planGraph(execution_id).allNodes()):
         name, desc = node.name(), node.desc()
-        if name in ("Exchange", "AQEShuffleRead"):
+        scan = is_scan(name)
+        if name in ("Exchange", "AQEShuffleRead") or scan:
             metrics = {m.name(): values.get(m.accumulatorId()) for m in conv.asJava(node.metrics())}
             partitions = metric_count(metrics.get("number of partitions"))
         if name == "Exchange":       # "partitions": the count it wrote at runtime, next to the requested one
@@ -136,8 +143,16 @@ def _execution(conv, store, e, group_of: dict[int, str]) -> dict:
             reads.append({"mark": read_mark(desc), "partitions": partitions, "metrics": metrics})
         elif name in JOIN_NODES:
             joins.append(name)
+        elif scan:                   # "rows": None when the metric is missing, never 0
+            scans.append({"node": name.strip(), "rows": metric_count(metrics.get("number of output rows")),
+                          "metrics": metrics, "desc": desc})
     return {
-        "id": execution_id, "phase": "+".join(groups), "jobs": jobs, "error": error or None,
-        "adaptive": adaptive, "final": final, "exchanges": exchanges, "shuffle_reads": reads, "joins": joins,
-        "plan": text,
+        "id": execution_id, "phase": "+".join(groups), "description": e.description(), "jobs": jobs,
+        "error": error or None, "adaptive": adaptive, "final": final, "exchanges": exchanges, "shuffle_reads": reads,
+        "joins": joins, "scans": scans, "plan": text,
     }
+
+
+def is_scan(name: str) -> bool:
+    """A read of cached data (InMemoryTableScan) or of files (Scan parquet, Scan csv, ...)."""
+    return name == "InMemoryTableScan" or name.startswith("Scan ")
