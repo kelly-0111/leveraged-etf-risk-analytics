@@ -1,13 +1,14 @@
 # Leveraged ETF Risk Analytics — results
 
 Author: I decided which figures to make and how the work was divided: Claude Code wrote the figure
-code and drafted the facts below. Section 7 is an AI-assisted draft of the conclusions, written at
-my request and awaiting my review.
+code and drafted the facts below. It also drafted the conclusions (section 7) at my request; I
+reviewed them, had two points revised, and approved them.
 
 _Drafted with Claude Code (Opus 5.5) on 2026-10-22 from the figures' checked numbers
 ([figures/figures.json](figures/figures.json)), [spec.md](spec.md) §8,
 [data-sources.md](data-sources.md) and the four experiment documents, which hold the design, records
-and details behind every number here. Section 7 was drafted on 2026-10-23 and is marked as a draft._
+and details behind every number here. Section 7 was drafted on 2026-10-23; the author reviewed it,
+had it revised and approved it the same day._
 
 This is the project's final write-up: what the results show, with the twelve figures, and what they
 cannot show. The results describe historical 252-trading-day windows of five tickers, replayed by a
@@ -172,29 +173,30 @@ saving in the summaries or checks. Median peaks were 2.68–2.70 GiB.
 
 ## 7. Conclusions
 
-> **AI-assisted draft for the author's review.** Drafted with Claude Code (Opus 5.5) on 2026-10-23,
-> at the author's request, from the findings in sections 1–6 and the documents they cite. The
-> author has not yet reviewed or approved it, so it is not yet the author's text.
+> **Reviewed and approved by the author on 2026-10-23.** Drafted with Claude Code (Opus 5.5) at the
+> author's request, from the findings in sections 1–6 and the documents they cite, and revised as
+> the author asked before approval.
 
 - **Path dependence (question 1).** For these five tickers, the daily-reset 2x return came out above
   twice the 1x return in fewer than half of the one-year windows: from 24.7% of TSLA's to 45.3% of
   NVDA's. Under the model, the reset costs about the window's realized variance in log terms, so 2x
   comes out ahead only when the compounding of a strong move outweighs that cost. Every window
   without a breach respected the drawdown bound `1 − (1 − MDD_1x)²`.
-- **Rebalancing (question 2).** The reset trades twice each day's return, as a share of NAV, so the
-  2x path's turnover follows the underlying's volatility: the median of its mean daily turnover per
-  window ran from 1.8% of NAV for QQQ to 5.0% for TSLA. These are magnitudes the model implies, not
-  observed trading.
+- **Rebalancing (question 2).** The reset trades twice each day's return, measured relative to that
+  day's starting NAV, so the 2x path's turnover follows the underlying's volatility: the median of
+  its mean daily turnover per window ran from 1.8% of the day's starting NAV for QQQ to 5.0% for
+  TSLA. These are magnitudes the model implies, not observed trading.
 - **Data.** Some results depend on the 36 unverified extreme days: without the windows that use
   them, TSLA's median 2x return changes sign. Until a second source confirms those days, results
   that depend on them remain unverified.
 - **Spark performance (question 3).** On one laptop, with planned workloads of up to 5,364
   windows, the only setting tried that made a clear difference was turning off AQE's coalescing at
   200 shuffle partitions, which lengthened the median time by 69%; caching made no clear
-  difference. Fixed costs appeared to dominate at stride 21 (an intercept estimated at 85% of the
-  median, from three points and with drift), and at stride 7 a single-process pandas
-  implementation of the same computation was faster end to end and used less memory. These results
-  do not show how the pipeline would behave with larger data or on other machines.
+  difference. The stride experiment's fitted results are consistent with substantial fixed
+  overhead (an intercept estimated at 85% of the stride-21 median) but do not establish it
+  directly: the fit rests on three points, and drift was detected. At stride 7, a single-process
+  pandas implementation of the same computation was faster end to end and used less memory. These
+  results do not show how the pipeline would behave with larger data or on other machines.
 - **Scope.** The results describe one history per ticker under a model without fees, financing or
   trading costs; they are neither forecasts nor probabilities for future holding periods.
 
