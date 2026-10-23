@@ -3,7 +3,9 @@
 How the job store ([`src/etf_risk/jobs/store.py`](../src/etf_risk/jobs/store.py)) keeps the
 guarantee of [spec §11](spec.md): each job accepts at most one result, and every succeeded
 job has exactly one accepted result. A job may execute more than once. The example follows
-two workers, A and B, and job 7, with a lease of 60 seconds.
+two workers, A and B, and job 7, with a lease of 60 seconds. How jobs reach the workers
+through Kafka, and how the reconciler requeues and republishes them, is in
+[job-queue.md](job-queue.md).
 
 ## claim(): two guarded updates
 

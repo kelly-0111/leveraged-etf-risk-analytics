@@ -5,21 +5,28 @@ the job's row in jobs whose WHERE clause is the transition's guard, and the numb
 rows it matched is the answer: 1, the change happened; 0, it was refused, or the worker
 asking has been fenced off. The same transaction records the change in job_attempts,
 where every statement must touch exactly one row; anything else raises and rolls back
-both tables. Reads only classify a refusal: a write that follows a read carries its own
+both tables (submit and mark_published change jobs only). Reads only classify a refusal
+or report what the reconciler observed: a write that follows a read carries its own
 guard, which checks again what the read saw.
 
-    operation      from -> to                                  guard
-    submit         -> queued                                   (insert)
-    claim          queued -> running                           status queued
-                   running -> running (takeover)               lease expired, attempts left
-    renew          running -> running                          status running, the attempt's token
-    accept_result  running -> succeeded                        status running, the attempt's token
-    fail_attempt   running -> queued (retryable, attempts      status running, the attempt's token
-                   left) or running -> failed
-    exhaust        running -> failed (inside claim)            lease expired, no attempts left,
-                                                               the token claim read
+    operation        from -> to                                guard
+    submit           -> queued                                 (insert)
+    mark_published   queued -> queued, publication recorded    status queued, none recorded yet,
+                                                               the version read before publishing
+    claim            queued -> running                         status queued
+                     running -> running (takeover)             lease expired, attempts left
+    renew            running -> running                        status running, the attempt's token
+    accept_result    running -> succeeded                      status running, the attempt's token
+    fail_attempt     running -> queued (retryable, attempts    status running, the attempt's token
+                     left) or running -> failed
+    requeue_expired  running -> queued (for the reconciler)    status running, the token read before,
+                                                               lease expired, attempts left
+    exhaust          running -> failed (inside claim and       lease expired, no attempts left,
+                     requeue_expired)                          the token read before
 
-succeeded and failed are terminal. Renewal and acceptance need only status running and
+succeeded and failed are terminal. published_at is set only while a job is queued: it says
+a message for the job's current queued state was confirmed, so the reconciler need not
+publish it again. A claim clears it, and a job that returns to queued has none. Renewal and acceptance need only status running and
 the attempt's token: a worker whose lease expired keeps the job until another claim takes
 it over. The lease decides only when that may happen, so a wrong clock can cause an extra
 execution but never a second accepted result. Times come from the store's Clock and are
@@ -41,8 +48,9 @@ expression reads a column assigned earlier in the statement (computed values are
 parameters); CHECK constraints are enforced from MySQL 8.0.16. SQLiteDialect is below; the
 MySQL dialect and connection are in etf_risk.jobs.mysql.
 
-AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_jobs_store.py and
-tests/test_jobs_worker.py, on SQLite and on MySQL 8.4.13.
+AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_jobs_store.py,
+tests/test_jobs_worker.py, tests/test_jobs_reconciler.py and tests/test_jobs_queue.py, on
+SQLite and on MySQL 8.4.13.
 """
 from __future__ import annotations
 
@@ -98,6 +106,8 @@ TRANSITIONS: dict[str, frozenset[tuple[Status, Status]]] = {
     "accept_result": frozenset({(Status.RUNNING, Status.SUCCEEDED)}),
     "fail_attempt": frozenset({(Status.RUNNING, Status.QUEUED), (Status.RUNNING, Status.FAILED)}),
     "exhaust": frozenset({(Status.RUNNING, Status.FAILED)}),
+    "mark_published": frozenset({(Status.QUEUED, Status.QUEUED)}),
+    "requeue_expired": frozenset({(Status.RUNNING, Status.QUEUED), (Status.RUNNING, Status.FAILED)}),
 }
 
 # The gaps between the statements of one transaction where JobStore(fault=...) is called;
@@ -109,6 +119,7 @@ FAULT_POINTS = (
     "accept_result.jobs_updated",
     "fail_attempt.jobs_updated",
     "exhaust.jobs_updated",
+    "requeue_expired.jobs_updated",
 )
 
 # Each query lists the jobs that break one invariant of the guarantee or of the agreement
@@ -138,7 +149,8 @@ INVARIANT_QUERIES = {
         "SELECT MIN(job_id) FROM job_attempts GROUP BY output_dir HAVING COUNT(*) > 1",
 }
 
-_TIME_COLUMNS = frozenset({"lease_expires_at", "created_at", "updated_at", "finished_at", "claimed_at", "ended_at"})
+_TIME_COLUMNS = frozenset({"lease_expires_at", "created_at", "updated_at", "finished_at", "published_at",
+                           "claimed_at", "ended_at"})
 _JSON_COLUMNS = frozenset({"params", "input_checksums"})
 
 
@@ -234,6 +246,24 @@ class Claim:
     input_checksums: dict
 
 
+@dataclass(frozen=True)
+class ExpiredLease:
+    """A running job whose lease had expired when the reconciler looked, with the token it saw."""
+    job_id: int
+    token: str
+
+
+@dataclass(frozen=True)
+class Unconfirmed:
+    """A queued job with no confirmed publication when the reconciler looked. version makes
+    the reconciler's change conditional on this state; queued_since is the last change of
+    the row, which for such a job is when it became queued."""
+    job_id: int
+    version: int
+    attempt_number: int
+    queued_since: datetime
+
+
 def _retry_conflicts(operation: Callable[..., Any]) -> Callable[..., Any]:
     """Runs a write operation again when the database rolled it back over a lock conflict."""
     @functools.wraps(operation)
@@ -263,7 +293,8 @@ class JobStore:
 
     @_retry_conflicts
     def submit(self, params: dict, input_checksums: dict, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> int:
-        """Create a queued job and return its id. Publishing it is a separate step (Kafka, later)."""
+        """Create a queued job, at version 0, and return its id. Publishing it is a separate
+        step: etf_risk.jobs.queue.submit_job() publishes and records the confirmation."""
         now = self._time(self.clock.now())
         with self._transaction():
             return self._execute(
@@ -272,6 +303,20 @@ class JobStore:
                 " VALUES (:params, :input_checksums, 'queued', :max_attempts, 0, 0, :now, :now)",
                 params=_json(params), input_checksums=_json(input_checksums), max_attempts=max_attempts,
                 now=now).lastrowid
+
+    @_retry_conflicts
+    def mark_published(self, job_id: int, version: int) -> bool:
+        """Record that Kafka confirmed a publication of the job, if the job is still as it was
+        when its version was read before publishing: queued, with no publication recorded.
+        Otherwise the message may already have been consumed (the job was claimed, and
+        perhaps returned to queued), so nothing is recorded and the reconciler publishes the
+        job again if it is queued. True: recorded."""
+        now = self._time(self.clock.now())
+        with self._transaction():
+            return self._execute(
+                "UPDATE jobs SET published_at = :now, version = version + 1, updated_at = :now"
+                " WHERE job_id = :job_id AND status = 'queued' AND published_at IS NULL AND version = :version",
+                job_id=job_id, version=version, now=now).rowcount == 1
 
     @_retry_conflicts
     def claim(self, job_id: int, worker_id: str, output_root: str | Path) -> Claim | Refusal:
@@ -286,13 +331,13 @@ class JobStore:
         with self._transaction():
             if self._execute(
                     "UPDATE jobs SET status = 'running', attempt_number = attempt_number + 1,"
-                    " attempt_token = :token, lease_expires_at = :lease_expires_at,"
+                    " attempt_token = :token, lease_expires_at = :lease_expires_at, published_at = NULL,"
                     " version = version + 1, updated_at = :now"
                     " WHERE job_id = :job_id AND status = 'queued'", **take).rowcount:
                 takeover = False
             elif self._execute(
                     "UPDATE jobs SET status = 'running', attempt_number = attempt_number + 1,"
-                    " attempt_token = :token, lease_expires_at = :lease_expires_at,"
+                    " attempt_token = :token, lease_expires_at = :lease_expires_at, published_at = NULL,"
                     " version = version + 1, updated_at = :now"
                     " WHERE job_id = :job_id AND status = 'running' AND lease_expires_at <= :now"
                     " AND attempt_number < max_attempts", **take).rowcount:
@@ -385,6 +430,46 @@ class JobStore:
                             job_id=claim.job_id, attempt_number=claim.attempt_number, error=error, now=now)
             return status
 
+    @_retry_conflicts
+    def requeue_expired(self, job_id: int, token: str) -> Status | None:
+        """For the reconciler: end the attempt whose lease expired, conditional on the token
+        read before (expired_leases()). The job returns to queued, with no publication
+        recorded, while attempts are left, and fails otherwise; its attempt becomes expired.
+        Returns the job's new status, or None when the job changed since the read (renewed
+        and finished, taken over, or failed)."""
+        now = self.clock.now()
+        now_value = self._time(now)
+        with self._transaction():
+            if self._execute(
+                    "UPDATE jobs SET status = 'queued', attempt_token = NULL, lease_expires_at = NULL,"
+                    " version = version + 1, updated_at = :now"
+                    " WHERE job_id = :job_id AND status = 'running' AND attempt_token = :token"
+                    " AND lease_expires_at <= :now AND attempt_number < max_attempts",
+                    job_id=job_id, token=token, now=now_value).rowcount:
+                self._fault("requeue_expired.jobs_updated")
+                self._write_one("UPDATE job_attempts SET outcome = 'expired', ended_at = :now"
+                                " WHERE job_id = :job_id AND attempt_token = :token AND outcome = 'running'",
+                                job_id=job_id, token=token, now=now_value)
+                return Status.QUEUED
+            attempt = self._fetch_one("SELECT attempt_number FROM job_attempts"
+                                      " WHERE job_id = :job_id AND attempt_token = :token", job_id=job_id, token=token)
+            if attempt is not None and self._exhaust(job_id, token, attempt["attempt_number"], now):
+                return Status.FAILED
+            return None
+
+    def expired_leases(self) -> list[ExpiredLease]:
+        """Running jobs whose lease has expired by the store's clock, with their tokens."""
+        return [ExpiredLease(row["job_id"], row["attempt_token"]) for row in self._fetch_all(
+            "SELECT job_id, attempt_token FROM jobs WHERE status = 'running' AND lease_expires_at <= :now"
+            " ORDER BY job_id", now=self._time(self.clock.now()))]
+
+    def unconfirmed(self) -> list[Unconfirmed]:
+        """Queued jobs with no confirmed publication."""
+        return [Unconfirmed(row["job_id"], row["version"], row["attempt_number"],
+                            self.dialect.parse_time(row["updated_at"])) for row in self._fetch_all(
+            "SELECT job_id, version, attempt_number, updated_at FROM jobs"
+            " WHERE status = 'queued' AND published_at IS NULL ORDER BY job_id")]
+
     def job(self, job_id: int) -> dict | None:
         row = self._fetch_one("SELECT * FROM jobs WHERE job_id = :job_id", job_id=job_id)
         return None if row is None else self._decode(row)
@@ -420,7 +505,8 @@ class JobStore:
 
     def _exhaust(self, job_id: int, token: str, attempt_number: int, now: datetime) -> bool:
         """running -> failed: the lease expired and no attempts are left. Conditional on the
-        token claim read, so a change in between makes it match nothing."""
+        token read before (by claim, or by the reconciler), so a change in between makes it
+        match nothing."""
         now_value = self._time(now)
         if not self._execute(
                 "UPDATE jobs SET status = 'failed', attempt_token = NULL, lease_expires_at = NULL,"

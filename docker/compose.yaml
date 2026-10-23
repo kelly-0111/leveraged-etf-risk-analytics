@@ -1,17 +1,23 @@
 # Services of the systems extension (spec §11), each with the spec's memory budget and
 # reachable from this machine only; name the services a run needs. Nothing else in the
-# project starts them. mysql serves the job table's integration tests: a 64 MiB buffer pool,
-# performance_schema off, a 512 MiB container without swap.
+# project starts them.
+# - mysql: the job table. A 64 MiB buffer pool, performance_schema off, a 512 MiB container
+#   without swap.
+# - kafka: the job queue. One KRaft node that is broker and controller, with a 256 MiB heap
+#   in a 640 MiB container without swap. Clients on this machine use 127.0.0.1:9094;
+#   containers on this Compose network will use kafka:9092. Topics are not created on
+#   first use: create them with etf_risk.jobs.kafka.create_topic().
 #
-#   docker compose -f docker/compose.yaml up -d --wait mysql
-#   ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 uv run --with 'pymysql[rsa]==1.1.1' \
-#       pytest tests/test_jobs_store.py tests/test_jobs_worker.py tests/test_jobs_mysql.py
+#   docker compose -f docker/compose.yaml up -d --wait mysql kafka
+#   ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 ETF_RISK_KAFKA_BOOTSTRAP=127.0.0.1:9094 \
+#       uv run --with 'pymysql[rsa]==1.1.1' --with 'confluent-kafka==2.16.0' python -m pytest tests/test_jobs_*.py
 #   docker compose -f docker/compose.yaml down -v        # removes the data volumes as well
 #
-# The tests create and drop a database of their own for each test. The root password is a
-# fixed test value for a server listening on 127.0.0.1 only; ETF_RISK_MYSQL_ROOT_PASSWORD
-# overrides it. The image is pinned to MySQL 8.4.13 (the 8.4 LTS line) by its digest, as
-# pulled on 2026-10-22 (docker image inspect --format '{{index .RepoDigests 0}}' mysql:8.4).
+# The tests create and drop a database and a topic of their own for each test. The root
+# password is a fixed test value for a server listening on 127.0.0.1 only;
+# ETF_RISK_MYSQL_ROOT_PASSWORD overrides it. Both images are pinned by digest, as pulled on
+# 2026-10-22 (docker image inspect --format '{{index .RepoDigests 0}}' <image>): MySQL 8.4.13
+# from the 8.4 LTS line, and Kafka 4.3.1, the newest release that was at least two weeks old.
 #
 # AI contribution: written with Claude Code (Opus 5.5).
 name: etf-risk-jobs
@@ -28,6 +34,34 @@ services:
     healthcheck:
       # Answers once the server accepts TCP connections, even before a login succeeds.
       test: ["CMD", "mysqladmin", "ping", "--host=127.0.0.1", "--silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  kafka:
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,HOST://:9094,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://127.0.0.1:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1          # one broker: no replicas
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0          # a new consumer group starts at once
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx256m
+    ports:
+      - "127.0.0.1:9094:9094"
+    mem_limit: 640m
+    memswap_limit: 640m
+    healthcheck:
+      # A port check (BusyBox nc), so no second JVM starts inside the memory limit.
+      test: ["CMD", "nc", "-z", "localhost", "9094"]
       interval: 2s
       timeout: 5s
       retries: 60

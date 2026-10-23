@@ -42,6 +42,12 @@ def queued(env):
     return job, Claim(job, 1, "0" * 32, run_id(job, 1), env.runs / run_id(job, 1), 3, {}, {})
 
 
+def published(env):
+    job, a = queued(env)
+    assert env.store.mark_published(job, 0)
+    return job, a
+
+
 def running(env, max_attempts=3):
     job = env.store.submit({"n": 1}, {}, max_attempts=max_attempts)
     return job, env.store.claim(job, "worker-A", env.runs)
@@ -77,8 +83,8 @@ def requeued(env):
     return job, a
 
 
-SITUATIONS = {"queued": queued, "running": running, "expired": expired, "expired_last": expired_last,
-              "succeeded": succeeded, "failed": failed, "requeued": requeued}
+SITUATIONS = {"queued": queued, "published": published, "running": running, "expired": expired,
+              "expired_last": expired_last, "succeeded": succeeded, "failed": failed, "requeued": requeued}
 
 OPERATIONS = {
     "claim": lambda env, job, a: env.store.claim(job, "worker-B", env.runs),
@@ -86,9 +92,12 @@ OPERATIONS = {
     "accept": lambda env, job, a: env.store.accept_result(a),
     "fail": lambda env, job, a: env.store.fail_attempt(a, "transient", retryable=True),
     "foreign_token": lambda env, job, a: env.store.accept_result(replace(a, token="f" * 32)),
+    "mark_published": lambda env, job, a: env.store.mark_published(job, env.store.job(job)["version"]),
+    "requeue_expired": lambda env, job, a: env.store.requeue_expired(job, a.token),   # the reconciler saw A's token
 }
 TRANSITION_NAME = {"claim": "claim", "renew": "renew", "accept": "accept_result", "fail": "fail_attempt",
-                   "foreign_token": "accept_result"}
+                   "foreign_token": "accept_result", "mark_published": "mark_published",
+                   "requeue_expired": "requeue_expired"}
 
 # (situation, operation) -> (what the call returns, the job's status afterwards); a status
 # of None means the call must leave both tables exactly as they were.
@@ -99,36 +108,57 @@ EXPECTED = {
     ("queued", "accept"): (False, None),
     ("queued", "fail"): (None, None),
     ("queued", "foreign_token"): (False, None),
+    ("queued", "mark_published"): (True, Status.QUEUED),
+    ("queued", "requeue_expired"): (None, None),
+    ("published", "claim"): (CLAIMED, Status.RUNNING),         # the claim clears the publication
+    ("published", "renew"): (False, None),
+    ("published", "accept"): (False, None),
+    ("published", "fail"): (None, None),
+    ("published", "foreign_token"): (False, None),
+    ("published", "mark_published"): (False, None),            # already recorded
+    ("published", "requeue_expired"): (None, None),
     ("running", "claim"): (Refusal.LEASE_HELD, None),
     ("running", "renew"): (True, Status.RUNNING),
     ("running", "accept"): (True, Status.SUCCEEDED),
     ("running", "fail"): (Status.QUEUED, Status.QUEUED),
     ("running", "foreign_token"): (False, None),
+    ("running", "mark_published"): (False, None),
+    ("running", "requeue_expired"): (None, None),              # the lease is live
     ("expired", "claim"): (CLAIMED, Status.RUNNING),            # takeover
     ("expired", "renew"): (True, Status.RUNNING),               # nobody took over: the token still holds
     ("expired", "accept"): (True, Status.SUCCEEDED),
     ("expired", "fail"): (Status.QUEUED, Status.QUEUED),
     ("expired", "foreign_token"): (False, None),
+    ("expired", "mark_published"): (False, None),
+    ("expired", "requeue_expired"): (Status.QUEUED, Status.QUEUED),
     ("expired_last", "claim"): (Refusal.EXHAUSTED, Status.FAILED),
     ("expired_last", "renew"): (True, Status.RUNNING),
     ("expired_last", "accept"): (True, Status.SUCCEEDED),
     ("expired_last", "fail"): (Status.FAILED, Status.FAILED),   # retryable, but no attempts left
     ("expired_last", "foreign_token"): (False, None),
+    ("expired_last", "mark_published"): (False, None),
+    ("expired_last", "requeue_expired"): (Status.FAILED, Status.FAILED),
     ("succeeded", "claim"): (Refusal.SUCCEEDED, None),
     ("succeeded", "renew"): (False, None),
     ("succeeded", "accept"): (True, None),                      # already accepted: true again, no change
     ("succeeded", "fail"): (None, None),
     ("succeeded", "foreign_token"): (False, None),
+    ("succeeded", "mark_published"): (False, None),
+    ("succeeded", "requeue_expired"): (None, None),
     ("failed", "claim"): (Refusal.FAILED, None),
     ("failed", "renew"): (False, None),
     ("failed", "accept"): (False, None),
     ("failed", "fail"): (None, None),
     ("failed", "foreign_token"): (False, None),
+    ("failed", "mark_published"): (False, None),
+    ("failed", "requeue_expired"): (None, None),
     ("requeued", "claim"): (CLAIMED, Status.RUNNING),
     ("requeued", "renew"): (False, None),
     ("requeued", "accept"): (False, None),
     ("requeued", "fail"): (None, None),
     ("requeued", "foreign_token"): (False, None),
+    ("requeued", "mark_published"): (True, Status.QUEUED),     # back in queued, with no publication recorded
+    ("requeued", "requeue_expired"): (None, None),
 }
 
 
@@ -402,6 +432,7 @@ ROLLBACK_CASES = {
     "accept_result.jobs_updated": (running, "accept"),
     "fail_attempt.jobs_updated": (running, "fail"),
     "exhaust.jobs_updated": (expired_last, "claim"),
+    "requeue_expired.jobs_updated": (expired, "requeue_expired"),
 }
 
 
@@ -516,8 +547,8 @@ def test_both_schema_files_declare_the_same_tables_columns_and_constraints():
     mysql = ddl_names((SCHEMA_DIR / "mysql.sql").read_text())
     assert mysql == ddl_names((SCHEMA_DIR / "sqlite.sql").read_text())
     assert set(mysql) == {"jobs", "job_attempts"}
-    assert {"attempt_token", "lease_expires_at", "accepted_attempt", "version",
-            "constraint jobs_accepted_attempt"} <= mysql["jobs"]          # the parser found what matters
+    assert {"attempt_token", "lease_expires_at", "accepted_attempt", "version", "published_at",
+            "constraint jobs_accepted_attempt", "constraint jobs_published_only_queued"} <= mysql["jobs"]
     assert {"renewals", "constraint job_attempts_run_id"} <= mysql["job_attempts"]
 
 
@@ -531,25 +562,29 @@ def test_the_schema_allows_exactly_the_statuses_and_outcomes_of_the_code():
 
 
 INSERT_JOB = ("INSERT INTO jobs (params, input_checksums, status, max_attempts, attempt_number, attempt_token,"
-              " lease_expires_at, accepted_attempt, error, version, created_at, updated_at, finished_at)"
-              " VALUES ('{}', '{}', :status, 3, :n, :token, :lease, :accepted, :error, 0, :t, :t, :finished)")
+              " lease_expires_at, accepted_attempt, error, version, created_at, updated_at, finished_at, published_at)"
+              " VALUES ('{}', '{}', :status, 3, :n, :token, :lease, :accepted, :error, 0, :t, :t, :finished,"
+              " :published)")
 
 
-@pytest.mark.parametrize("status, n, token, lease, accepted, error, finished, constraint", [
-    ("running", 1, None, True, None, None, False, "jobs_running_has_lease"),
-    ("queued", 0, "t" * 32, True, None, None, False, "jobs_running_has_lease"),
-    ("succeeded", 1, None, False, None, None, True, "jobs_succeeded_has_one_result"),
-    ("failed", 1, None, False, None, None, True, "jobs_failed_has_error"),
-    ("failed", 1, None, False, None, "boom", False, "jobs_finished"),
-    ("queued", 3, None, False, None, None, False, "jobs_queued_has_attempts_left"),
-    ("running", 4, "t" * 32, True, None, None, False, "jobs_attempt_limit"),
-    ("paused", 0, None, False, None, None, False, "jobs_status"),
+@pytest.mark.parametrize("status, n, token, lease, accepted, error, finished, published, constraint", [
+    ("running", 1, None, True, None, None, False, False, "jobs_running_has_lease"),
+    ("queued", 0, "t" * 32, True, None, None, False, False, "jobs_running_has_lease"),
+    ("succeeded", 1, None, False, None, None, True, False, "jobs_succeeded_has_one_result"),
+    ("failed", 1, None, False, None, None, True, False, "jobs_failed_has_error"),
+    ("failed", 1, None, False, None, "boom", False, False, "jobs_finished"),
+    ("queued", 3, None, False, None, None, False, False, "jobs_queued_has_attempts_left"),
+    ("running", 4, "t" * 32, True, None, None, False, False, "jobs_attempt_limit"),
+    ("paused", 0, None, False, None, None, False, False, "jobs_status"),
+    ("running", 1, "t" * 32, True, None, None, False, True, "jobs_published_only_queued"),
 ])
-def test_inconsistent_job_rows_are_rejected(env, status, n, token, lease, accepted, error, finished, constraint):
+def test_inconsistent_job_rows_are_rejected(env, status, n, token, lease, accepted, error, finished, published,
+                                            constraint):
     t = env.backend.dialect.time(env.clock.now())
     with pytest.raises(env.backend.errors) as raised:
         env.backend.execute(INSERT_JOB, status=status, n=n, token=token, lease=t if lease else None,
-                            accepted=accepted, error=error, t=t, finished=t if finished else None)
+                            accepted=accepted, error=error, t=t, finished=t if finished else None,
+                            published=t if published else None)
     assert env.backend.violation(raised.value) == ("check", constraint)
 
 
