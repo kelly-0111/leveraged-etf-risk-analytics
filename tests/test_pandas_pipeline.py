@@ -237,7 +237,19 @@ def test_measure_runs_the_pandas_pipeline_in_fresh_processes(snapshot, tmp_path)
     assert [r["status"] for r in protocol["runs"]] == ["ok", "ok"]
     record = json.loads((base / protocol["runs"][1]["run_id"] / "run.json").read_text())
     assert record["engine"] == "pandas" and record["measurement"]["peak_rss_total_bytes"] > 0
-    assert set(record["measurement"]["peak_rss_by_kind_bytes"]) == {"driver"}     # one process, no Spark
+    kinds = set(record["measurement"]["peak_rss_by_kind_bytes"])
+    assert "driver" in kinds and not kinds & {"spark_jvm", "python_worker"}   # no Spark; a sampled helper is other
+    assert record["measurement"]["process_kinds"] == measure.PROCESS_KINDS
+
+
+@pytest.mark.spark
+def test_measure_still_records_the_spark_jvm_of_a_spark_pipeline_run(snapshot, tmp_path):
+    out = tmp_path / "out"
+    assert measure.main(["--repeats", "1", "--", "--windows", str(snapshot["windows"]), "--out-root", str(out)]) == 0
+    base = out / "snap" / snapshot["windows"].name
+    protocol = json.loads(next(base.glob("protocol-*.json")).read_text())
+    record = json.loads((base / protocol["runs"][0]["run_id"] / "run.json").read_text())
+    assert record["measurement"]["peak_rss_by_kind_bytes"]["spark_jvm"] > 0        # the JVM runs for seconds
 
 
 def test_measure_without_the_flag_starts_the_spark_pipeline_and_records_no_pipeline(snapshot, tmp_path, monkeypatch):

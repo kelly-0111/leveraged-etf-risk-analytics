@@ -349,9 +349,7 @@ together with how it was checked.
 2. **Data**: compare the 36 unverified extreme days with a second source, and
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4) are complete
-   ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)); the
-   intermittent failure of one measurement test, described in the demo, still
-   needs a fix.
+   ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)).
 4. **Optional systems extension** (spec §11): Docker Compose with MySQL, Kafka
    and Redis for a job queue and a result cache, with recovery and caching
    experiments. The job queue works with a simulated pipeline
