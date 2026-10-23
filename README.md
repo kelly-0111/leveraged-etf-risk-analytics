@@ -21,7 +21,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up | Planned |
-| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | Planned ([spec](docs/spec.md), §11) |
+| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress: the job table and a worker with a simulated pipeline ([docs/job-table.md](docs/job-table.md)); Kafka, Redis and the experiments planned ([spec](docs/spec.md), §11) |
 
 ## Reading guide
 
@@ -68,7 +68,8 @@ are not forecasts, and the model ignores fees, financing and execution.
    (with `validate`) → `windows` → `spark_pipeline` (which runs `model`) →
    `verify`; `measure` times runs, `plans` records a run's execution plans,
    and `pandas_pipeline` computes the same results in one process without
-   Spark. Module overview: spec §5.
+   Spark. The optional job queue's table and worker are in `jobs/`
+   ([docs/job-table.md](docs/job-table.md)). Module overview: spec §5.
 10. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
@@ -332,4 +333,6 @@ together with how it was checked.
 3. **Figures and the final write-up** (Stage 4).
 4. **Optional systems extension** (spec §11): Docker Compose with MySQL, Kafka
    and Redis for a job queue and a result cache, with recovery and caching
-   experiments.
+   experiments. The job table and a worker with a simulated pipeline are done
+   ([docs/job-table.md](docs/job-table.md)); Kafka delivery and the reconciler
+   come next.

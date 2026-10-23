@@ -5,8 +5,9 @@ its results, a Docker image, the stride experiment
 ([experiments.md](experiments.md)), the shuffle-partition experiment
 ([partition-experiment.md](partition-experiment.md)), the pandas baseline
 ([pandas-baseline.md](pandas-baseline.md)) and the caching experiment
-([caching-experiment.md](caching-experiment.md)); planned: an optional systems
-extension with MySQL, Kafka and Redis (§11).
+([caching-experiment.md](caching-experiment.md)); in progress: an optional
+systems extension with MySQL, Kafka and Redis (§11), of which the job table and
+a worker with a simulated pipeline exist ([job-table.md](job-table.md)).
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -17,7 +18,7 @@ is reviewed.
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
 | Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | **Implemented**: three SQL analyses, the Docker image, the stride experiment ([experiments.md](experiments.md)), the shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)), the pandas baseline ([pandas-baseline.md](pandas-baseline.md)) and the caching experiment ([caching-experiment.md](caching-experiment.md)) |
-| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | Planned |
+| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | **In progress**: the MySQL job table and a worker with a simulated pipeline ([job-table.md](job-table.md)); Kafka, the reconciler, Redis and the experiments planned |
 | Stage 4 | Figures, final documentation and demo | Planned |
 
 ## 1. Purpose and scope
@@ -163,6 +164,8 @@ src/etf_risk/
                                   (spark_pipeline --record-plans)
   pandas_pipeline.py implemented  the pipeline's results in one process with pandas, without Spark (the pandas baseline)
   plots.py           planned      figures from result files (Stage 4)
+  jobs/              implemented  optional job queue (§11), milestone 1: job table schema (MySQL, SQLite mirror),
+                                  guarded state transitions (store.py), MySQL adapter, worker, simulated pipeline
 analysis/            implemented  three Spark SQL analyses of a run's paired table (project author):
                                   sql_overview.py, sql_comparison.py, sql_sensitivity.py;
                                   collect_measurements.py (with Claude Code): the stride experiment's measurements CSV;
@@ -173,9 +176,11 @@ tests/               implemented  model, validation, ingest, download, windows, 
                                   injection, sample check, measurement, provenance, AI-log tooling, partition
                                   flags, plan recording, the partition collector and session helpers, the pandas
                                   pipeline against the Spark pipeline, the baseline collector and session helpers,
-                                  the caching option, the caching collector and session helpers
+                                  the caching option, the caching collector and session helpers, the job table
+                                  and worker (on SQLite; on MySQL when a server is configured)
 .claude/hooks/       implemented  per-message AI-usage logs with redaction (project tooling, not analysis)
-Dockerfile, docker/  implemented  pipeline image and its build and run scripts (data mounted, never copied in)
+Dockerfile, docker/  implemented  pipeline image and its build and run scripts (data mounted, never copied in);
+                                  compose.yaml with the extension's services (MySQL so far)
 ```
 
 Names of planned modules are provisional.
@@ -642,7 +647,7 @@ measured run. Design, run log, records and answers:
 
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stages 1–3: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline) | Planned |
+| Area | Implemented (prototype, Stages 1–3: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline; the extension's first milestone) | Planned |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
@@ -650,8 +655,8 @@ measured run. Design, run log, records and answers:
 | Spark | window members joined to broadcast returns; one grouped pandas call per window for both leverages; count-guarded Spark summaries; 1x/2x pairing on the window key with pre-breach values kept apart; scheduled vs actual end dates; ten full-scale checks; `verify` sample check; three Spark SQL analyses of the paired results (project author, §8) | — |
 | Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)); the pandas baseline (the Spark pipeline against a single-process pandas implementation at stride 7, end to end; one batch meeting every acceptance criterion; no drift) with the pandas pipeline, `measure --pipeline`, the batch collector and the session helpers ([pandas-baseline.md](pandas-baseline.md)); the caching experiment (no cache, the window-member rows, and those plus the four read-back tables at stride 7; one batch meeting every acceptance criterion; no drift) with the `--cache` option, cache records and checks from Spark's storage information and the plans, the batch collector and the session helpers ([caching-experiment.md](caching-experiment.md)) | — |
 | Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0 and psutil 7.2.2 pinned exactly; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
-| Systems extension | — | MySQL job table, Kafka job queue, worker and reconciler, Redis result cache, Docker Compose, recovery and caching experiments (§11) |
-| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
+| Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases; a worker with a simulated pipeline; MySQL 8.4.13 in Compose for the integration tests ([job-table.md](job-table.md)) | Kafka job queue and reconciler, the real pipeline in the worker, Redis result cache, recovery and caching experiments (§11) |
+| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [AI-usage logs](ai-usage/README.md) | design decisions, results, demo script |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
 
