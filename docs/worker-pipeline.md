@@ -295,7 +295,8 @@ never repeated on its own.
   - **The job processes** (peak RSS during a calendar-year job): the worker 63.0 MiB and the
     reconciler 51.6 MiB.
   - **MySQL:**
-    - 345 MiB (67%) after the live job suites on a fresh container;
+    - 345 MiB (67%) after an earlier live run of 10 of the 16 job test files, on a fresh
+      container; no peak was read during the 463-test run above;
     - 501 MiB (98%) after the live mutation session (one full run and 49 shorter ones) on
       another fresh container.
   - **Kafka:** 361 to 415 MiB (56–65%).
