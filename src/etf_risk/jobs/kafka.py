@@ -23,6 +23,13 @@ Settings, each pinned by tests/test_jobs_kafka.py:
 Consumer errors that are not fatal, such as a poll after the poll interval was exceeded, are
 logged and written to the worker's event log (consumer_error).
 
+Partition assignments are written to the worker's event log too: assigned, revoked and lost,
+each with the partitions as [topic, partition] pairs and this member's id in the group. The
+group's owner of the job topic's one partition is read from them (docs/recovery-experiments.md,
+2.4), never inferred from worker names or start order. librdkafka calls the callbacks inside
+poll(), so an event's time is when this consumer learned of the change; confluent-kafka still
+makes its default assignment after a callback that only logs.
+
 confluent-kafka is imported only when an adapter is created. It is in the `jobs`
 dependency group (pyproject.toml, locked in uv.lock), not among the core dependencies: the
 Kafka runs use uv run --group jobs. Topics are created
@@ -46,6 +53,15 @@ log = logging.getLogger(__name__)
 
 def _ms(seconds: float) -> int:
     return int(round(seconds * 1000))
+
+
+def log_assignment(events: EventLog, kind: str, consumer, partitions) -> None:
+    """Write an assigned, revoked or lost event for a rebalance callback."""
+    try:
+        member = consumer.memberid()
+    except Exception:                                  # no member id yet, or none to report
+        member = None
+    events.log(kind, partitions=[[p.topic, p.partition] for p in partitions], member=member)
 
 
 def producer_config(bootstrap: str, *, confirmation_timeout: timedelta = CONFIRMATION_TIMEOUT,
@@ -97,11 +113,13 @@ class KafkaConsumer:
         """settings override consumer_config(); the tests use it to show why earliest matters,
         and to shorten the poll interval."""
         from confluent_kafka import Consumer
+        self.events = events
         self._consumer = Consumer({**consumer_config(bootstrap, group, timing=timing), **(settings or {}),
                                    "logger": log})
-        self._consumer.subscribe([topic])
+        self._consumer.subscribe([topic], on_assign=lambda c, ps: log_assignment(self.events, "assigned", c, ps),
+                                 on_revoke=lambda c, ps: log_assignment(self.events, "revoked", c, ps),
+                                 on_lost=lambda c, ps: log_assignment(self.events, "lost", c, ps))
         self._closed = False
-        self.events = events
 
     def poll(self, timeout: float) -> Delivery | None:
         from confluent_kafka import KafkaException

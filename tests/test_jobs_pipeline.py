@@ -26,11 +26,13 @@ from conftest import nyse_sessions, write_snapshot
 
 from etf_risk import runs
 from etf_risk.jobs import processes
+from etf_risk.jobs.events import EventLog, read_events
 from etf_risk.jobs.params import JobParams, input_checksums
 from etf_risk.jobs.pipeline import SubprocessPipeline
 from etf_risk.jobs.store import Claim
 from etf_risk.jobs.timing import Timing
 from etf_risk.jobs.worker import Fenced, PipelineError
+from etf_risk.provenance import source_identity
 
 STORE = "e" * 32
 TIMING = Timing(lease=8.0, renew_interval=0.5, fence_margin=1.5, worker_tick=0.1, watchdog_tick=0.1,
@@ -153,6 +155,14 @@ def test_a_good_run_is_recorded_and_returns_the_digest_of_its_run_folder(tmp_pat
     assert record["code"]["source_sha256"]["jobs/pipeline.py"] and record["store_id"] == STORE
     assert not (claim.output_dir / ".work").exists()
     assert pipeline.fence_at > time.monotonic()                   # renewed just before acceptance
+
+
+def test_each_step_launch_records_the_code_it_starts_from(tmp_path, claim):
+    log = tmp_path / "events.jsonl"
+    Steps(tmp_path, good(), events=EventLog(log, "worker")).run(claim, claim.output_dir, Heartbeat())
+    started = [e for e in read_events(log) if e["event"] == "step_started"]
+    assert [e["step"] for e in started] == ["windows", "spark_pipeline", "verify"]
+    assert all(e["code"] == source_identity() for e in started)
 
 
 @pytest.mark.parametrize("plan, retryable, words", [

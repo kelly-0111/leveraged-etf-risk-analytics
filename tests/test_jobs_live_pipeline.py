@@ -10,7 +10,8 @@ defaults (etf_risk.jobs.timing), on a shorter clock. Every case ends with check(
 - that attempt's recorded digest equals its run folder's digest;
 - its tables equal a reference run's by content;
 - invariant_violations() is empty;
-- no two launchers' step intervals overlap, across every attempt of the module;
+- no two launchers' step intervals overlap, across every attempt of the module, on the host's
+  monotonic clock (the launcher records' step_started_mono and tree_ended_mono);
 - no process of any attempt is left.
 
 AI contribution: written with Claude Code (Opus 5.5).
@@ -24,7 +25,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import psutil
@@ -244,13 +244,14 @@ def claimed_by_a(stack):
     return a, job
 
 
-def launcher_intervals(stack) -> list[tuple[datetime, datetime, str]]:
+def launcher_intervals(stack) -> list[tuple[float, float, str]]:
+    """Every started step's interval on the monotonic clock. A launcher that never started its
+    step records neither end; one that did must record both, so a missing end fails here."""
     intervals = []
     for path in sorted((stack.output / stack.store_id).glob("job-*-attempt-*/logs/*.launcher.json")):
         result = json.loads(path.read_text())
-        if result.get("step_started_at_utc") and result.get("tree_ended_at_utc"):
-            intervals.append((datetime.fromisoformat(result["step_started_at_utc"]),
-                              datetime.fromisoformat(result["tree_ended_at_utc"]), str(path)))
+        if "step_started_mono" in result:
+            intervals.append((result["step_started_mono"], result["tree_ended_mono"], str(path)))
     return sorted(intervals)
 
 
@@ -326,7 +327,7 @@ def test_a_stopped_worker_is_outlived_by_its_watchdog_and_fenced_when_it_resumes
     one = json.loads((run_dir(stack, rows[0]) / "logs" / "spark_pipeline.launcher.json").read_text())
     two = json.loads((run_dir(stack, rows[1]) / "logs" / "spark_pipeline.launcher.json").read_text())
     assert one["outcome"] == "deadline"
-    assert datetime.fromisoformat(two["step_started_at_utc"]) >= datetime.fromisoformat(one["tree_ended_at_utc"])
+    assert two["step_started_mono"] >= one["tree_ended_mono"]
     os.kill(a.pid, signal.SIGCONT)
     wait_until(lambda: any(e["event"] == "fenced" for e in stack.events("A")), 60, "worker A to see it was fenced")
     time.sleep(3)

@@ -82,7 +82,7 @@ from etf_risk.jobs.params import InvalidParams, JobParams, check_inputs
 from etf_risk.jobs.store import Claim, JobStore
 from etf_risk.jobs.timing import DEFAULT_TIMING, Timing
 from etf_risk.jobs.worker import Fenced, PipelineError
-from etf_risk.provenance import code_state
+from etf_risk.provenance import code_state, source_identity
 
 STEPS = ("windows", "spark_pipeline", "verify")
 TABLES = ("window_stats", "path_days", "path_summary", "paired")
@@ -244,7 +244,8 @@ class SubprocessPipeline:
                    "--step-limit", str(t.step_limit(name)), "--cwd", str(work), "--step-log", str(logs / f"{name}.log"),
                    "--result", str(result_path), "--tick", str(t.watchdog_tick), "--term-grace", str(t.term_grace),
                    "--kill-confirm", str(t.kill_confirm), "--", *argv]
-        self.events.log("step_started", job_id=claim.job_id, attempt=claim.attempt_number, step=name)
+        self.events.log("step_started", job_id=claim.job_id, attempt=claim.attempt_number, step=name,
+                        code=source_identity())     # the code the step starts from (recovery experiments, 2.3)
         with open(logs / f"{name}.launcher.log", "ab") as launcher_log:
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=launcher_log, stderr=subprocess.STDOUT,
                                     env=env, cwd=work, start_new_session=True)

@@ -11,8 +11,13 @@ Worker.handle(job_id, acknowledge) handles one delivery:
    failure.
 A worker whose renewal, acceptance or failure write is refused has been fenced off: it
 stops and writes nothing more. Its folder stays on disk and is never referenced. After a
-lost database connection, acceptance and the failure write are tried again until the
-pipeline's own deadline (fence_at), if it keeps one; both are safe to repeat (store.py).
+lost database connection, acceptance and the failure write are tried again while the
+pipeline's own deadline (fence_at) is ahead, if it keeps one; no try starts at or after it,
+and both are safe to repeat (store.py). If the deadline passed before the first acceptance
+call, the worker makes none: it fences itself (event fenced, during acceptance). An
+acceptance transaction that started before the deadline may still commit after it.
+Correctness rests on the attempt's token in the job table, which guards that write as it
+guards every other, not on the deadline.
 Events (claimed, refused, accepted, fenced, failed, requeued, ...) go to an EventLog.
 
 Worker.serve(consumer) polls deliveries and hands each to handle(), acknowledging with a
@@ -33,10 +38,14 @@ after acknowledging, run again only when a new delivery arrives: the reconciler 
 them (etf_risk.jobs.reconciler).
 
 Worker(fault=...) is called at each of WORKER_FAULT_POINTS; the tests raise SimulatedCrash
-there to model the worker process dying.
+there to model the worker process dying, and the worker command arms one through
+etf_risk.jobs.faults for the recovery experiments. after_accept_commit lies between the
+acceptance's commit and its accepted event: a crash there leaves an accepted result that
+the event log does not show.
 
 AI contribution: written with Claude Code (Opus 5.5). Verified with tests/test_jobs_worker.py,
-tests/test_jobs_queue.py and tests/test_jobs_kafka.py, on SQLite and on MySQL 8.4.13.
+tests/test_jobs_queue.py and tests/test_jobs_kafka.py, on SQLite and on MySQL 8.4.13; the
+acceptance-deadline check and after_accept_commit (2026-10-24) so far on SQLite only.
 """
 from __future__ import annotations
 
@@ -60,6 +69,7 @@ WORKER_FAULT_POINTS = (
     "before_claim",
     "after_claim",       # claimed, not yet acknowledged
     "after_pipeline",    # outputs written, result not yet accepted
+    "after_accept_commit",   # accepted in the table, the accepted event not yet written
     "after_accept",
 )
 DELIVERY_RETRIES = 5    # tries again of one message after errors before its acknowledgement, then raise
@@ -167,16 +177,24 @@ class Worker:
             # Not a failure the pipeline reported: recorded with its type, and retried like one.
             return self._failed(claim, f"{type(error).__name__}: {error}", retryable=True)
         self._fault("after_pipeline")
+        deadline = getattr(self.pipeline, "fence_at", None)
+        if deadline is not None and time.monotonic() >= deadline:
+            # Never an acceptance call after F (docs/worker-pipeline.md), even while the token holds.
+            self.events.log("fenced", job_id=job_id, attempt=claim.attempt_number, during="acceptance",
+                            why=f"{claim.run_id}: the deadline passed before acceptance")
+            return Handled(job_id, Result.FENCED, claim=claim)
         if not self._until_deadline(lambda: self.store.accept_result(claim, digest), claim, "accept_result"):
             self.events.log("fenced", job_id=job_id, attempt=claim.attempt_number, during="accept_result")
             return Handled(job_id, Result.FENCED, claim=claim)
+        self._fault("after_accept_commit")
         self.events.log("accepted", job_id=job_id, attempt=claim.attempt_number, digest=digest)
         self._fault("after_accept")
         return Handled(job_id, Result.ACCEPTED, claim=claim)
 
     def _until_deadline(self, operation: Callable[[], Any], claim: Claim, name: str) -> Any:
         """operation(), tried again after a lost connection while the pipeline's deadline
-        (fence_at, time.monotonic()) has not passed; any other error, or no deadline, raises."""
+        (fence_at, time.monotonic()) has not passed; no try starts at or after it, so one that
+        passes during the wait ends the retries. Any other error, or no deadline, raises."""
         while True:
             try:
                 return operation()
@@ -187,6 +205,8 @@ class Worker:
                 self.events.log("retry", job_id=claim.job_id, attempt=claim.attempt_number, operation=name,
                                 error=f"{type(error).__name__}: {error}")
                 self._sleep(1.0)
+                if time.monotonic() >= deadline:
+                    raise
 
     def serve(self, consumer: Consumer, *, stop: Callable[[], bool] = lambda: False, stop_when_idle: bool = False,
               poll_timeout: float = 1.0, retry_delay: float = 1.0, retries: int = DELIVERY_RETRIES,

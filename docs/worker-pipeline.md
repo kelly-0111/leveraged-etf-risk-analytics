@@ -113,7 +113,10 @@ no line can push the deadline past what the worker granted
 [tests/test_jobs_launcher.py](../tests/test_jobs_launcher.py)).
 
 The worker also checks F on every 1 s tick. It renews before each step and before acceptance,
-fences itself once F passes without a renewal, and never starts a step or accepts after F.
+fences itself once F passes without a renewal, and never starts a step, or an acceptance call,
+after F. An acceptance transaction that started before F may still commit after it:
+correctness does not rest on F but on the attempt's token in the job table, which guards that
+write as it guards every other, so a job still has at most one accepted result.
 Closing the pipe (EOF) makes the launcher end the tree. If the launcher does not act within
 the kill grace plus 10 s, because it is stopped, the worker ends the tree itself.
 
@@ -163,8 +166,8 @@ only: connect 3 s; read and write 5 s per I/O; `innodb_lock_wait_timeout` 2 s, b
 timeout, so lock waits end as definite conflicts; `wait_timeout` 120 s, so a frozen client's
 open transaction cannot hold row locks for long.
 
-The worker retries `accept_result` and `fail_attempt` after a lost connection until F, and
-renewals at the next interval.
+The worker retries `accept_result` and `fail_attempt` after a lost connection while F is
+ahead, starting no try at or after it, and renewals at the next interval.
 
 ## Kafka group timing
 

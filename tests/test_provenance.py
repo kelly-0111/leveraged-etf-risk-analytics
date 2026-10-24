@@ -18,6 +18,22 @@ def no_build_record(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+def test_the_launch_identity_is_one_digest_of_the_source_hashes_with_the_lock(monkeypatch, no_build_record):
+    """What a starting process and a step launch record (docs/recovery-experiments.md, 2.3)."""
+    monkeypatch.setattr(provenance, "_git", lambda *args: {"rev-parse": "abc123", "status": ""}[args[0]])
+    state, identity = provenance.code_state(), provenance.code_identity()
+    assert identity == {"git_commit": "abc123", "git_worktree_clean": True,
+                        "source_digest": provenance.source_digest(state["source_sha256"]),
+                        "uv_lock_sha256": state["uv_lock_sha256"]}
+    assert provenance.source_identity() == {k: identity[k] for k in ("source_digest", "uv_lock_sha256")}
+
+
+def test_the_source_digest_ignores_the_order_and_sees_every_hash():
+    hashes = {"jobs/a.py": "1" * 64, "jobs/schema/b.sql": "2" * 64}
+    assert provenance.source_digest(hashes) == provenance.source_digest(dict(reversed(list(hashes.items()))))
+    assert provenance.source_digest(hashes) != provenance.source_digest({**hashes, "jobs/schema/b.sql": "3" * 64})
+
+
 def test_git_is_used_when_available(monkeypatch, no_build_record):
     answers = {"rev-parse": "abc123", "status": ""}
     monkeypatch.setattr(provenance, "_git", lambda *args: answers[args[0]])

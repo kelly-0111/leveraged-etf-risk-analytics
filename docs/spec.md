@@ -875,4 +875,8 @@ and the reconciler, with the Compose services added one at a time; then the
 recovery experiments and the result cache; each stops for review. The Docker
 image, the Compose services, the job table, the worker and the reconciler are
 written with Claude Code; the cache logic and the experiments by the project
-author, with tutoring.
+author, with tutoring. At the author's decision of 2026-10-24, the recovery
+experiments' tooling (the session harness, its collector, assignment events,
+code identity at launch and the fault hooks) is written with Claude Code too;
+the experiments' decisions, runs and answers stay the author's
+([recovery-experiments.md](recovery-experiments.md), section 9).

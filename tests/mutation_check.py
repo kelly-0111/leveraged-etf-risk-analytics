@@ -8,10 +8,11 @@ tests, and expect them to fail (docs/job-table.md, docs/job-queue.md).
     uv run --group jobs python tests/mutation_check.py --only renew-token rewind
 
 Each mutation replaces one exact piece of source text, which must occur exactly once. The
-work happens in a scratch copy of the repository (src/, tests/, pyproject.toml, uv.lock) with
-its own environment (uv sync --frozen --group jobs), never in this checkout. The job tests
-first run unmutated and must pass. Then, for each mutation, they run in a fresh process
-group with a timeout:
+work happens in a scratch copy of the repository (src/, tests/, analysis/, docs/recovery-sql.md,
+pyproject.toml, uv.lock) with its own environment (uv sync --frozen --group jobs), never in this
+checkout. Each mutation runs the tests it names: the job tests, unless it is one of the focused
+mutations below. All the tests the selected mutations name first run unmutated and must pass.
+Then, for each mutation, its tests run in a fresh process group with a timeout:
 - caught: pytest reports failing tests (exit 1);
 - survived: they all pass (exit 0);
 - error: any other exit, such as a collection error, or the timeout. A broken guard must
@@ -26,6 +27,12 @@ This list was rebuilt on 2026-10-23 from the descriptions of the earlier checks
 of their own, so it is not claimed to be the same set. Mutations that the remaining guards
 make equivalent are left out; for example, mark_published's published_at condition is covered
 by its version guard.
+
+The focused mutations, added on 2026-10-24, break the recovery experiments' tooling and the
+worker's acceptance deadline (docs/recovery-experiments.md, section 9; docs/worker-pipeline.md),
+and each runs only the test file that should catch it: the worker's, the launcher's, the fault
+hook's, the harness's, the collector's, the frozen cross-check SQL's on SQLite, or the
+synthetic batch's. A catch therefore shows that this file notices the break.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
@@ -48,7 +55,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 from etf_risk.provenance import code_state  # noqa: E402
 
-COPIED = ("src", "tests", "pyproject.toml", "uv.lock")
+COPIED = ("src", "tests", "analysis", "docs/recovery-sql.md", "pyproject.toml", "uv.lock")
 JOB_TESTS = ("tests/test_jobs_store.py", "tests/test_jobs_reconnect.py", "tests/test_jobs_worker.py",
              "tests/test_jobs_queue.py", "tests/test_jobs_reconciler.py", "tests/test_jobs_timing.py",
              "tests/test_jobs_kafka.py", "tests/test_jobs_mysql.py", "tests/test_jobs_launcher.py",
@@ -59,6 +66,12 @@ RECONCILER, KAFKA, MYSQL = "src/etf_risk/jobs/reconciler.py", "src/etf_risk/jobs
 TIMING = "src/etf_risk/jobs/timing.py"
 LAUNCHER, PROCESSES = "src/etf_risk/jobs/launcher.py", "src/etf_risk/jobs/processes.py"
 PIPELINE = "src/etf_risk/jobs/pipeline.py"
+FAULTS, HARNESS = "src/etf_risk/jobs/faults.py", "src/etf_risk/jobs/harness.py"
+CROSSCHECK, COLLECTOR = "src/etf_risk/jobs/crosscheck.sql", "analysis/collect_recovery_measurements.py"
+WORKER_TESTS, LAUNCHER_TESTS = ("tests/test_jobs_worker.py",), ("tests/test_jobs_launcher.py",)
+FAULT_TESTS, HARNESS_TESTS = ("tests/test_jobs_faults.py",), ("tests/test_jobs_harness.py",)
+COLLECTOR_TESTS, SQL_TESTS = ("tests/test_recovery_collector.py",), ("tests/test_recovery_sql.py",)
+SYNTHETIC_TESTS = ("tests/test_recovery_synthetic.py",)
 
 
 @dataclass(frozen=True)
@@ -69,12 +82,14 @@ class Mutation:
     new: str
     breaks: str
     needs: tuple[str, ...] = ()
+    tests: tuple[str, ...] = JOB_TESTS
 
 
-def removing(id: str, file: str, context: str, piece: str, breaks: str, needs: tuple[str, ...] = ()) -> Mutation:
+def removing(id: str, file: str, context: str, piece: str, breaks: str, needs: tuple[str, ...] = (),
+             tests: tuple[str, ...] = JOB_TESTS) -> Mutation:
     """Remove piece from context; context is what must occur exactly once in the file."""
     assert context.count(piece) == 1, (id, piece)
-    return Mutation(id, file, context, context.replace(piece, "", 1), breaks, needs)
+    return Mutation(id, file, context, context.replace(piece, "", 1), breaks, needs, tests)
 
 
 _RENEW = ("updated_at = :now\"\n                    \" WHERE job_id = :job_id AND status = 'running'"
@@ -203,6 +218,91 @@ MUTATIONS = (
              "a digest is returned without renewing after the steps"),
     Mutation("result-rule-checks", PIPELINE, "        if total_violations(checks):", "        if False:",
              "a run with check violations is accepted when its status says ok"),
+    # Focused: the worker's acceptance deadline (docs/worker-pipeline.md).
+    Mutation("accept-after-deadline", WORKER, "        if deadline is not None and time.monotonic() >= deadline:\n",
+             "        if False:\n", "an acceptance call starts after F", tests=WORKER_TESTS),
+    removing("retry-after-deadline", WORKER, "                self._sleep(1.0)\n                if time.monotonic() >= deadline:\n"
+             "                    raise\n", "                if time.monotonic() >= deadline:\n                    raise\n",
+             "a retried acceptance starts after F passed during the wait", tests=WORKER_TESTS),
+    Mutation("no-after-accept-commit-point", WORKER, '        self._fault("after_accept_commit")\n', "",
+             "W5a's fault point, between the acceptance's commit and its event, is never reached", tests=WORKER_TESTS),
+    # Focused: the launcher's monotonic interval (outline 4.1, 6.5).
+    Mutation("step-start-mono-early", LAUNCHER, 'self.result["step_started_mono"] = time.monotonic()',
+             'self.result["step_started_mono"] = time.monotonic() - 1.0', "a step's interval starts before the step",
+             tests=LAUNCHER_TESTS),
+    Mutation("tree-end-mono-at-start", LAUNCHER, 'self.result["tree_ended_mono"] = time.monotonic()',
+             'self.result["tree_ended_mono"] = started', "a tree's end is read when its step starts",
+             tests=LAUNCHER_TESTS),
+    # Focused: the fault hook (outline 8.4).
+    Mutation("fault-fires-again", FAULTS, "        self.path.unlink(missing_ok=True)                    # once: gone before it acts\n",
+             "", "an armed fault fires again at the next pass", tests=FAULT_TESTS),
+    Mutation("refused-arming-acts", FAULTS, "            if armed not in self.points or action not in ACTIONS:",
+             "            if False:", "an arming that names an unknown point or action is not refused", tests=FAULT_TESTS),
+    # Focused: the harness (outline 2.4, 3.1, 4.3, 8.6).
+    Mutation("arm-other-worker", HARNESS, "faults.arm(self.fault_file(owner), point, action,",
+             'faults.arm(self.fault_file("B" if owner == "A" else "A"), point, action,',
+             "the fault is armed in the worker that does not own the partition", tests=HARNESS_TESTS),
+    Mutation("no-early-miss", HARNESS,
+             "                raise PhaseMissed(f\"job {job_id} was claimed by worker {claim['worker']}, not the armed {armed}\")",
+             "                return None", "a claim by the other worker waits for the phase timeout", tests=HARNESS_TESTS),
+    Mutation("spark-step-end-by-step", HARNESS, 'events_named(events, "step_ended", name="spark_pipeline", **mine)',
+             'events_named(events, "step_ended", step="spark_pipeline", **mine)',
+             "the end of the spark step is looked for in a field step_ended does not have", tests=HARNESS_TESTS),
+    Mutation("observation-repeated", HARNESS,
+             "if self.observation is None and (status in TERMINAL or now >= self.deadline_mono):",
+             "if status in TERMINAL or now >= self.deadline_mono:", "the deadline observation is taken again",
+             tests=HARNESS_TESTS),
+    Mutation("observation-waits-for-deadline", HARNESS,
+             "if self.observation is None and (status in TERMINAL or now >= self.deadline_mono):",
+             "if self.observation is None and now >= self.deadline_mono:",
+             "a finished job is observed only at its deadline", tests=HARNESS_TESTS),
+    Mutation("formal-without-flag", HARNESS, '    if purpose == "formal" and not args.formal:', "    if False:",
+             "a formal batch starts without --formal", tests=HARNESS_TESTS),
+    Mutation("batch-outside-purpose-folder", HARNESS, "    if args.out.resolve().parent.name != purpose:", "    if False:",
+             "a batch writes outside the folder of its purpose", tests=HARNESS_TESTS),
+    # Focused: the collector (outline sections 5 and 6).
+    Mutation("overlap-never-found", COLLECTOR, "        if latest is not None and start < latest[1]:", "        if False:",
+             "overlapping steps are not found", tests=COLLECTOR_TESTS),
+    Mutation("missing-interval-no-overlap", COLLECTOR,
+             '    verdict = "overlap" if overlaps else "unknown" if missing else "no overlap"',
+             '    verdict = "overlap" if overlaps else "no overlap"', "a missing interval counts as no overlap",
+             tests=COLLECTOR_TESTS),
+    Mutation("utc-interval-fallback", COLLECTOR, "        return float(start), float(end)\n    return None\n",
+             "        return float(start), float(end)\n"
+             '    if record.get("step_started_at_utc") and record.get("tree_ended_at_utc"):\n'
+             '        return (datetime.fromisoformat(record["step_started_at_utc"]).timestamp(),\n'
+             '                datetime.fromisoformat(record["tree_ended_at_utc"]).timestamp())\n    return None\n',
+             "a launcher record with UTC times only is compared in UTC", tests=COLLECTOR_TESTS),
+    Mutation("no-injection-time-unknown", COLLECTOR,
+             "    else:                                                         # the record of the injection lacks its time\n"
+             '        row.update(detection_s="unknown: no injection time", rerun_s="unknown: no injection time")\n', "",
+             "latencies without an injection time are left blank, not unknown", tests=COLLECTOR_TESTS),
+    Mutation("unrecorded-counted-as-made", COLLECTOR,
+             '        status = "no injection record" if inj is None else "missed" if inj.get("missed") else "made"',
+             '        status = "missed" if inj and inj.get("missed") else "made"',
+             "a job without its injection record counts as made", tests=COLLECTOR_TESTS),
+    Mutation("d2-without-fenced", COLLECTOR,
+             'named(events, "retry", operation="accept_result")\n'
+             '                                      + named(events, "fenced", during="acceptance"), t_inj)',
+             'named(events, "retry", operation="accept_result"), t_inj)',
+             "D2 without a retry, fenced at acceptance after F, has no detection", tests=COLLECTOR_TESTS),
+    Mutation("purpose-dropped", COLLECTOR, '    return {"purpose": b.plan.get("purpose", "not recorded"),',
+             '    return {"purpose": "not recorded",', "the summary loses the batch's purpose", tests=COLLECTOR_TESTS),
+    # Focused: the frozen cross-check SQL, on SQLite against the 82 expected rows (recovery-sql.md).
+    Mutation("q2-late-rule", CROSSCHECK, "WHEN d.status <> 'succeeded' AND d.observed_from_mono >= b.deadline_mono\n",
+             "WHEN d.status <> 'succeeded' AND d.observed_from_mono > b.deadline_mono + 1\n",
+             "a job running at its deadline is not called late", tests=SQL_TESTS),
+    Mutation("q2-lag-rule", CROSSCHECK, "d.observed_to_mono <= b.deadline_mono + b.max_lag_s",
+             "d.observed_to_mono <= b.deadline_mono", "a success seen within the lag is not on time", tests=SQL_TESTS),
+    Mutation("q1-two-accepted", CROSSCHECK, "        WHEN COALESCE(a.n_accepted, 0) > 1\n",
+             "        WHEN COALESCE(a.n_accepted, 0) > 2\n", "two accepted attempts pass Q1", tests=SQL_TESTS),
+    Mutation("q3a-other-store", CROSSCHECK, "    JOIN job_store AS s ON s.store_id = w.store_id\n",
+             "    JOIN job_store AS s ON 1 = 1\n", "another store's report counts in Q3a", tests=SQL_TESTS),
+    Mutation("q3b-worker-identity", CROSSCHECK, "        WHEN CAST(w.worker_id AS BINARY) <> CAST(a.worker_id AS BINARY)\n",
+             "        WHEN 1 = 0\n", "a report from the wrong worker matches", tests=SQL_TESTS),
+    # Focused: the synthetic batch, end to end (tests/test_recovery_synthetic.py).
+    Mutation("no-restart", HARNESS, "        restarted = [w for w in WORKERS if self.procs[w].poll() is not None]",
+             "        restarted = []", "a killed worker is never started again", tests=SYNTHETIC_TESTS),
 )
 
 
@@ -214,6 +314,7 @@ def make_scratch() -> Path:
         if source.is_dir():
             shutil.copytree(source, scratch / item, ignore=ignore)
         else:
+            (scratch / item).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, scratch / item)
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     subprocess.run(["uv", "sync", "--frozen", "--group", "jobs"], cwd=scratch, env=env, check=True,
@@ -221,12 +322,12 @@ def make_scratch() -> Path:
     return scratch
 
 
-def run_tests(scratch: Path, timeout: float) -> dict:
-    """The job tests in a new process group; the group is killed on timeout. The scratch
+def run_tests(scratch: Path, timeout: float, tests: tuple[str, ...] | list[str] = JOB_TESTS) -> dict:
+    """The tests in a new process group; the group is killed on timeout. The scratch
     environment comes first on PATH, as under uv run, so any python3 started below is its."""
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     env["PATH"] = f"{scratch / '.venv' / 'bin'}{os.pathsep}{env.get('PATH', '')}"
-    command = [str(scratch / ".venv" / "bin" / "python"), "-m", "pytest", *JOB_TESTS, "-x", "-q",
+    command = [str(scratch / ".venv" / "bin" / "python"), "-m", "pytest", *tests, "-x", "-q",
                "-p", "no:cacheprovider"]
     start = time.monotonic()
     process = subprocess.Popen(command, cwd=scratch, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -256,8 +357,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.list:
         for m in MUTATIONS:
-            print(f"{m.id:26} {m.file.removeprefix('src/etf_risk/jobs/'):14} {m.breaks}"
-                  + (f"  (needs {', '.join(m.needs)})" if m.needs else ""))
+            print(f"{m.id:30} {m.file.removeprefix('src/etf_risk/jobs/'):14} {m.breaks}"
+                  + (f"  (needs {', '.join(m.needs)})" if m.needs else "")
+                  + (f"  [{', '.join(t.removeprefix('tests/') for t in m.tests)}]" if m.tests != JOB_TESTS else ""))
         return 0
     unknown = set(args.only or ()) - {m.id for m in MUTATIONS}
     if unknown:
@@ -268,12 +370,13 @@ def main(argv: list[str] | None = None) -> int:
               "backends": {"sqlite": True, **backends}, "timeout_s": args.timeout, "mutations": []}
     scratch = make_scratch()
     try:
-        baseline = run_tests(scratch, args.timeout)
-        record["baseline"] = baseline
+        needed = list(dict.fromkeys(t for m in selected for t in m.tests))
+        baseline = run_tests(scratch, args.timeout, needed)
+        record["baseline"] = {"tests": needed, **baseline}
         print(f"baseline: exit {baseline['exit_code']} in {baseline['seconds']} s")
         if baseline["exit_code"] != 0:
             print(baseline["output_tail"], file=sys.stderr)
-            print("the unmutated job tests must pass first", file=sys.stderr)
+            print("the unmutated tests must pass first", file=sys.stderr)
             return 1
         for m in selected:
             missing = [need for need in m.needs if not backends[need]]
@@ -287,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f"{m.id}: the text to replace occurs {original.count(m.old)} times in {m.file}")
             path.write_text(original.replace(m.old, m.new, 1))
             try:
-                result = run_tests(scratch, args.timeout)
+                result = run_tests(scratch, args.timeout, m.tests)
             finally:
                 path.write_text(original)
             record["mutations"].append({**asdict(m), "outcome": outcome(result), **result})
