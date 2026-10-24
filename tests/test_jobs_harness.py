@@ -13,6 +13,7 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -296,3 +297,143 @@ def test_the_spark_step_counts_as_running_from_its_start_until_its_step_ended_re
     log(batch, "A", {"event": "step_ended", "job_id": 7, "attempt": 1, "name": "spark_pipeline", "outcome": "exited",
                      "mono": 3})
     assert batch.spark_running(7) is None
+
+
+
+# The setup, quiescence and the final records (gaps G1, G2, G5 and G7 of docs/recovery-part-a.md)
+
+class SetupFails(harness.Batch):
+    """A batch whose services start (or are found running already) and whose setup then fails."""
+
+    def __init__(self, plan, out, *, containers_exist=False):
+        super().__init__(plan, out)
+        self.containers_exist, self.calls = containers_exist, []
+
+    def services_up(self):
+        if self.containers_exist:
+            raise RuntimeError("this project's containers exist already; a batch starts on fresh ones")
+        self.services_started = True
+
+    def cli(self, *argv, check=True, timeout=180):
+        raise RuntimeError(f"{argv[0]}: exit 1: no database")
+
+    def compose(self, *args, timeout=300):
+        self.calls.append(("compose", *args))
+        return 0.0
+
+    def quiesce(self):
+        self.calls.append(("quiesce",))
+        return {}
+
+    def final_snapshot(self):
+        self.calls.append(("final_snapshot",))
+        return {}
+
+    def scratch_folders(self):
+        return []
+
+
+def test_a_setup_failure_is_recorded_and_every_planned_job_kept_as_not_run(tmp_path):
+    plan = harness.make_plan(DEFAULTS, seed=1, purpose="preflight", jobs=["C0", "W1"])
+    batch = SetupFails(plan, tmp_path / "preflight" / "b")
+    assert batch.run() == 1
+    events = read_events(batch.out / "harness.jsonl")
+    assert [e["error"] for e in harness.events_named(events, "setup_error")] == [
+        "RuntimeError: init-db: exit 1: no database"]
+    assert [(e["position"], e["why"]) for e in harness.events_named(events, "not_run")] == [
+        (1, "an error in the setup"), (2, "an error in the setup")]
+    assert harness.events_named(events, "batch_ended")[0]["stop_reason"] == "an error in the setup"
+    assert batch.calls == [("quiesce",), ("final_snapshot",), ("compose", "down", "-v")]   # its own services
+
+
+def test_containers_found_running_are_never_taken_down(tmp_path):
+    plan = harness.make_plan(DEFAULTS, seed=1, purpose="preflight", jobs=["C0"])
+    batch = SetupFails(plan, tmp_path / "preflight" / "b", containers_exist=True)
+    assert batch.run() == 1
+    events = read_events(batch.out / "harness.jsonl")
+    assert "exist already" in harness.events_named(events, "setup_error")[0]["error"]
+    assert batch.calls == []                                     # no quiescence, no final snapshot, no down -v
+
+
+class FakeMySQL:
+    """A server's process list: each open connection is listed until it is closed."""
+
+    def __init__(self):
+        self.open, self.next_id = set(), 100
+
+    def connection(self):
+        server = self
+
+        class Connection:
+            def __init__(self):
+                server.next_id += 1
+                self.id = server.next_id
+                server.open.add(self.id)
+
+            def cursor(self):
+                return Cursor(self)
+
+            def close(self):
+                server.open.discard(self.id)
+
+        class Cursor:
+            def __init__(self, connection):
+                self.connection, self.rows = connection, []
+
+            def execute(self, sql, params=None):
+                if sql == "SELECT CONNECTION_ID()":
+                    self.rows = [(self.connection.id,)]
+                elif sql == "SHOW FULL PROCESSLIST":
+                    self.rows = ([(i, "root", "localhost", "etf_recovery", "Sleep") for i in sorted(server.open)]
+                                 + [(1, "event_scheduler", "localhost", None, "Daemon")])
+
+            def fetchone(self):
+                return self.rows[0]
+
+            def fetchall(self):
+                return self.rows
+
+            def close(self):
+                pass
+
+        return Connection()
+
+
+def quiet_batch(tmp_path, server, scratch=()):
+    batch = offline_batch(tmp_path)
+    batch.procs, batch.store_id = {}, "s" * 32
+    batch.connect = lambda **timeouts: server.connection()
+    batch._marked = lambda: False
+    batch.scratch_folders = lambda: list(scratch)
+    batch.QUIESCE_CONNECTIONS_WAIT_S = 0.2
+    return batch
+
+
+def test_quiescence_closes_the_harness_own_connections_and_counts_only_other_clients(tmp_path):
+    """4.4: no client connection but the harness's; its own stores reopen on their next use."""
+    server = FakeMySQL()
+    batch = quiet_batch(tmp_path, server)
+    batch._stores = [SimpleNamespace(connection=server.connection()), SimpleNamespace(connection=None)]
+    assert batch.quiesce()["other_connections"] == 0
+    assert all(store.connection is None for store in batch._stores) and server.open == set()
+    server.connection()                                          # a client that is not the harness
+    assert batch.quiesce()["other_connections"] == 1
+
+
+def test_spark_scratch_has_its_prefixes_only_and_quiescence_reports_what_is_new(tmp_path):
+    folder = tmp_path / "tmp"
+    folder.mkdir()
+    for name in ("spark-1", "blockmgr-2", "hsperfdata_x", "unrelated", "pyspark-3"):
+        (folder / name).mkdir()
+    assert [Path(p).name for p in harness.spark_scratch([folder, tmp_path / "missing"])] == [
+        "blockmgr-2", "hsperfdata_x", "pyspark-3", "spark-1"]
+    batch = quiet_batch(tmp_path / "b", FakeMySQL(), scratch=[folder])
+    batch.scratch_before = harness.spark_scratch([folder])
+    (folder / "spark-new").mkdir()
+    assert batch.quiesce()["spark_scratch_new"] == [str(folder / "spark-new")]
+
+
+def test_plan_creates_the_folder_it_writes_into(tmp_path):
+    out = tmp_path / "data" / "outputs-recovery" / "formal" / "plan-7.json"
+    assert harness.main(["plan", "--purpose", "formal", "--seed", "7", "--out", str(out)]) == 0
+    assert json.loads(out.read_text())["purpose"] == "formal"

@@ -216,10 +216,10 @@ class SyntheticPipeline:
     logs/<step>.log from the step's start; logs/<step>.launcher.json with the step's monotonic
     interval once its tree has ended, also when the worker was killed mid-step, since a launcher
     outlives its worker (EOF); attempt.json, a run folder whose tables equal the reference run's,
-    and manifest.json."""
+    and manifest.json. A kill during spark_pipeline leaves Spark scratch in `scratch`."""
 
-    def __init__(self, events: EventLog, proc: ThreadProc, snapshot: str):
-        self.events, self.proc, self.snapshot = events, proc, snapshot
+    def __init__(self, events: EventLog, proc: ThreadProc, snapshot: str, scratch):
+        self.events, self.proc, self.snapshot, self.scratch = events, proc, snapshot, scratch
         self.fence_at = None
 
     def _renew(self, heartbeat, claim, before: str):
@@ -243,6 +243,8 @@ class SyntheticPipeline:
             started, outcome = time.monotonic(), "eof"
             try:
                 while time.monotonic() - started < seconds:
+                    if self.proc.killed.is_set() and name == "spark_pipeline":
+                        (self.scratch / f"spark-{claim.run_id}").mkdir()     # what a killed Spark step leaves
                     self.proc.check()
                     time.sleep(TICK)
                 outcome = "exited"
@@ -277,7 +279,8 @@ def worker_main(batch: "SyntheticBatch", name: str):
             proc.kill()
             proc.check()
 
-        worker = Worker(store, SyntheticPipeline(events, proc, batch.settings.snapshot), batch.jobs_root / store_id,
+        pipeline = SyntheticPipeline(events, proc, batch.settings.snapshot, batch.scratch_dir)
+        worker = Worker(store, pipeline, batch.jobs_root / store_id,
                         worker_id=name, events=events, fault=faults.FaultFile(batch.fault_file(name), events, kill=kill))
         consumer = batch.group.join(events, proc)
         worker.serve(consumer, stop=proc.halted, poll_timeout=0.05, retry_delay=0.1)
@@ -312,6 +315,8 @@ class SyntheticBatch(harness.Batch):
         self.db = self.env["ETF_RISK_JOBS_DB"] = f"sqlite:///{self.db_path}"
         self.queue = MemoryQueue()
         self.group = Group(self.queue, self.topic)
+        self.scratch_dir = out.parent / "scratch"
+        (self.scratch_dir / "spark-before-the-batch").mkdir(parents=True)        # never reported as new
 
     def job_store(self) -> JobStore:
         return JobStore(None, SQLITE, lease=timedelta(seconds=LEASE_S),
@@ -320,6 +325,7 @@ class SyntheticBatch(harness.Batch):
     # No containers
 
     def services_up(self):
+        self.services_started = True                                   # as the real one marks it: then quiesce
         self.log.log("services_up", seconds=0.0, others=[])
 
     def compose(self, *args, timeout=300):
@@ -389,11 +395,11 @@ class SyntheticBatch(harness.Batch):
 
     # SQLite
 
-    def store(self):
-        store = getattr(self._local, "store", None)
-        if store is None:
-            store = self._local.store = self.job_store()
-        return store
+    def new_store(self):
+        return self.job_store()
+
+    def scratch_folders(self):
+        return [self.scratch_dir]
 
     def connect(self, **timeouts):
         if getattr(self._local, "unreachable", False):
@@ -448,6 +454,14 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert harness.events_named(events, "job_error") == [] and harness.events_named(events, "final_error") == []
     assert harness.events_named(events, "batch_ended")[0]["stop_reason"] is None
     assert len(harness.events_named(events, "restarted")) == 6           # W1, W2, W3, W4, W5a and W5b each killed one
+    memory = harness.events_named(events, "host_memory")                 # read before every job (P4)
+    assert [e["position"] for e in memory] == list(range(1, 10)) and all(e["available_bytes"] > 0 for e in memory)
+    quiescent = harness.events_named(events, "quiescent")[0]           # 6.5: the killed W3 attempt's Spark scratch
+    assert quiescent["spark_scratch_new"] == [str(batch.scratch_dir / "spark-job-4-attempt-1")]
+    cleanup = (batch.out / "cleanup.txt").read_text()                  # 6.2: the unaccepted attempts' folders
+    assert cleanup.startswith("exit 0\n") and "nothing was deleted" in cleanup
+    assert sorted(line.split("/")[-1].split()[0] for line in cleanup.splitlines()
+                  if line.startswith("ended, not accepted")) == ["job-4-attempt-1", "job-5-attempt-1"]
 
     # Arming changed no ownership: the armed worker owned the partition before and after it, its
     # fault fired, and no assignment moved between the arming and the fault.
@@ -461,6 +475,7 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert crm.main(["--batch", str(batch.out), "--processed-root", str(processed)]) == 0
     result = crm.collect(batch.out, processed_root=processed)
     assert (result["purpose"], result["validity_failed"]) == ("preflight", [])
+    assert result["validity"]["records_complete"] == {"passed": True, "setup_errors": [], "final_errors": []}
     rows = {r["position"]: r for r in result["rows"]}
     assert [rows[p]["status"] for p in rows] == ["made"] * 9
     assert [rows[p]["q1_verdict"] for p in rows] == ["ok"] * 9
@@ -486,7 +501,10 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert outcomes["q1_not_ok"] == [] and outcomes["invariant_violations"] == {} and outcomes["status_check_exit"] == 0
     assert len(outcomes["accepted_attempts"]) == 9 and all(a["problems"] == [] for a in outcomes["accepted_attempts"])
     assert outcomes["q3b_not_matching"] == [] and outcomes["q2b_rows"] == []
-    assert outcomes["nothing_left"] == {"processes_left": False, "other_connections": 0}
+    assert outcomes["nothing_left"] == {"processes_left": False, "other_connections": 0,
+                                        "spark_scratch_new": [str(batch.scratch_dir / "spark-job-4-attempt-1")]}
+    assert outcomes["cleanup_listing"] == "cleanup.txt" and outcomes["host_memory"]["jobs_with_a_reading"] == 9
+    assert all(rows[p]["host_available_bytes"] > 0 for p in rows)
     tally = {t["case"]: t for t in result["tally"]}
     for case in set(JOBS):
         assert (tally[case]["made"], tally[case]["missed"], tally[case]["not_run"], tally[case]["unrecorded"]) == (

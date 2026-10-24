@@ -3,26 +3,30 @@ sections 5 and 6).
 
 A batch folder is what etf_risk.jobs.harness batch wrote:
 
-    harness.jsonl   the harness's events: plan, injections, deadlines, observations, peaks, owners
+    harness.jsonl   the harness's events: plan, injections, deadlines, observations, peaks, owners,
+                    the host's memory before each job, Spark scratch, setup and final errors
     events/         the workers' logs (A.jsonl, B.jsonl), the reconciler's, and submit.jsonl
     jobs/<store>/   the attempts' folders, with logs/*.launcher.json and, when complete, manifest.json
     reference/      the reference run, under the launcher
     crosscheck/     Q0-Q3b as CSV (crosscheck.sql)
     export/         the job tables as JSON (python -m etf_risk.jobs export)
+    status-check.txt, cleanup.txt   status --check, and cleanup's dry-run listing
     plan.json       the plan the batch ran
 
-Run from the repository root:
+Run from the repository root, on a batch in the folder of its purpose:
 
-    uv run python analysis/collect_recovery_measurements.py --batch data/outputs-recovery/batch-1
+    uv run --group jobs python analysis/collect_recovery_measurements.py --batch data/outputs-recovery/formal/batch-1
+    uv run --group jobs python analysis/collect_recovery_measurements.py --batch data/outputs-recovery/preflight/<name>
 
 It writes into the batch folder:
 - injections.csv: one row per planned job, with the case, the injection, the metrics of
-  section 5, each n/a with its reason or unknown when its record is missing, and the verdicts of
-  Q1, Q2 and Q3a;
+  section 5, each n/a with its reason or unknown when its record is missing, the verdicts of
+  Q1, Q2 and Q3a, and the host's available memory before the job;
 - tally.csv: per case, the jobs planned, made, missed, not run and unrecorded, and every verdict value of
   Q1, Q2, deadline_met, Q3a and Q3b, with zeros;
 - validity.json: the batch's purpose (preflight or formal, from its plan), the checks of 6.1
-  (what counts) and, apart from them, the outcome checks of 6.2-6.5, each with what it found.
+  (what counts; a recorded setup or final error fails records_complete) and, apart from them,
+  the outcome checks of 6.2-6.5, each with what it found (6.5's new Spark scratch included).
   A preflight's results are never formal results (8.6), whatever its checks found.
 It prints a summary and exits with 1 if a validity check fails. A failed outcome check is a
 finding: it is reported and never changes the exit code. Nothing is dropped: a missed or
@@ -67,7 +71,8 @@ UNRECORDED = ("no record", "no injection record")     # the harness's records la
 LIVENESS = ("serve_restarted", "retry", "rewound", "gave_up", "failed_after_ack", "consumer_error", "pass_failed")
 FIELDS = ["position", "case", "job_id", "status", "missed", "injection", "worker", "t_inj", "reference", "deadline_s",
           "detection_s", "rerun_s", "finish_s", "overhead_s", "claims", "accepted", "executions", "complete_executions",
-          "wasted_step_s", "fenced_events", "timeliness", "deadline_met", "q1_verdict", "q3a_verdict"]
+          "wasted_step_s", "fenced_events", "timeliness", "deadline_met", "q1_verdict", "q3a_verdict",
+          "host_available_bytes"]
 
 
 # Reading the folder
@@ -355,6 +360,7 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
     injections = {e["position"]: e for e in named(b.harness, "injection")}
     not_run = {e["position"]: e for e in named(b.harness, "not_run")}
     not_submitted = {e["position"]: e for e in named(b.harness, "job_not_submitted")}
+    host = {e["position"]: e for e in named(b.harness, "host_memory")}
     q1, q2, q3a = by_job(b.q["Q1"]), by_job(b.q["Q2"]), by_job(b.q["Q3a"])
     c0 = []
     for position, e in deadlines.items():
@@ -366,6 +372,8 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
     rows = []
     for position, case in enumerate(b.plan["jobs"], start=1):
         row = {"position": position, "case": case}
+        if position in host:
+            row["host_available_bytes"] = host[position].get("available_bytes")
         if position in not_run or position in not_submitted:
             row["status"] = "not run" if position in not_run else "not submitted"
             rows.append(row)
@@ -400,6 +408,9 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
         "fingerprints_agree": {"passed": bool(final.get("fingerprints_agree")), "values": final.get("fingerprints")},
         "inputs_unchanged": input_check(b, processed_root),
         "machine_state": {"passed": None, "why": "not recorded: 8.3 leaves the host-state rules open"},
+        "records_complete": {"passed": not named(b.harness, "setup_error") and not named(b.harness, "final_error"),
+                             "setup_errors": [e.get("error") for e in named(b.harness, "setup_error")],
+                             "final_errors": [e.get("error") for e in named(b.harness, "final_error")]},
     }
     validity_failed = [name for name, check in validity.items()
                        if isinstance(check, dict) and check.get("passed") is False]
@@ -411,7 +422,11 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
         "accepted_attempts": accepted_checks(b),
         "overlap": overlap_verdict(intervals, missing),
         "nothing_left": {"processes_left": quiescent.get("processes_left"),
-                         "other_connections": quiescent.get("other_connections")},
+                         "other_connections": quiescent.get("other_connections"),
+                         "spark_scratch_new": quiescent.get("spark_scratch_new")},
+        "cleanup_listing": "cleanup.txt" if (folder / "cleanup.txt").exists() else "not recorded",
+        "host_memory": {"jobs_with_a_reading": len(host),
+                        "min_available_bytes": min((e.get("available_bytes") for e in host.values()), default=None)},
         "q2b_rows": b.q["Q2b"],
         "q3b_not_matching": [r for r in b.q["Q3b"] if r.get("report_verdict") != "matches"],
         "liveness": {name: len(named(b.worker_events() + b.reconciler, name)) for name in LIVENESS},

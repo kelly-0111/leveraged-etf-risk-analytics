@@ -175,7 +175,7 @@ phase it hit and does not count for its case.
 | K2 | a submit while Kafka is stopped | a peak reading, stop Kafka, submit, start Kafka | E2 | the confirmation times out (10 s) and `published_at` stays empty; once Kafka is back and the 30 s grace has passed, the reconciler publishes the job | 1 / 1 | no; an unreachable broker's confirmation in `test_jobs_kafka.py` |
 | D1 | MySQL restart while a step runs | `docker compose restart mysql`, after a peak reading | E2 | renewals fail and are tried again; back before F: the attempt goes on; otherwise the worker fences itself, the watchdog ends the tree, and the job is requeued once MySQL is back | 1 or 2 / 1 | yes, once (also a table lock and a pause) |
 | D2 | MySQL down at acceptance | hook that holds at `after_pipeline` while the harness restarts MySQL, after a peak reading | E1, E2 | `accept_result` is tried again while F is ahead, and no try starts after F; back in time: accepted; otherwise the worker gives up (`failed_after_ack`), or, if the hold ends at or after F, makes no acceptance call (`fenced`, during acceptance); either way the job runs again after its lease expires. A try under way at F may still commit: the token decides, not F | 1 or 2 / 1 | no; a lost COMMIT reply offline (`test_jobs_reconnect.py`) |
-| X1 | the job id published again, while the job runs and after it succeeded | harness publishes | E1 | each extra delivery is refused (lease held, then succeeded) and committed; no new attempt | 1 / 1 | no; refusals offline (`test_jobs_queue.py`) |
+| X1 | the job id published again, while the job runs and after it succeeded | harness publishes | E1 | each extra delivery is refused as `succeeded` and committed: the owner reads the first one only after its run, since a worker does not poll during a run; no new attempt | 1 / 1 | no; refusals offline (`test_jobs_queue.py`) |
 
 All 14 cases are kept; a case without an injection method is recorded as not run, never dropped.
 
@@ -271,7 +271,8 @@ A batch is quiescent when nothing can write to the job tables: every job has fin
 drain limit has passed; the harness has ended the workers and the reconciler with SIGKILL, so that
 no job changes state on the way out (each worker's launcher then ends its tree); none of them is
 alive, no attempt's process is left, and MySQL's process list shows no client connection but the
-harness's.
+harness's. The harness closes its own connections first and then waits up to 15 s for the list to
+empty; it records what is still listed.
 
 ### 4.5 The final snapshot
 
@@ -373,7 +374,8 @@ change E1's answer (6.2) but is reported next to it.
   `6d8a232`, which recorded UTC times only, leaves its interval missing; UTC times are never
   compared.
 - **Nothing left.** After quiescence no attempt's process and no new Spark scratch remain (as
-  `check()`).
+  `check()`). The harness lists the Spark scratch in `/private/tmp` and the temporary folder at the
+  start and after quiescence, and records the entries that are new.
 
 ## 7. SQL cross-check
 
@@ -562,11 +564,12 @@ first copies of the documents, on `docs/recovery-outline`, stay as they were at 
 
 ## 9. Records, prerequisites and authorship
 
-- **Records**, under `data/outputs-recovery/<batch>/`, outside Git: the export, the event logs, the
-  harness's logs (injections with intended and verified phases, deadlines and observations, process
-  starts and clock checks, partition owners), `services peaks` by segment, the three fingerprints,
+- **Records**, under `data/outputs-recovery/<purpose>/<batch>/`, outside Git: the export, the event
+  logs, the harness's logs (injections with intended and verified phases, deadlines and
+  observations, process starts and clock checks, partition owners, the host's memory before each
+  job, Spark scratch, setup and final errors), `services peaks` by segment, the three fingerprints,
   Q0–Q3b as CSV, the table of section 5 with one row per injection, the per-case tally, and
-  `cleanup`'s listing.
+  `cleanup`'s listing (`cleanup.txt`).
 - **Nothing is dropped.** Every injection (misses, those not run, and those whose harness record is
   incomplete, counted apart as unrecorded, included), every batch (invalid ones included) and every
   verdict (failed outcomes and unknowns included) stays in the records; the tally lists all 14 cases
@@ -591,7 +594,12 @@ first copies of the documents, on `docs/recovery-outline`, stay as they were at 
     guards that keep a preflight's records in their own folder and a formal batch behind `--formal`
     (8.6); in the collector, the purpose at the head of every summary;
   - in `tests/mutation_check.py`, focused mutations of all of the above, each run against the test
-    file that should catch it.
+    file that should catch it;
+  - since the draft Part A proposal ([recovery-part-a.md](recovery-part-a.md), its gaps G1–G8): a
+    setup failure recorded (`setup_error`, every planned job `not_run`, exit code 1, containers
+    removed only if the batch started them); quiescence closing the harness's own connections
+    before it counts other clients; `cleanup.txt`, the host's memory before each job and the Spark
+    scratch produced; `plan --out` creating its folder; the collector reporting all of these.
 - **Tests, offline only, run on 2026-10-24.** The full suite without the services, last run before
   the checkpoint commit: 615 passed and 30 skipped, none failed; the skipped ones are the MySQL,
   Kafka and live-pipeline tests, which need the services. Among them: the frozen queries on SQLite
@@ -659,3 +667,9 @@ not the job system.
   preferred draft, with the 84 jobs as the alternative; the live preflight proposed (8.6), with the
   harness keeping its records apart; deadlines, memory rules and runtime estimates left to be
   finalized after it; a code checkpoint committed. Part A is not approved.
+- **Revision 6, 2026-10-24.** The draft Part A proposal for 28 jobs
+  ([recovery-part-a.md](recovery-part-a.md)) and its gaps G1–G8 fixed, with focused tests and
+  mutations: setup failures recorded, the harness's own connections handled at quiescence, the
+  cleanup listing, host memory and Spark scratch produced, X1's refusals corrected to `succeeded`,
+  and the command examples. Workload, deadlines and memory rules stay provisional; Part A is not
+  approved.

@@ -28,8 +28,8 @@ of their own, so it is not claimed to be the same set. Mutations that the remain
 make equivalent are left out; for example, mark_published's published_at condition is covered
 by its version guard.
 
-The focused mutations, added on 2026-10-24, break the recovery experiments' tooling and the
-worker's acceptance deadline (docs/recovery-experiments.md, section 9; docs/worker-pipeline.md),
+The focused mutations, added on 2026-10-24 (and for the gaps of docs/recovery-part-a.md the same
+day), break the recovery experiments' tooling and the worker's acceptance deadline (docs/recovery-experiments.md, section 9; docs/worker-pipeline.md),
 and each runs only the test file that should catch it: the worker's, the launcher's, the fault
 hook's, the harness's, the collector's, the frozen cross-check SQL's on SQLite, or the
 synthetic batch's. A catch therefore shows that this file notices the break.
@@ -303,6 +303,38 @@ MUTATIONS = (
     # Focused: the synthetic batch, end to end (tests/test_recovery_synthetic.py).
     Mutation("no-restart", HARNESS, "        restarted = [w for w in WORKERS if self.procs[w].poll() is not None]",
              "        restarted = []", "a killed worker is never started again", tests=SYNTHETIC_TESTS),
+    # Focused: the gaps G1-G7 of docs/recovery-part-a.md, fixed on 2026-10-24.
+    Mutation("setup-error-unrecorded", HARNESS,
+             '                self.log.log("setup_error", error=f"{type(error).__name__}: {error}"[:1000])\n', "",
+             "a failure in the setup leaves no record", tests=HARNESS_TESTS),
+    Mutation("teardown-not-started", HARNESS,
+             "            if self.services_started:                       # never containers this batch did not start\n"
+             '                self.compose("down", "-v")\n',
+             '            self.compose("down", "-v")\n', "containers the batch did not start are taken down",
+             tests=HARNESS_TESTS),
+    Mutation("own-connections-counted", HARNESS, "        self.close_stores()\n", "",
+             "quiescence counts the harness's own connections as other clients", tests=HARNESS_TESTS),
+    Mutation("scratch-new-ignored", HARNESS,
+             "        new = sorted(set(spark_scratch(self.scratch_folders())) - set(self.scratch_before))",
+             "        new = []", "new Spark scratch is never reported", tests=HARNESS_TESTS),
+    Mutation("scratch-before-ignored", HARNESS, "        self.scratch_before = spark_scratch(self.scratch_folders())\n",
+             "        self.scratch_before = []\n", "Spark scratch from before the batch is reported as new",
+             tests=SYNTHETIC_TESTS),
+    Mutation("cleanup-lists-status", HARNESS, '        cleanup = self.cli("cleanup", check=False)',
+             '        cleanup = self.cli("status", check=False)', "cleanup.txt holds no cleanup listing",
+             tests=SYNTHETIC_TESTS),
+    Mutation("host-memory-unrecorded", HARNESS,
+             '        self.log.log("host_memory", position=position, **host_memory())    # P4: recorded, never a gate\n',
+             "", "the host's memory before a job is not recorded", tests=SYNTHETIC_TESTS),
+    Mutation("plan-folder-not-created", HARNESS, "        args.out.parent.mkdir(parents=True, exist_ok=True)\n", "",
+             "plan cannot write into a new folder", tests=HARNESS_TESTS),
+    Mutation("records-complete-ignored", COLLECTOR,
+             '        "records_complete": {"passed": not named(b.harness, "setup_error") and not named(b.harness, "final_error"),',
+             '        "records_complete": {"passed": True,', "a recorded setup or final error passes validity",
+             tests=COLLECTOR_TESTS),
+    Mutation("host-memory-column-dropped", COLLECTOR,
+             '        if position in host:\n            row["host_available_bytes"] = host[position].get("available_bytes")\n',
+             "", "the per-job host memory is left out of injections.csv", tests=COLLECTOR_TESTS),
 )
 
 

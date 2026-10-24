@@ -29,9 +29,13 @@ batch runs one plan on fresh containers (2.1-2.5):
   the memory peaks read, with the thresholds of P4 (4.6);
 - then quiescence (4.4), the final snapshot with crosscheck.sql (4.5), and the services
   removed.
-Its records go to DIR (section 9): harness.jsonl (the harness's own events), events/ (every
-process's log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
-status-check.txt, and plan.json.
+Its records go to DIR (section 9): harness.jsonl (the harness's own events, among them the
+host's memory before each job and the Spark scratch at the start), events/ (every process's
+log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
+status-check.txt, cleanup.txt (cleanup's dry-run listing), and plan.json. A failure in the setup
+is recorded as setup_error, with every planned job as not_run; a failure in the final steps as
+final_error. Either makes the exit code 1. The containers are removed only if this batch
+started them.
 
 No batch has run against the services: Part A is not approved, and no formal experiment has been
 run. The offline parts are tested with tests/test_jobs_harness.py, and a synthetic batch, with
@@ -53,6 +57,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import closing
@@ -338,6 +343,27 @@ def clock_pair() -> dict:
     return {"ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"), "mono": time.monotonic()}
 
 
+SCRATCH_PREFIXES = ("spark-", "blockmgr-", "pyspark-", "snappy-", "libzstd-jni", "liblz4-java", "hsperfdata_")
+
+
+def spark_scratch(folders) -> list[str]:
+    """What Spark, PySpark and the JVM leave in temporary folders when a run is killed, as
+    tests/test_jobs_live_pipeline.py looks for it: the entries of folders whose names start with
+    SCRATCH_PREFIXES, as paths (6.5)."""
+    names = set()
+    for folder in map(Path, folders):
+        if folder.is_dir():
+            names |= {str(folder / entry.name) for entry in folder.iterdir() if entry.name.startswith(SCRATCH_PREFIXES)}
+    return sorted(names)
+
+
+def host_memory() -> dict:
+    """The host's memory, read before each job (P4: recorded, never a gate)."""
+    import psutil
+    memory = psutil.virtual_memory()
+    return {"available_bytes": memory.available, "total_bytes": memory.total}
+
+
 # The batch
 
 class PhaseMissed(Exception):
@@ -394,7 +420,11 @@ class Batch:
         self.stop_reason: str | None = None
         self.store_id: str | None = None
         self._local = threading.local()                 # a JobStore per thread: a connection is not shared
+        self._stores: list = []                         # every thread's, so that quiescence can close them
+        self._stores_lock = threading.Lock()
         self._publisher = None
+        self.services_started = False                   # from compose up on, the batch removes what it started
+        self.scratch_before: list[str] = []
 
     # Commands and services
 
@@ -433,6 +463,7 @@ class Batch:
                                   capture_output=True, text=True, timeout=60).stdout.split()
         if existing:
             raise RuntimeError("this project's containers exist already; a batch starts on fresh ones")
+        self.services_started = True
         self.log.log("services_up", seconds=self.compose("up", "-d", "--wait", "mysql", "kafka"),
                      others=self.services.other_containers())
         for service in ("mysql", "kafka"):
@@ -545,15 +576,33 @@ class Batch:
         finally:
             conn.close()
 
+    def new_store(self):
+        """A JobStore of the harness's own; it reconnects at its next operation after a lost connection."""
+        from etf_risk.jobs import mysql
+        from etf_risk.jobs.store import JobStore
+        return JobStore(None, mysql.MYSQL, connect=mysql.connector(self.db, **mysql.SERVICE_SESSION))
+
     def store(self):
-        """This thread's JobStore; it reconnects at its next operation after a lost connection."""
+        """This thread's JobStore: a connection is never shared between threads."""
         store = getattr(self._local, "store", None)
         if store is None:
-            from etf_risk.jobs import mysql
-            from etf_risk.jobs.store import JobStore
-            store = self._local.store = JobStore(None, mysql.MYSQL,
-                                                 connect=mysql.connector(self.db, **mysql.SERVICE_SESSION))
+            store = self._local.store = self.new_store()
+            with self._stores_lock:
+                self._stores.append(store)
         return store
+
+    def close_stores(self) -> None:
+        """Close the connections of the harness's own stores (4.4); a store opens a new one if it
+        is used again."""
+        with self._stores_lock:
+            stores = list(self._stores)
+        for store in stores:
+            connection, store.connection = store.connection, None
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
     def job_status(self, job_id: int) -> str | None:
         try:
@@ -763,6 +812,7 @@ class Batch:
 
     def run_job(self, position: int, case: str) -> dict:
         s = self.settings
+        self.log.log("host_memory", position=position, **host_memory())    # P4: recorded, never a gate
         record = {"position": position, "case": case, "owner_before": self.wait_owner()}
         armed, release, injection = None, None, None
         if case in HOOKS:
@@ -877,9 +927,12 @@ class Batch:
             if code != 0:
                 raise RuntimeError(f"the reference run's {name} step failed (exit {code})")
 
+    QUIESCE_CONNECTIONS_WAIT_S = 15.0
+
     def quiesce(self) -> dict:
-        """4.4: SIGKILL every writer, then wait until no attempt's process and no other client
-        connection is left."""
+        """4.4: SIGKILL every writer, then wait until no attempt's process is left; close the
+        harness's own connections and wait, up to QUIESCE_CONNECTIONS_WAIT_S, until MySQL lists no
+        other client; then the Spark scratch that appeared since the start (6.5)."""
         for proc in self.procs.values():
             if proc.poll() is None:
                 proc.kill()                                  # SIGKILL
@@ -891,9 +944,18 @@ class Batch:
             processes_left = False
         except PhaseMissed:
             processes_left = True
-        record = {"processes_left": processes_left, "other_connections": self.other_connections()}
+        self.close_stores()
+        end = time.monotonic() + self.QUIESCE_CONNECTIONS_WAIT_S
+        while (others := self.other_connections()) and time.monotonic() < end:
+            time.sleep(self.settings.poll_s)
+        new = sorted(set(spark_scratch(self.scratch_folders())) - set(self.scratch_before))
+        record = {"processes_left": processes_left, "other_connections": others, "spark_scratch_new": new}
         self.log.log("quiescent", **record)
         return record
+
+    def scratch_folders(self) -> list[Path]:
+        """Where Spark scratch of a killed run would appear: /private/tmp and the temporary folder."""
+        return sorted({Path("/private/tmp"), Path(tempfile.gettempdir())})
 
     def _marked(self) -> bool:
         return any(v.startswith(f"{self.store_id}:") for v in processes.marked_processes())
@@ -948,15 +1010,19 @@ class Batch:
             conn.close()
 
     def final_snapshot(self) -> dict:
-        """4.5: peaks, status --check, the cross-check, the export, and Q0 again."""
+        """4.5: peaks, status --check, cleanup's dry-run listing of the attempts' folders (6.2), the
+        cross-check, the export, and Q0 again."""
         self.read_peaks(closes="end")
         status = self.cli("status", "--check", check=False)
         (self.out / "status-check.txt").write_text(f"exit {status.returncode}\n{status.stdout}{status.stderr}")
+        cleanup = self.cli("cleanup", check=False)
+        (self.out / "cleanup.txt").write_text(f"exit {cleanup.returncode}\n{cleanup.stdout}{cleanup.stderr}")
         first = self.crosscheck()
         self.cli("export", str(self.out / "export"))
         exported = fingerprint_from_export(self.out / "export")
         again = self.q0()
-        record = {"status_check_exit": status.returncode, "fingerprints": [first, exported, again],
+        record = {"status_check_exit": status.returncode, "cleanup_exit": cleanup.returncode,
+                  "fingerprints": [first, exported, again],
                   "fingerprints_agree": first == exported == again,
                   "batch_peaks": {s: self.peaks.batch_peak(s) for s in ("mysql", "kafka")}}
         self.log.log("final_snapshot", **record)
@@ -964,20 +1030,28 @@ class Batch:
 
     def run(self) -> int:
         """The batch: start, every planned job until one is left unfinished or memory stops it,
-        quiescence, the final snapshot, and the services removed."""
+        quiescence, the final snapshot, and the services removed. 1 if the setup or the final
+        steps failed, else 0; a stop for a reason of its own (6.1) still ends with 0."""
         self.log.log("batch_started", purpose=self.purpose, plan_seed=self.plan["seed"], code=code_identity(),
                      clock=clock_pair(), settings=asdict(self.settings), topic=self.topic)
-        self.services_up()
+        self.scratch_before = spark_scratch(self.scratch_folders())
+        self.log.log("spark_scratch", stage="start", entries=self.scratch_before)
+        incomplete = False
         try:
-            self.cli("init-db")
-            self.cli("create-topic")
-            self.store_id = self.store().store_id()
-            self.reference_run()
-            self.start("reconciler", "reconciler")
-            self.start_worker("A")
-            self.log.log("owner", owner=self.wait_joined("A"), position=0)
-            self.start_worker("B")
-            self.log.log("owner", owner=self.wait_joined("B"), position=0)
+            try:
+                self.services_up()
+                self.cli("init-db")
+                self.cli("create-topic")
+                self.store_id = self.store().store_id()
+                self.reference_run()
+                self.start("reconciler", "reconciler")
+                self.start_worker("A")
+                self.log.log("owner", owner=self.wait_joined("A"), position=0)
+                self.start_worker("B")
+                self.log.log("owner", owner=self.wait_joined("B"), position=0)
+            except Exception as error:                       # recorded; every planned job becomes not_run
+                self.log.log("setup_error", error=f"{type(error).__name__}: {error}"[:1000])
+                self.stop_reason, incomplete = "an error in the setup", True
             for position, case in enumerate(self.plan["jobs"], start=1):
                 if self.stop_reason is not None:
                     self.log.log("not_run", position=position, case=case, why=self.stop_reason)
@@ -991,19 +1065,21 @@ class Batch:
                 except Exception as error:                   # recorded; the batch still ends cleanly
                     self.log.log("job_error", position=position, case=case, error=f"{type(error).__name__}: {error}")
                     self.stop_reason = "an error in the harness"
-            try:
-                self.quiesce()
-                self.final_snapshot()
-            except Exception as error:
-                self.log.log("final_error", error=f"{type(error).__name__}: {error}")
-                self.stop_reason = self.stop_reason or "an error in the final snapshot"
+            if self.services_started:
+                try:
+                    self.quiesce()
+                    self.final_snapshot()
+                except Exception as error:
+                    self.log.log("final_error", error=f"{type(error).__name__}: {error}")
+                    self.stop_reason, incomplete = self.stop_reason or "an error in the final snapshot", True
         finally:
             for proc in self.procs.values():
                 if proc.poll() is None:
                     proc.kill()
             self.log.log("batch_ended", clock=clock_pair(), code=code_identity(), stop_reason=self.stop_reason)
-            self.compose("down", "-v")
-        return 0
+            if self.services_started:                       # never containers this batch did not start
+                self.compose("down", "-v")
+        return 1 if incomplete else 0
 
 
 # Command line
@@ -1028,6 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "plan":
         settings = Settings.from_dict(json.loads(args.settings.read_text())) if args.settings else Settings()
         jobs = [c.strip() for c in args.jobs.split(",")] if args.jobs else None
+        args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(make_plan(settings, args.seed, purpose=args.purpose, jobs=jobs), indent=2)
                             + "\n")
         print(f"{args.purpose} plan written to {args.out}")

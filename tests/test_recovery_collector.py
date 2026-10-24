@@ -295,3 +295,27 @@ def test_the_purpose_comes_from_the_plan_and_heads_every_summary(batch, tmp_path
     assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "purpose: preflight (a preflight: not a formal result)"
     assert json.loads((batch / "validity.json").read_text())["purpose"] == "preflight"
+
+
+def test_host_memory_spark_scratch_and_the_cleanup_listing_are_reported(batch, tmp_path):
+    with open(batch / "harness.jsonl", "a") as f:
+        for position, available in ((1, 3 * 2**30), (2, 2 * 2**30), (3, 2**30)):
+            f.write(json.dumps({"event": "host_memory", "position": position, "available_bytes": available,
+                                "total_bytes": 8 * 2**30}) + "\n")
+    edit_harness(batch, lambda e: {**e, "spark_scratch_new": ["/private/tmp/spark-x"]} if e["event"] == "quiescent" else e)
+    (batch / "cleanup.txt").write_text("exit 0\ndry run: 0 folders (0.0 MiB) could be removed; nothing was deleted\n")
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    rows = {r["position"]: r for r in result["rows"]}
+    assert [rows[p].get("host_available_bytes") for p in (1, 2, 3, 4)] == [3 * 2**30, 2 * 2**30, 2**30, None]
+    assert result["outcomes"]["host_memory"] == {"jobs_with_a_reading": 3, "min_available_bytes": 2**30}
+    assert result["outcomes"]["nothing_left"]["spark_scratch_new"] == ["/private/tmp/spark-x"]
+    assert result["outcomes"]["cleanup_listing"] == "cleanup.txt"
+
+
+def test_a_recorded_setup_or_final_error_fails_validity(batch, tmp_path):
+    with open(batch / "harness.jsonl", "a") as f:
+        f.write(json.dumps({"event": "setup_error", "error": "RuntimeError: init-db: exit 1"}) + "\n")
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+    validity = json.loads((batch / "validity.json").read_text())
+    assert "records_complete" in validity["validity_failed"]
+    assert validity["validity"]["records_complete"]["setup_errors"] == ["RuntimeError: init-db: exit 1"]
