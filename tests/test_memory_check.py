@@ -609,6 +609,9 @@ class FakeSystem:
     def git_dirty(self):
         return self.dirty
 
+    def ignored_untracked(self):
+        return 3
+
     def port_in_use(self, port):
         return port in self.busy
 
@@ -757,6 +760,21 @@ def test_an_unpause_that_is_not_needed_is_ignored(tmp_path):
 def test_keep_leaves_the_runs_outputs(tmp_path):
     code, _, temp = check(tmp_path, FakeSystem(), keep=True)
     assert code == 0 and (temp / "acceptance" / "live0").is_dir()
+
+
+def test_only_untracked_ai_logs_are_left_out_of_the_clean_worktree_check():
+    porcelain = ("?? docs/ai-usage/2026-10-24_1138_d50bcd16-20/\n?? tests/new_test.py\n M src/etf_risk/jobs/store.py\n"
+                 " M docs/ai-usage/2026-10-19_1643_c82fe879-23/transcript.md\n?? docs/ai-usage-notes.md\n\n")
+    assert mc.worktree_changes(porcelain) == (
+        ["tests/new_test.py", "src/etf_risk/jobs/store.py", "docs/ai-usage/2026-10-19_1643_c82fe879-23/transcript.md",
+         "docs/ai-usage-notes.md"],
+        ["docs/ai-usage/2026-10-24_1138_d50bcd16-20/"])
+    assert mc.worktree_changes("") == ([], [])
+
+
+def test_the_record_counts_the_ignored_ai_logs(tmp_path):
+    _, out, _ = check(tmp_path, FakeSystem())
+    assert record_in(out)["worktree_ignored_untracked"] == {"under": "docs/ai-usage/", "paths": 3}
 
 
 def test_preflight_names_every_problem():

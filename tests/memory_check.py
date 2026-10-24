@@ -21,7 +21,9 @@ Outcomes, in the exit status and in record.json:
 - 130: interrupted; the cleanup still runs.
 
 Conditions of the run:
-- before anything starts: a clean worktree, so the record names one commit; no running
+- before anything starts: a clean worktree, so the record names one commit (untracked files
+  under docs/ai-usage/, the AI-log transcripts that sessions write there, are ignored and
+  counted in the record; approved 2026-10-24); no running
   container outside this project, and none of this project's own, which may be another
   session's (it never stops, pauses or removes a container it did not start); ports 3307,
   9094 and 6380 free; the snapshot that the acceptance cases read;
@@ -137,6 +139,7 @@ PROPOSED = {
     "process submit": 128 * MiB,      # not measured before
 }
 NATIVE = ("step ", "process ")   # the prefixes of the native-process targets in PROPOSED
+IGNORED_UNTRACKED = "docs/ai-usage/"   # sessions write their AI-log transcripts here (approved 2026-10-24)
 PORTS = (3307, 9094, 6380)
 SETTLE_S = 30
 SETTLE_LEFTOVERS_S = 15.0    # above a launcher's 7 s kill grace after its worker is gone
@@ -554,9 +557,28 @@ def project_containers() -> int:
     return len(out.stdout.split())
 
 
+def worktree_changes(porcelain: str) -> tuple[list[str], list[str]]:
+    """`git status --porcelain` as (the changes that leave the worktree unclean, the untracked
+    paths under IGNORED_UNTRACKED). A tracked change under IGNORED_UNTRACKED still counts."""
+    unclean, ignored = [], []
+    for line in porcelain.splitlines():
+        if line.strip():
+            status, path = line[:2], line[3:]
+            (ignored if status == "??" and path.startswith(IGNORED_UNTRACKED) else unclean).append(path)
+    return unclean, ignored
+
+
+def git_changes() -> tuple[list[str], list[str]]:
+    return worktree_changes(subprocess.run(["git", "status", "--porcelain"], cwd=REPO, capture_output=True,
+                                           text=True, check=True).stdout)
+
+
 def git_dirty() -> bool:
-    return bool(subprocess.run(["git", "status", "--porcelain"], cwd=REPO, capture_output=True, text=True,
-                               check=True).stdout.strip())
+    return bool(git_changes()[0])
+
+
+def ignored_untracked() -> int:
+    return len(git_changes()[1])
 
 
 def port_in_use(port: int) -> bool:
@@ -610,6 +632,7 @@ class System:
     project_containers: Callable[[], int]
     other_containers: Callable[[], int]
     git_dirty: Callable[[], bool]
+    ignored_untracked: Callable[[], int]
     port_in_use: Callable[[int], bool]
     snapshot_exists: Callable[[], bool]
     keep_awake: Callable[[], None]
@@ -621,7 +644,8 @@ def this_machine() -> System:
     return System(compose=docker_compose, ready=wait_ready, sleep=time.sleep, monotonic=time.monotonic, now=now,
                   host_memory=host_memory, available=available_memory, docker_state=docker_state, sampler=Sampler,
                   run_pytest=run_pytest, leftovers=leftovers, end=end, project_containers=project_containers,
-                  other_containers=services.other_containers, git_dirty=git_dirty, port_in_use=port_in_use,
+                  other_containers=services.other_containers, git_dirty=git_dirty,
+                  ignored_untracked=ignored_untracked, port_in_use=port_in_use,
                   snapshot_exists=SNAPSHOT.is_dir, keep_awake=keep_awake, tools=tools, code_state=code_state)
 
 
@@ -797,7 +821,8 @@ def run_check(out: Path, temp: Path, keep: bool, system: System) -> int:
                     "supplementary": {"container": {k: v for k, v in PROPOSED.items() if not k.startswith(NATIVE)},
                                       "native": {k: v for k, v in PROPOSED.items() if k.startswith(NATIVE)},
                                       "native_approved": False},
-                    "settle_s": SETTLE_S, "pytest_temp": str(temp), "cleanup_errors": []}
+                    "settle_s": SETTLE_S, "pytest_temp": str(temp), "cleanup_errors": [],
+                    "worktree_ignored_untracked": {"under": IGNORED_UNTRACKED, "paths": system.ignored_untracked()}}
     env = {**os.environ, "ETF_RISK_MYSQL_URL": services.DEFAULT_MYSQL_URL,
            "ETF_RISK_KAFKA_BOOTSTRAP": services.DEFAULT_KAFKA_BOOTSTRAP, RUN_ENV: str(temp)}
     errors = record["cleanup_errors"]
