@@ -12,23 +12,31 @@ Outcomes, in the exit status and in record.json:
   nothing left behind. This validates the container limits only.
 - 1, failed measurement: the run counts, and a container limit was not held (memory.peak above
   its limit in a lifetime, an oom or oom_kill event, a container OOM-killed or stopped), a
-  pytest run failed, or processes were left behind.
-- 2, not counted: a required condition was not met, before the start (nothing is started), at
-  the idle gate (the stack is removed), or during the run (an invalid run).
+  pytest run failed, or processes were left behind. Container-limit misses and test-run misses
+  are listed apart; a test failure or timeout under host memory pressure is to be diagnosed
+  before it is attributed to a container limit.
+- 2, not counted: a required condition was not met, before the start (nothing is started) or
+  during the run (an invalid run).
 - 3, tool error: the check stopped on an error, or its cleanup did not finish.
 - 130: interrupted; the cleanup still runs.
 
-Conditions:
+Conditions of the run:
 - before anything starts: a clean worktree, so the record names one commit; no running
   container outside this project, and none of this project's own, which may be another
   session's (it never stops, pauses or removes a container it did not start); ports 3307,
   9094 and 6380 free; the snapshot that the acceptance cases read;
-- with the stack up and idle for SETTLE_S seconds: CONDITIONS["idle_available"] available;
-- over the run: the compressor and swap each grew by at most their CONDITIONS limit; both
-  pytest runs reported results, with no acceptance case skipped; both containers were
-  created by this run and read throughout, with their budgets as their limits and no counter
-  going down within a lifetime; Docker's record of each container was read after each run;
-  every step was launched; a worker and a reconciler were sampled.
+- over the run: both pytest runs reported results, with no acceptance case skipped; both
+  containers were created by this run and read throughout, with their budgets as their limits
+  and no counter going down within a lifetime; Docker's record of each container was read
+  after each run; every step was launched; a worker and a reconciler were sampled.
+
+Host memory (approved 2026-10-24) decides only whether the native-process figures are
+representative, not whether the run counts: CONDITIONS["idle_available"] available with the
+stack up and idle for SETTLE_S seconds, and the compressor and swap each growing by at most
+their CONDITIONS limit. When one fails, the native figures are recorded and marked as measured
+under host memory pressure. The container verdict does not depend on it: macOS compressing or
+swapping the VM's memory is not seen by the cgroup accounting inside the VM (reasoning, not a
+measured result). Host pressure is recorded either way.
 
 What is measured while pytest runs the job suites and then the acceptance cases:
 - every 0.5 s: the host's available memory, and the RSS of every
@@ -54,11 +62,11 @@ each other: the containers' anon memory and limit hits, and the native-process t
 trees, worker, reconciler, submit). The native-process targets are not approved budgets; a
 pass does not validate them, and no supplementary threshold changes the outcome.
 
-Why the compressor and swap must stay flat: M2's step trees peaked lower than the stride
+Why the native figures need the host conditions: M2's step trees peaked lower than the stride
 experiment's (1.19-1.36 against 2.62-2.73 GiB at stride 21). One hypothesis, not
 established, is that the host was short of memory, so that macOS compressed or swapped pages,
-which then leave RSS. A run during which neither grew is free of that effect, whatever caused
-the difference.
+which then leave RSS. Native figures from a run that met the host conditions are free of that
+effect, whatever caused the difference.
 
 Whatever happens, the processes the runs left behind are ended, the containers are unpaused,
 and the stack is removed (down -v). A process belongs to the check if its command line names
@@ -105,7 +113,8 @@ from etf_risk.provenance import code_state  # noqa: E402
 MiB, GiB = 2**20, 2**30
 # The containers' budgets (spec §11), which are also their limits in docker/compose.yaml.
 BUDGETS = {"mysql": 512 * MiB, "kafka": 640 * MiB}
-# Approved on 2026-10-24 for the initial isolated check: the measurement's conditions,
+# Approved on 2026-10-24: the host conditions for representative native-process figures (not for
+# the container verdict),
 CONDITIONS = {
     # one 2.7 GiB step tree (the host lock runs one at a time), 0.3 for the job processes and
     # pytest, 0.5 for both containers growing to their budgets, and 0.5 to spare
@@ -656,16 +665,27 @@ def measure(sampler: Sampler, idle: dict, temp: Path, runs: dict, left: dict, do
             "sampler_errors": sampler.errors}
 
 
-def judge(measured: dict) -> dict:
-    """invalid: why the run does not count. misses: failed runs, leftovers and the container
-    limits, which alone decide a run that counts. Reported apart, and never deciding: the
-    supplementary container figures, and the native-process targets, which are not approved."""
-    invalid: list[str] = []
-    misses: list[str] = []
+def host_pressure(measured: dict) -> list[str]:
+    """Why the native-process figures are not representative: the host conditions they missed."""
+    host, reasons = measured["host"], []
+    if host["idle"]["available_bytes"] < CONDITIONS["idle_available"]:
+        reasons.append(f"{size(host['idle']['available_bytes'])} available with the stack idle, below "
+                       f"{CONDITIONS['idle_available'] / GiB:.1f} GiB")
     for key in ("compressor", "swap"):
-        grew, limit = measured["host"][f"{key}_growth_bytes"], CONDITIONS[f"{key}_growth"]
+        grew, limit = host[f"{key}_growth_bytes"], CONDITIONS[f"{key}_growth"]
         if grew > limit:
-            invalid.append(f"the {key} grew by {size(grew)}, more than {size(limit)}")
+            reasons.append(f"the {key} grew by {size(grew)}, more than {size(limit)}")
+    return reasons
+
+
+def judge(measured: dict) -> dict:
+    """invalid: why the run does not count. Misses: test runs that failed or left processes
+    behind, and container limits not held; these alone decide a run that counts. Reported apart,
+    and never deciding: the supplementary container figures, and the native-process targets,
+    which are not approved and are representative only when the host conditions held."""
+    invalid: list[str] = []
+    run_misses: list[str] = []
+    container_misses: list[str] = []
     for name, run in measured["pytest"].items():
         if not run["readable"] or not run["tests"]:
             invalid.append(f"pytest {name}: no results")
@@ -687,9 +707,9 @@ def judge(measured: dict) -> dict:
 
     for name, run in measured["pytest"].items():
         if run["exit_code"] != 0 or run["failures"] or run["errors"]:
-            misses.append(f"pytest {name}: exit {run['exit_code']}, {run['failures']} failed, {run['errors']} errors")
+            run_misses.append(f"pytest {name}: exit {run['exit_code']}, {run['failures']} failed, {run['errors']} errors")
         if measured["leftovers"].get(name):
-            misses.append(f"pytest {name} left {measured['leftovers'][name]} process(es) behind")
+            run_misses.append(f"pytest {name} left {measured['leftovers'][name]} process(es) behind")
     stopped: dict[str, list[str]] = {service: [] for service in measured["containers"]}
     for label, states in measured["docker"].items():
         if label == "started":
@@ -705,12 +725,13 @@ def judge(measured: dict) -> dict:
     for service, c in measured["containers"].items():
         over = [(n, s["peak_bytes"]) for n, s in enumerate(c["lifetimes"], 1) if s["peak_bytes"] > c["budget_bytes"]]
         for n, peak in over:
-            misses.append(f"{service} lifetime {n}: memory.peak {size(peak)}, above its {size(c['budget_bytes'])} limit")
+            container_misses.append(f"{service} lifetime {n}: memory.peak {size(peak)}, above its "
+                                    f"{size(c['budget_bytes'])} limit")
         events = {event: c["events"][event] for event in ("oom", "oom_kill")}
         for event, count in events.items():
             if count:
-                misses.append(f"{service}: {count} {event} event(s)")
-        misses += [f"{service}: {what}" for what in stopped[service]]
+                container_misses.append(f"{service}: {count} {event} event(s)")
+        container_misses += [f"{service}: {what}" for what in stopped[service]]
         limits.append({"container": service, "limit_bytes": c["budget_bytes"], "peak_bytes": c["peak_bytes"],
                        "lifetime_peaks_bytes": [s["peak_bytes"] for s in c["lifetimes"]], **events,
                        "stopped": stopped[service],
@@ -726,15 +747,19 @@ def judge(measured: dict) -> dict:
     native = [against(f"step {step}", peak) for step, peak in sorted(measured["steps"].items())]
     native += [against(f"process {name}", measured["processes"][name]["rss_bytes"]
                        if measured["processes"][name]["processes"] else None) for name in ROLES]
+    pressure = host_pressure(measured)
+    misses = run_misses + container_misses
     passed = not invalid and not misses
     return {"counts": not invalid, "passed": passed, "validates": "container limits only" if passed else "nothing",
-            "invalid": invalid, "misses": misses, "container_limits": limits,
-            "supplementary_container": container_figures, "native_targets": {"approved": False, "results": native}}
+            "invalid": invalid, "misses": misses, "run_misses": run_misses, "container_misses": container_misses,
+            "host_pressure": pressure, "container_limits": limits, "supplementary_container": container_figures,
+            "native_targets": {"approved": False, "representative": not pressure, "results": native}}
 
 
 def not_counted(reason: str) -> dict:
     return {"counts": False, "passed": False, "validates": "nothing", "invalid": [reason], "misses": [],
-            "container_limits": [], "supplementary_container": [], "native_targets": {"approved": False, "results": []}}
+            "run_misses": [], "container_misses": [], "host_pressure": [], "container_limits": [],
+            "supplementary_container": [], "native_targets": {"approved": False, "representative": False, "results": []}}
 
 
 def outcome(record: dict) -> str:
@@ -789,24 +814,23 @@ def run_check(out: Path, temp: Path, keep: bool, system: System) -> int:
         record["docker"] = {"started": docker_states()}
         system.sleep(SETTLE_S)
         record["idle"] = idle = system.host_memory()
-        if idle["available_bytes"] < CONDITIONS["idle_available"]:
-            record["verdict"] = not_counted(f"{size(idle['available_bytes'])} available with the stack idle, below "
-                                            f"{CONDITIONS['idle_available'] / GiB:.1f} GiB")
-            print(f"not counted (exit 2): {record['verdict']['invalid'][0]}")
-        else:
-            sampler, runs, left = system.sampler(out / "samples.jsonl"), {}, {}
-            sampler.start()
-            try:
-                for name, files, extra in RUNS:
-                    runs[name] = system.run_pytest(name, files, {**env, **extra}, out, temp, TIMEOUTS[name])
-                    print(f"{name}: {runs[name]}")
-                    record["docker"][f"after {name}"] = docker_states()
-                    left[name] = end_leftovers(system, temp, record, name)
-            finally:
-                sampler.stop()
-                sampler.tick(sampler.sample_containers)   # one more reading, after the last run
-            record["measured"] = measure(sampler, idle, temp, runs, left, record["docker"], started)
-            record["verdict"] = judge(record["measured"])
+        print(f"idle with the stack up: {size(idle['available_bytes'])} available"
+              + ("" if idle["available_bytes"] >= CONDITIONS["idle_available"] else
+                 f", below {CONDITIONS['idle_available'] / GiB:.1f} GiB: the native-process figures will not be "
+                 "representative; the container verdict does not depend on it"))
+        sampler, runs, left = system.sampler(out / "samples.jsonl"), {}, {}
+        sampler.start()
+        try:
+            for name, files, extra in RUNS:
+                runs[name] = system.run_pytest(name, files, {**env, **extra}, out, temp, TIMEOUTS[name])
+                print(f"{name}: {runs[name]}")
+                record["docker"][f"after {name}"] = docker_states()
+                left[name] = end_leftovers(system, temp, record, name)
+        finally:
+            sampler.stop()
+            sampler.tick(sampler.sample_containers)   # one more reading, after the last run
+        record["measured"] = measure(sampler, idle, temp, runs, left, record["docker"], started)
+        record["verdict"] = judge(record["measured"])
     except KeyboardInterrupt:
         record["interrupted"] = True
         raise
@@ -867,13 +891,19 @@ def state(result: dict) -> str:
 
 
 def conclusion(verdict: dict) -> str:
+    pressure = verdict["host_pressure"]
     if not verdict["counts"]:
         return "not counted (exit 2): an invalid run; the reasons are listed above"
     if not verdict["passed"]:
-        return f"failed measurement (exit 1): {len(verdict['misses'])} miss(es), listed above"
+        return (f"failed measurement (exit 1): {len(verdict['container_misses'])} container-limit miss(es) and "
+                f"{len(verdict['run_misses'])} test-run miss(es), listed above."
+                + (" The host was under memory pressure: diagnose test failures and timeouts before attributing "
+                   "them to a container limit." if pressure else ""))
     return ("passed (exit 0): the container limits held, with no oom or oom_kill event and no container stopped, "
             "and both pytest runs passed with nothing left behind. This validates the container limits only: the "
-            "native-process targets are not approved budgets, and this run does not validate them.")
+            "native-process targets are not approved budgets, and this run does not validate them."
+            + (" Its native-process figures were measured under host memory pressure and are not representative."
+               if pressure else ""))
 
 
 def report(record: dict) -> None:
@@ -893,7 +923,9 @@ def report(record: dict) -> None:
     for r in verdict["supplementary_container"]:
         print(f"  {r['criterion']}: {show(r['criterion'], r['value'])} against "
               f"{show(r['criterion'], r['threshold'])}: {state(r)}")
-    print("Native-process targets (proposed, not approved budgets; reported only, and not validated by this run):")
+    print("Native-process targets (proposed, not approved budgets; reported only, and not validated by this run"
+          + ("" if verdict["native_targets"]["representative"] else
+             "; measured under host memory pressure, not representative") + "):")
     for r in verdict["native_targets"]["results"]:
         sampled = (f" ({m['processes'][r['criterion'].removeprefix('process ')]['processes']} process(es) sampled)"
                    if r["criterion"].startswith("process ") else "")
@@ -906,10 +938,13 @@ def report(record: dict) -> None:
           f"{size(h['available_min_bytes'])} at the lowest; compressor {h['compressor_growth_bytes'] / MiB:+,.0f} MiB, "
           f"swap {h['swap_growth_bytes'] / MiB:+,.0f} MiB; VM process RSS {size(h['vm_rss_bytes'])}; pytest "
           f"{size(m['processes']['pytest']['rss_bytes'])}; {m['sampler_errors']} sampler errors")
+    print("  host memory pressure: " + ("; ".join(verdict["host_pressure"]) or "none (the host conditions held)"))
     for reason in verdict["invalid"]:
         print(f"does not count: {reason}")
-    for miss in verdict["misses"]:
-        print(f"miss: {miss}")
+    for miss in verdict["container_misses"]:
+        print(f"container-limit miss: {miss}")
+    for miss in verdict["run_misses"]:
+        print(f"test-run miss: {miss}")
     print(conclusion(verdict))
 
 
@@ -923,8 +958,8 @@ def main(argv: list[str] | None = None, system: System | None = None) -> int:
     if not args.preflight and args.out is None:
         parser.error("--out is required, unless --preflight")
     problems = preflight(system)
-    print(f"available now: {size(system.available())}; with the stack up and idle the run needs "
-          f"{CONDITIONS['idle_available'] / GiB:.1f} GiB")
+    print(f"available now: {size(system.available())}; representative native-process figures need "
+          f"{CONDITIONS['idle_available'] / GiB:.1f} GiB with the stack up and idle (the container verdict does not)")
     for problem in problems:
         print(f"not ready: {problem}")
     if problems:

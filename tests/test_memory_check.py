@@ -666,14 +666,16 @@ def test_a_clean_run_passes_and_cleans_up_in_order(tmp_path):
     assert (out / "records" / "acceptance" / "live0" / "out" / "store" / "job-1-attempt-1" / "attempt.json").exists()
 
 
-def test_too_little_memory_with_the_stack_idle_is_not_counted_and_the_stack_is_removed(tmp_path):
-    system = FakeSystem(available=3 * GiB)
+def test_too_little_memory_with_the_stack_idle_marks_the_native_figures_and_the_container_verdict_counts(tmp_path):
+    system = FakeSystem(available=int(2.7 * GiB))
     code, out, _ = check(tmp_path, system)
     record = record_in(out)
-    assert (code, record["outcome"], record["exit_code"]) == (2, "not counted", 2)
-    assert "sampler" not in names(system) and not any(name.startswith("pytest") for name in names(system))
-    assert names(system)[-len(CLEANUP):] == CLEANUP
-    assert record["verdict"]["invalid"] == ["3.00 GiB available with the stack idle, below 4.0 GiB"]
+    assert (code, record["outcome"], record["verdict"]["validates"]) == (0, "passed", "container limits only")
+    assert "pytest acceptance" in names(system) and names(system)[-len(CLEANUP):] == CLEANUP
+    assert record["verdict"]["host_pressure"] == ["2.70 GiB available with the stack idle, below 4.0 GiB"]
+    assert record["verdict"]["native_targets"] == {**record["verdict"]["native_targets"], "approved": False,
+                                                   "representative": False}
+    assert record["measured"]["host"]["idle"]["available_bytes"] == int(2.7 * GiB)
 
 
 def test_a_container_this_run_did_not_create_is_not_counted(tmp_path):
@@ -896,8 +898,24 @@ def test_a_container_over_its_limit_or_oom_killed_is_not_held():
 
 
 @pytest.mark.parametrize("change, reason", [
-    (lambda m: m["host"].update(compressor_growth_bytes=300 * MiB), "the compressor grew by 300 MiB"),
-    (lambda m: m["host"].update(swap_growth_bytes=257 * MiB), "the swap grew by 257 MiB"),
+    (lambda m: m["host"]["idle"].update(available_bytes=int(2.7 * GiB)),
+     "2.70 GiB available with the stack idle, below 4.0 GiB"),
+    (lambda m: m["host"].update(compressor_growth_bytes=300 * MiB), "the compressor grew by 300 MiB, more than 256 MiB"),
+    (lambda m: m["host"].update(swap_growth_bytes=257 * MiB), "the swap grew by 257 MiB, more than 256 MiB"),
+])
+def test_host_memory_pressure_marks_the_native_figures_and_leaves_the_container_verdict_alone(change, reason):
+    verdict = planted(change)
+    assert (verdict["counts"], verdict["passed"], verdict["validates"]) == (True, True, "container limits only")
+    assert verdict["host_pressure"] == [reason] and verdict["native_targets"]["representative"] is False
+    assert verdict["native_targets"]["approved"] is False
+
+
+def test_a_run_that_met_the_host_conditions_has_representative_native_figures():
+    verdict = mc.judge(clean())
+    assert verdict["host_pressure"] == [] and verdict["native_targets"]["representative"] is True
+
+
+@pytest.mark.parametrize("change, reason", [
     (lambda m: m["pytest"]["acceptance"].update(skipped=10), "acceptance cases: 10 of 10 skipped"),
     (lambda m: m["pytest"]["suites"].update(readable=False, tests=0), "pytest suites: no results"),
     (lambda m: m["containers"].update(kafka=mc.summarize_container([None], 640 * MiB, True)),
@@ -939,6 +957,9 @@ def test_a_failed_measurement_counts_and_fails(change, miss):
     verdict = planted(change)
     assert verdict["counts"] and not verdict["passed"] and verdict["validates"] == "nothing", verdict
     assert any(m.startswith(miss) for m in verdict["misses"]), verdict
+    kind = "run_misses" if miss.startswith("pytest") else "container_misses"
+    assert any(m.startswith(miss) for m in verdict[kind]), verdict
+    assert verdict["misses"] == verdict["run_misses"] + verdict["container_misses"]
 
 
 @pytest.mark.parametrize("change, section, criterion", [
@@ -966,11 +987,24 @@ def test_the_conclusion_never_claims_more_than_the_verdict():
     assert mc.conclusion(mc.not_counted("too little memory")) == (
         "not counted (exit 2): an invalid run; the reasons are listed above")
     failed = planted(lambda m: m["containers"].update(kafka=container(500 * MiB, 400 * MiB, 640 * MiB, oom=1)))
-    assert mc.conclusion(failed) == "failed measurement (exit 1): 1 miss(es), listed above"
+    assert mc.conclusion(failed) == (
+        "failed measurement (exit 1): 1 container-limit miss(es) and 0 test-run miss(es), listed above.")
     passed = mc.conclusion(mc.judge(clean()))
     assert passed.startswith("passed (exit 0): the container limits held") and passed.endswith(
         "This validates the container limits only: the native-process targets are not approved budgets, and this "
         "run does not validate them.")
+
+
+def test_under_host_pressure_the_conclusion_asks_for_a_diagnosis_and_flags_the_native_figures():
+    def pressed(m):
+        m["host"]["idle"]["available_bytes"] = int(2.7 * GiB)
+    timed_out = planted(lambda m: (pressed(m), m["pytest"]["acceptance"].update(exit_code=None)))
+    assert mc.conclusion(timed_out) == (
+        "failed measurement (exit 1): 0 container-limit miss(es) and 1 test-run miss(es), listed above. The host was "
+        "under memory pressure: diagnose test failures and timeouts before attributing them to a container limit.")
+    assert all(limit["held"] for limit in timed_out["container_limits"])
+    assert mc.conclusion(planted(pressed)).endswith(
+        "Its native-process figures were measured under host memory pressure and are not representative.")
 
 
 def test_the_report_keeps_the_container_limits_apart_from_the_supplementary_targets(capsys):
@@ -995,7 +1029,24 @@ def test_the_report_keeps_the_container_limits_apart_from_the_supplementary_targ
                  "  process worker: 64 MiB against 128 MiB: within (4 process(es) sampled)",
                  "    calendar-year: spark_pipeline 2.00 GiB",
                  "4.50 GiB available idle, 2.00 GiB at the lowest; compressor +10 MiB, swap +0 MiB",
+                 "  host memory pressure: none (the host conditions held)",
                  "\npassed (exit 0): the container limits held",
                  "This validates the container limits only: the native-process targets are not approved budgets, "
                  "and this run does not validate them.\n"):
         assert text in out, (text, out)
+
+
+def test_a_pressured_report_flags_the_native_section_and_lists_the_misses_by_kind(capsys):
+    measured = clean()
+    measured["host"].update(compressor_growth_bytes=300 * MiB)
+    measured["pytest"]["acceptance"].update(exit_code=1, failures=1)
+    mc.report({"measured": measured, "verdict": mc.judge(measured)})
+    out = capsys.readouterr().out
+    for text in ("Container limits, the existing budgets (judged):",
+                 "Native-process targets (proposed, not approved budgets; reported only, and not validated by this "
+                 "run; measured under host memory pressure, not representative):",
+                 "  host memory pressure: the compressor grew by 300 MiB, more than 256 MiB",
+                 "test-run miss: pytest acceptance: exit 1, 1 failed, 0 errors",
+                 "diagnose test failures and timeouts before attributing them to a container limit."):
+        assert text in out, (text, out)
+    assert "container-limit miss:" not in out
