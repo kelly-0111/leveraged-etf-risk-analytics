@@ -7,37 +7,52 @@ throughout. It changes no budget: the containers are judged against their existi
     uv run --group jobs python tests/memory_check.py --preflight     # the machine checks only
     uv run --group jobs python tests/memory_check.py --out data/outputs-memory/<UTC stamp>
 
-Conditions; a run without them does not count (exit 2):
+Outcomes, in the exit status and in record.json:
+- 0, passed: the run counts, the container limits held, and both pytest runs passed with
+  nothing left behind. This validates the container limits only.
+- 1, failed measurement: the run counts, and a container limit was not held (memory.peak above
+  its limit in a lifetime, an oom or oom_kill event, a container OOM-killed or stopped), a
+  pytest run failed, or processes were left behind.
+- 2, not counted: a required condition was not met, before the start (nothing is started), at
+  the idle gate (the stack is removed), or during the run (an invalid run).
+- 3, tool error: the check stopped on an error, or its cleanup did not finish.
+- 130: interrupted; the cleanup still runs.
+
+Conditions:
 - before anything starts: a clean worktree, so the record names one commit; no running
   container outside this project, and none of this project's own, which may be another
   session's (it never stops, pauses or removes a container it did not start); ports 3307,
   9094 and 6380 free; the snapshot that the acceptance cases read;
 - with the stack up and idle for SETTLE_S seconds: CONDITIONS["idle_available"] available;
 - over the run: the compressor and swap each grew by at most their CONDITIONS limit; both
-  pytest runs reported results, with no acceptance case skipped; both containers were read,
-  with their budgets as their limits; every step was launched; a worker and a reconciler
-  were sampled.
+  pytest runs reported results, with no acceptance case skipped; both containers were
+  created by this run and read throughout, with their budgets as their limits and no counter
+  going down within a lifetime; Docker's record of each container was read after each run;
+  every step was launched; a worker and a reconciler were sampled.
 
 What is measured while pytest runs the job suites and then the acceptance cases:
 - every 0.5 s: the host's available memory, and the RSS of every
   `python -m etf_risk.jobs worker|reconciler|submit` process (a submit lasts about a
   second, so its figure is a lower bound);
-- every 5 s: the compressor's and swap's size, and each container's cgroup memory.peak,
-  memory.current, memory.stat (anon, file and kernel memory) and memory.events. A restart
-  can reset these counters, as memory.peak was seen to do in M2, so the readings are split
-  into segments wherever a counter goes down. Each segment has its total peak, its largest
-  sampled anon, file and kernel memory, and the change in every memory.events counter (max,
-  oom and oom_kill among them). The readings stop at most 5 s before each restart;
+- every 5 s, and once more after the last run: the compressor's and swap's size, and each
+  container's cgroup: its identity (the inode of /sys/fs/cgroup), memory.peak,
+  memory.current, memory.stat (anon, file and kernel memory) and memory.events;
+- after each run and before the cleanup: Docker's record of each container (created,
+  started, status, exit code, OOM-killed, restart count). An OOM kill that stops a container
+  leaves no cgroup to read, and Docker's record still shows it;
 - each step tree's peak summed RSS, from its launcher's record (sampled every 0.5 s).
 
-A run that counts fails (exit 1) if a pytest run fails or leaves processes behind, if a
-container's total memory.peak is above its limit (its budget) in any segment, or if a
-container has an oom or oom_kill event during the run; otherwise it passes (exit 0). A pass
-validates the container limits only. PROPOSED holds two kinds of supplementary threshold,
-reported apart from the container limits and from each other: the containers' anon memory and
-limit hits, and the native-process targets (step trees, worker, reconciler, submit). The
-native-process targets are not approved budgets; a pass does not validate them, and no
-supplementary threshold changes the exit status.
+A container's readings are split into lifetimes where its cgroup's identity changes: a restart
+gives it a new cgroup, as memory.peak's reset showed in M2. Every lifetime is a verified fresh
+cgroup, the first because Docker created the container after this run started it, each later
+one because its identity is new; so its counters count from zero, as memory.peak does, with
+startup and idle included. A lifetime's readings stop at most 5 s before its container's
+restart.
+
+The supplementary thresholds in PROPOSED are reported apart from the container limits and from
+each other: the containers' anon memory and limit hits, and the native-process targets (step
+trees, worker, reconciler, submit). The native-process targets are not approved budgets; a
+pass does not validate them, and no supplementary threshold changes the outcome.
 
 Why the compressor and swap must stay flat: M2's step trees peaked lower than the stride
 experiment's (1.19-1.36 against 2.62-2.73 GiB at stride 21). One hypothesis, not
@@ -45,11 +60,16 @@ established, is that the host was short of memory, so that macOS compressed or s
 which then leave RSS. A run during which neither grew is free of that effect, whatever caused
 the difference.
 
---out receives record.json (conditions, budgets, proposals, tools, code state, measurements,
-verdicts), samples.jsonl, each pytest run's log and JUnit file, and the launchers' and
-attempts' records. pytest's temporary folders, with the runs' outputs, are removed unless
---keep. Whatever happens, the processes the runs left behind are ended and the stack is
-removed (down -v); a cleanup that does not finish exits 2.
+Whatever happens, the processes the runs left behind are ended, the containers are unpaused,
+and the stack is removed (down -v). A process belongs to the check if its command line names
+the check's temporary folder, if its environment carries RUN_ENV with that folder, or if it
+carries the job-store marker of a store whose attempt folders are in it; no other process is
+touched. A process still there SETTLE_LEFTOVERS_S after a run counts as left behind.
+
+--out receives record.json (conditions, budgets, proposals, tools, code state, Docker's
+records, measurements, verdict and outcome), samples.jsonl, each pytest run's log and JUnit
+file, and the launchers' and attempts' records. pytest's temporary folders, with the runs'
+outputs, are removed unless --keep.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
@@ -70,7 +90,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -85,7 +105,7 @@ from etf_risk.provenance import code_state  # noqa: E402
 MiB, GiB = 2**20, 2**30
 # The containers' budgets (spec §11), which are also their limits in docker/compose.yaml.
 BUDGETS = {"mysql": 512 * MiB, "kafka": 640 * MiB}
-# Proposed on 2026-10-24, for the author's approval: the measurement's conditions,
+# Approved on 2026-10-24 for the initial isolated check: the measurement's conditions,
 CONDITIONS = {
     # one 2.7 GiB step tree (the host lock runs one at a time), 0.3 for the job processes and
     # pytest, 0.5 for both containers growing to their budgets, and 0.5 to spare
@@ -98,7 +118,7 @@ CONDITIONS = {
 PROPOSED = {
     "mysql anon": 410 * MiB,          # 80% of its budget; 264 and 313 MiB after one and two runs (spec §11)
     "kafka anon": 512 * MiB,          # 80% of its budget, with a 256 MiB heap
-    "mysql limit hits": 0,            # memory.events max during the run
+    "mysql limit hits": 0,            # memory.events max
     "kafka limit hits": 0,
     "step windows": 512 * MiB,        # 0.12 GiB in M2
     "step spark_pipeline": 3 * GiB,   # native stride 21 in the stride experiment: 2.62-2.73 GiB
@@ -110,17 +130,22 @@ PROPOSED = {
 NATIVE = ("step ", "process ")   # the prefixes of the native-process targets in PROPOSED
 PORTS = (3307, 9094, 6380)
 SETTLE_S = 30
+SETTLE_LEFTOVERS_S = 15.0    # above a launcher's 7 s kill grace after its worker is gone
+FRESH_TOLERANCE_S = 5.0      # between this machine's clock and the Docker VM's
 SNAPSHOT = REPO / "data" / "processed" / "full-2026-10-12"   # what tests/test_jobs_live_pipeline.py reads
 RUNS = (("suites", sorted(p.relative_to(REPO).as_posix() for p in (REPO / "tests").glob("test_jobs_*.py")), {}),
         ("acceptance", ["tests/test_jobs_live_pipeline.py"], {"ETF_RISK_LIVE_PIPELINE": "1"}))
 TIMEOUTS = {"suites": 1800, "acceptance": 3600}
+RUN_ENV = "ETF_RISK_MEMORY_CHECK_RUN"   # set to the temporary folder in the runs' environment
 ROLES = ("worker", "reconciler", "submit")
 VM_PROCESS = "com.apple.Virtualization.VirtualMachine"   # Docker Desktop's VM on Apple silicon
 EVENTS = ("low", "high", "max", "oom", "oom_kill", "oom_group_kill")
 KERNEL_PARTS = ("kernel_stack", "pagetables", "sec_pagetables", "percpu", "vmalloc", "slab")
-CGROUP_SCRIPT = ('cd /sys/fs/cgroup && printf "peak %s\\nlimit %s\\ncurrent %s\\n" "$(cat memory.peak)" '
-                 '"$(cat memory.max)" "$(cat memory.current)" && while read k v; do echo "stat_$k $v"; done '
-                 '< memory.stat && while read k v; do echo "events_$k $v"; done < memory.events')
+CGROUP_SCRIPT = ('cd /sys/fs/cgroup && set -- $(ls -di .) && echo "cgroup $1" && '
+                 'printf "peak %s\\nlimit %s\\ncurrent %s\\n" "$(cat memory.peak)" "$(cat memory.max)" '
+                 '"$(cat memory.current)" && while read k v; do echo "stat_$k $v"; done < memory.stat && '
+                 'while read k v; do echo "events_$k $v"; done < memory.events')
+EXIT = {"passed": 0, "failed": 1, "not counted": 2, "tool error": 3, "interrupted": 130}
 
 
 def now() -> str:
@@ -137,12 +162,12 @@ def largest(values: Iterable[int | None]) -> int | None:
     return max((v for v in values if v is not None), default=None)
 
 
-# Containers
+# Containers: cgroups and Docker's records
 
 def parse_cgroup(text: str) -> dict | None:
-    """CGROUP_SCRIPT's output as one reading: the total peak, limit (None for "max") and current
-    usage; anon, file and kernel memory (the sum of its parts on kernels without a kernel line);
-    and the memory.events counters. None without a peak or an anon figure."""
+    """CGROUP_SCRIPT's output as one reading: the cgroup's identity; the total peak, limit (None
+    for "max") and current usage; anon, file and kernel memory (the sum of its parts on kernels
+    without a kernel line); and the memory.events counters. None without a peak or an anon figure."""
     raw: dict[str, int | None] = {}
     for line in text.splitlines():
         key, _, value = line.strip().partition(" ")
@@ -154,8 +179,8 @@ def parse_cgroup(text: str) -> dict | None:
     if not isinstance(raw.get("peak"), int) or not isinstance(raw.get("stat_anon"), int):
         return None
     has_kernel = isinstance(raw.get("stat_kernel"), int)
-    return {"peak": raw["peak"], "limit": raw.get("limit"), "current": raw.get("current"),
-            "anon": raw["stat_anon"], "file": raw.get("stat_file"),
+    return {"cgroup": raw.get("cgroup"), "peak": raw["peak"], "limit": raw.get("limit"),
+            "current": raw.get("current"), "anon": raw["stat_anon"], "file": raw.get("stat_file"),
             "kernel": raw["stat_kernel"] if has_kernel else sum(raw.get(f"stat_{p}") or 0 for p in KERNEL_PARTS),
             "kernel_from": "kernel" if has_kernel else "parts",
             "events": {name: raw.get(f"events_{name}") or 0 for name in EVENTS}}
@@ -163,7 +188,7 @@ def parse_cgroup(text: str) -> dict | None:
 
 def read_cgroup(service: str, run: Callable = subprocess.run) -> dict | None:
     """One reading of the service container's cgroup; None while it cannot be read (paused,
-    restarting, or docker failing)."""
+    stopped, restarting, or docker failing)."""
     try:
         out = run(["docker", "compose", "-f", str(services.COMPOSE_FILE), "exec", "-T", service, "sh", "-c",
                    CGROUP_SCRIPT], capture_output=True, text=True, timeout=10)
@@ -172,34 +197,78 @@ def read_cgroup(service: str, run: Callable = subprocess.run) -> dict | None:
     return parse_cgroup(out.stdout) if out.returncode == 0 else None
 
 
-def segments(readings: Iterable[dict | None]) -> list[list[dict]]:
-    """The readings of each life of a container, in time order. A restart can reset the
-    counters, so a new segment starts wherever memory.peak or a memory.events counter goes
-    down. A missing reading (paused, restarting) starts none."""
+def docker_time(text: str | None) -> datetime | None:
+    """Docker's RFC 3339 time, to the microsecond (Docker gives nanoseconds)."""
+    m = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", text or "")
+    if not m:
+        return None
+    offset = "+00:00" if m.group(3) == "Z" else m.group(3)
+    return datetime.fromisoformat(f"{m.group(1)}.{(m.group(2) or '0')[:6].ljust(6, '0')}{offset}")
+
+
+def docker_state(service: str, run: Callable = subprocess.run) -> dict | None:
+    """Docker's record of the service's container: created, started, status, exit code, OOM-killed
+    and restart count. None without exactly one such container, or when docker fails."""
+    try:
+        ids = run(["docker", "compose", "-f", str(services.COMPOSE_FILE), "ps", "-aq", service],
+                  capture_output=True, text=True, timeout=30)
+        if ids.returncode != 0 or len(ids.stdout.split()) != 1:
+            return None
+        out = run(["docker", "inspect", "--format", "{{.Created}} {{.RestartCount}} {{json .State}}",
+                   ids.stdout.split()[0]], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        created, restarts, state = out.stdout.strip().split(" ", 2)
+        state = json.loads(state)
+        return {"id": ids.stdout.split()[0][:12], "created": created, "restart_count": int(restarts),
+                "status": state["Status"], "started": state.get("StartedAt"), "exit_code": state.get("ExitCode"),
+                "oom_killed": bool(state.get("OOMKilled"))}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def created_by_this_run(state: dict | None, started_utc: str) -> bool:
+    """Docker created the container after this run began starting the stack."""
+    created = docker_time(state["created"]) if state else None
+    return created is not None and created >= datetime.fromisoformat(started_utc) - timedelta(seconds=FRESH_TOLERANCE_S)
+
+
+def lifetimes(readings: Iterable[dict | None]) -> list[list[dict]]:
+    """The readings of each lifetime of a container, in time order: a new lifetime starts where the
+    cgroup's identity changes. A missing reading (paused, stopped, restarting) starts none."""
     lives: list[list[dict]] = []
     for r in readings:
         if r is None:
             continue
-        last = lives[-1][-1] if lives else None
-        if last is None or r["peak"] < last["peak"] or any(r["events"][k] < last["events"][k] for k in EVENTS):
+        if not lives or r.get("cgroup") != lives[-1][-1].get("cgroup"):
             lives.append([])
         lives[-1].append(r)
     return lives
 
 
-def summarize_container(readings: list[dict | None], budget: int) -> dict:
-    """Per segment, and over the run. The first segment's events count from its first reading,
-    taken as the run began; a later segment began with a restart during the run, and its
-    counters count from zero."""
+def summarize_container(readings: list[dict | None], budget: int, fresh: bool) -> dict:
+    """Per lifetime, and over the run. Each lifetime is one cgroup, its counters counted from zero
+    like memory.peak, so startup and idle count: verified when the container was created by this
+    run (fresh), every reading names its cgroup, and no counter goes down within a lifetime."""
+    problems = [] if fresh else ["its container is not verified as created by this run"]
+    lives = lifetimes(readings)
+    if any(r.get("cgroup") is None for life in lives for r in life):
+        problems.append("a reading does not name its cgroup")
     parts = []
-    for i, life in enumerate(segments(readings)):
+    for n, life in enumerate(lives, 1):
+        if any(b["peak"] < a["peak"] or any(b["events"][k] < a["events"][k] for k in EVENTS)
+               for a, b in zip(life, life[1:])):
+            problems.append(f"a counter went down within lifetime {n}")
         first, last = life[0], life[-1]
-        base = first["events"] if i == 0 else dict.fromkeys(EVENTS, 0)
-        parts.append({"readings": len(life), "from_utc": first.get("at_utc"), "to_utc": last.get("at_utc"),
-                      "limit_bytes": last["limit"], "peak_bytes": max(r["peak"] for r in life),
+        parts.append({"cgroup": first.get("cgroup"), "readings": len(life), "from_utc": first.get("at_utc"),
+                      "to_utc": last.get("at_utc"), "limit_bytes": last["limit"],
+                      "peak_bytes": max(r["peak"] for r in life),
                       **{f"{kind}_bytes": largest(r[kind] for r in life) for kind in ("anon", "file", "kernel")},
-                      "events": {k: last["events"][k] - base[k] for k in EVENTS}})
-    return {"budget_bytes": budget, "segments": parts,
+                      "events_at_first_reading": dict(first["events"]), "events": dict(last["events"])})
+    return {"budget_bytes": budget, "verified": not problems, "problems": problems, "lifetimes": parts,
             **{key: largest(s[key] for s in parts) for key in ("peak_bytes", "anon_bytes", "file_bytes", "kernel_bytes")},
             "events": {k: sum(s["events"][k] for s in parts) for k in EVENTS}}
 
@@ -419,18 +488,28 @@ def run_pytest(name: str, files: list[str], env: dict, out: Path, temp: Path, ti
 
 
 def leftovers(temp: Path) -> list[psutil.Process]:
-    """The processes that runs under temp left behind: those whose command line names temp
-    (workers, reconcilers, launchers and steps), and those carrying the marker of a store whose
-    outputs are under temp (the steps' JVMs and Python workers). No other process is touched."""
-    me, folders = os.getpid(), {str(temp), str(temp.resolve())}
-    stores = {path.name for path in temp.glob("*/*/out/*") if path.is_dir()}
+    """The processes that the runs under temp left behind, among this user's: those whose command
+    line names temp (workers, reconcilers, launchers, steps, reference runs), those whose
+    environment carries RUN_ENV with temp (the reference runs' JVMs and PySpark daemons), and those
+    carrying the marker of a store whose attempt folders are under temp, at any depth (the steps'
+    JVMs and Python workers). No other process is touched."""
+    me, uid, folders = os.getpid(), os.getuid(), {str(temp), str(temp.resolve())}
+    stores = {path.parent.name for path in temp.glob("**/job-*-attempt-*") if path.is_dir()}
     found: dict[int, psutil.Process] = {}
-    for proc in psutil.process_iter(["cmdline"]):
-        if proc.pid != me and any(folder in arg for arg in proc.info["cmdline"] or () for folder in folders):
+    for proc in psutil.process_iter(["cmdline", "uids"]):
+        uids = proc.info["uids"]
+        if proc.pid == me or uids is None or uids.real != uid:
+            continue
+        if any(folder in arg for arg in proc.info["cmdline"] or () for folder in folders):
             found[proc.pid] = proc
-    for value, procs in processes.marked_processes().items():
-        if processes.parse_marker(value)[0] in stores:
-            found.update((p.pid, p) for p in procs)
+            continue
+        try:
+            env = proc.environ()
+        except (psutil.Error, OSError):
+            continue
+        marker = processes.parse_marker(env.get(processes.MARKER_ENV))
+        if env.get(RUN_ENV) in folders or (marker is not None and marker[0] in stores):
+            found[proc.pid] = proc
     return list(found.values())
 
 
@@ -510,8 +589,11 @@ class System:
     compose: Callable[..., None]
     ready: Callable[[dict], None]
     sleep: Callable[[float], None]
+    monotonic: Callable[[], float]
+    now: Callable[[], str]
     host_memory: Callable[[], dict]
     available: Callable[[], int]
+    docker_state: Callable[[str], dict | None]
     sampler: Callable[[Path], Sampler]
     run_pytest: Callable[..., dict]
     leftovers: Callable[[Path], list]
@@ -527,11 +609,11 @@ class System:
 
 
 def this_machine() -> System:
-    return System(compose=docker_compose, ready=wait_ready, sleep=time.sleep, host_memory=host_memory,
-                  available=available_memory, sampler=Sampler, run_pytest=run_pytest, leftovers=leftovers, end=end,
-                  project_containers=project_containers, other_containers=services.other_containers,
-                  git_dirty=git_dirty, port_in_use=port_in_use, snapshot_exists=SNAPSHOT.is_dir,
-                  keep_awake=keep_awake, tools=tools, code_state=code_state)
+    return System(compose=docker_compose, ready=wait_ready, sleep=time.sleep, monotonic=time.monotonic, now=now,
+                  host_memory=host_memory, available=available_memory, docker_state=docker_state, sampler=Sampler,
+                  run_pytest=run_pytest, leftovers=leftovers, end=end, project_containers=project_containers,
+                  other_containers=services.other_containers, git_dirty=git_dirty, port_in_use=port_in_use,
+                  snapshot_exists=SNAPSHOT.is_dir, keep_awake=keep_awake, tools=tools, code_state=code_state)
 
 
 def preflight(system: System) -> list[str]:
@@ -556,16 +638,17 @@ def preflight(system: System) -> list[str]:
     return problems
 
 
-def measure(sampler: Sampler, idle: dict, temp: Path, runs: dict, left: dict) -> dict:
+def measure(sampler: Sampler, idle: dict, temp: Path, runs: dict, left: dict, docker: dict, started_utc: str) -> dict:
     grew = {}
     for key in ("compressor", "swap"):
         values = [line[f"{key}_bytes"] for line in sampler.host if f"{key}_bytes" in line]
         grew[key] = max(values, default=idle[f"{key}_bytes"]) - idle[f"{key}_bytes"]
-    return {"pytest": runs, "leftovers": left,
+    return {"pytest": runs, "leftovers": left, "docker": docker,
             "host": {"idle": idle, "available_min_bytes": sampler.available_min,
                      "compressor_growth_bytes": grew["compressor"], "swap_growth_bytes": grew["swap"],
                      "vm_rss_bytes": sampler.rss["vm"]},
-            "containers": {service: summarize_container(sampler.readings[service], BUDGETS[service])
+            "containers": {service: summarize_container(sampler.readings[service], BUDGETS[service],
+                                                        created_by_this_run(docker["started"].get(service), started_utc))
                            for service in services.SERVICES},
             "steps": launcher_peaks(temp / "acceptance"), "jobs": job_peaks(temp / "acceptance"),
             "processes": {name: {"rss_bytes": sampler.rss[name], "processes": len(sampler.pids[name])}
@@ -590,9 +673,10 @@ def judge(measured: dict) -> dict:
     if acceptance["skipped"]:
         invalid.append(f"acceptance cases: {acceptance['skipped']} of {acceptance['tests']} skipped")
     for service, c in measured["containers"].items():
-        if not c["segments"]:
+        if not c["lifetimes"]:
             invalid.append(f"{service}: no cgroup reading")
-        elif any(s["limit_bytes"] != c["budget_bytes"] for s in c["segments"]):
+        invalid += [f"{service}: {problem}" for problem in c["problems"]]
+        if any(s["limit_bytes"] != c["budget_bytes"] for s in c["lifetimes"]):
             invalid.append(f"{service}: its limit is not its {size(c['budget_bytes'])} budget")
     for key in PROPOSED:
         if key.startswith("step ") and key.removeprefix("step ") not in measured["steps"]:
@@ -606,18 +690,31 @@ def judge(measured: dict) -> dict:
             misses.append(f"pytest {name}: exit {run['exit_code']}, {run['failures']} failed, {run['errors']} errors")
         if measured["leftovers"].get(name):
             misses.append(f"pytest {name} left {measured['leftovers'][name]} process(es) behind")
+    stopped: dict[str, list[str]] = {service: [] for service in measured["containers"]}
+    for label, states in measured["docker"].items():
+        if label == "started":
+            continue
+        for service, state in states.items():
+            if state is None:
+                invalid.append(f"{service}: Docker's record {label} could not be read")
+            elif state["oom_killed"]:
+                stopped[service].append(f"OOM-killed, exit code {state['exit_code']}, by Docker's record {label}")
+            elif state["status"] != "running":
+                stopped[service].append(f"{state['status']}, exit code {state['exit_code']}, by Docker's record {label}")
     limits = []
     for service, c in measured["containers"].items():
-        over = [(i, s["peak_bytes"]) for i, s in enumerate(c["segments"], 1) if s["peak_bytes"] > c["budget_bytes"]]
-        for i, peak in over:
-            misses.append(f"{service} segment {i}: memory.peak {size(peak)}, above its {size(c['budget_bytes'])} limit")
+        over = [(n, s["peak_bytes"]) for n, s in enumerate(c["lifetimes"], 1) if s["peak_bytes"] > c["budget_bytes"]]
+        for n, peak in over:
+            misses.append(f"{service} lifetime {n}: memory.peak {size(peak)}, above its {size(c['budget_bytes'])} limit")
         events = {event: c["events"][event] for event in ("oom", "oom_kill")}
         for event, count in events.items():
             if count:
-                misses.append(f"{service}: {count} {event} event(s) during the run")
+                misses.append(f"{service}: {count} {event} event(s)")
+        misses += [f"{service}: {what}" for what in stopped[service]]
         limits.append({"container": service, "limit_bytes": c["budget_bytes"], "peak_bytes": c["peak_bytes"],
-                       "segment_peaks_bytes": [s["peak_bytes"] for s in c["segments"]], **events,
-                       "held": bool(c["segments"]) and not over and not any(events.values())})
+                       "lifetime_peaks_bytes": [s["peak_bytes"] for s in c["lifetimes"]], **events,
+                       "stopped": stopped[service],
+                       "held": bool(c["lifetimes"]) and not over and not any(events.values()) and not stopped[service]})
 
     def against(criterion: str, value: int | None) -> dict:
         threshold = PROPOSED.get(criterion)
@@ -629,67 +726,112 @@ def judge(measured: dict) -> dict:
     native = [against(f"step {step}", peak) for step, peak in sorted(measured["steps"].items())]
     native += [against(f"process {name}", measured["processes"][name]["rss_bytes"]
                        if measured["processes"][name]["processes"] else None) for name in ROLES]
-    return {"counts": not invalid, "passed": not invalid and not misses, "invalid": invalid, "misses": misses,
-            "container_limits": limits, "supplementary_container": container_figures,
-            "native_targets": {"approved": False, "results": native}}
+    passed = not invalid and not misses
+    return {"counts": not invalid, "passed": passed, "validates": "container limits only" if passed else "nothing",
+            "invalid": invalid, "misses": misses, "container_limits": limits,
+            "supplementary_container": container_figures, "native_targets": {"approved": False, "results": native}}
 
 
 def not_counted(reason: str) -> dict:
-    return {"counts": False, "passed": False, "invalid": [reason], "misses": [], "container_limits": [],
-            "supplementary_container": [], "native_targets": {"approved": False, "results": []}}
+    return {"counts": False, "passed": False, "validates": "nothing", "invalid": [reason], "misses": [],
+            "container_limits": [], "supplementary_container": [], "native_targets": {"approved": False, "results": []}}
+
+
+def outcome(record: dict) -> str:
+    if record.get("interrupted"):
+        return "interrupted"
+    if record.get("error") or record["cleanup_errors"] or record.get("project_containers_after") != 0:
+        return "tool error"
+    verdict = record.get("verdict")
+    if verdict is None:
+        return "tool error"
+    return "passed" if verdict["passed"] else "failed" if verdict["counts"] else "not counted"
 
 
 def end_leftovers(system: System, temp: Path, record: dict, after: str) -> int:
-    """End what the runs left behind, record it under ended[after], and say how many there were."""
+    """End what the runs left behind and record it under leftovers[after]. Processes that are
+    ending on their own (a launcher in its kill grace, a PySpark daemon whose JVM is gone) get
+    SETTLE_LEFTOVERS_S first; only those still there are ended and counted."""
     found = system.leftovers(temp)
+    seen, deadline = len(found), system.monotonic() + SETTLE_LEFTOVERS_S
+    while found and system.monotonic() < deadline:
+        system.sleep(0.5)
+        found = system.leftovers(temp)
+    entry: dict = {"seen": seen, "remaining": len(found)}
     if found:
-        record.setdefault("ended", {})[after] = system.end(found, rescan=lambda: system.leftovers(temp))
+        entry["ended"] = system.end(found, rescan=lambda: system.leftovers(temp))
+    record.setdefault("leftovers", {})[after] = entry
     return len(found)
 
 
 def run_check(out: Path, temp: Path, keep: bool, system: System) -> int:
-    record: dict = {"format": 1, "started_at_utc": now(), "code": system.code_state(), "tools": system.tools(),
+    """The check, from starting the stack to removing it. Its exit status is EXIT[outcome]; an
+    error is recorded and raised once the cleanup has run, and main turns it into exit 3."""
+    record: dict = {"format": 2, "started_at_utc": system.now(), "code": system.code_state(), "tools": system.tools(),
                     "budgets": BUDGETS, "conditions": CONDITIONS,
                     "supplementary": {"container": {k: v for k, v in PROPOSED.items() if not k.startswith(NATIVE)},
                                       "native": {k: v for k, v in PROPOSED.items() if k.startswith(NATIVE)},
                                       "native_approved": False},
                     "settle_s": SETTLE_S, "pytest_temp": str(temp), "cleanup_errors": []}
     env = {**os.environ, "ETF_RISK_MYSQL_URL": services.DEFAULT_MYSQL_URL,
-           "ETF_RISK_KAFKA_BOOTSTRAP": services.DEFAULT_KAFKA_BOOTSTRAP}
+           "ETF_RISK_KAFKA_BOOTSTRAP": services.DEFAULT_KAFKA_BOOTSTRAP, RUN_ENV: str(temp)}
     errors = record["cleanup_errors"]
     system.keep_awake()
+
+    def docker_states() -> dict:
+        return {service: system.docker_state(service) for service in services.SERVICES}
+
     try:
         # the preflight found none of this project's containers, so down -v follows whatever happens
+        record["stack_started_at_utc"] = started = system.now()
         system.compose("up", "-d", "--wait", *services.SERVICES)
         system.ready(env)
+        record["docker"] = {"started": docker_states()}
         system.sleep(SETTLE_S)
         record["idle"] = idle = system.host_memory()
         if idle["available_bytes"] < CONDITIONS["idle_available"]:
             record["verdict"] = not_counted(f"{size(idle['available_bytes'])} available with the stack idle, below "
                                             f"{CONDITIONS['idle_available'] / GiB:.1f} GiB")
-            print(f"not ready: {record['verdict']['invalid'][0]}")
-            return 2
-        sampler, runs, left = system.sampler(out / "samples.jsonl"), {}, {}
-        sampler.start()
-        try:
-            for name, files, extra in RUNS:
-                runs[name] = system.run_pytest(name, files, {**env, **extra}, out, temp, TIMEOUTS[name])
-                print(f"{name}: {runs[name]}")
-                left[name] = end_leftovers(system, temp, record, name)
-        finally:
-            sampler.stop()
-        record["measured"] = measure(sampler, idle, temp, runs, left)
-        record["verdict"] = judge(record["measured"])
+            print(f"not counted (exit 2): {record['verdict']['invalid'][0]}")
+        else:
+            sampler, runs, left = system.sampler(out / "samples.jsonl"), {}, {}
+            sampler.start()
+            try:
+                for name, files, extra in RUNS:
+                    runs[name] = system.run_pytest(name, files, {**env, **extra}, out, temp, TIMEOUTS[name])
+                    print(f"{name}: {runs[name]}")
+                    record["docker"][f"after {name}"] = docker_states()
+                    left[name] = end_leftovers(system, temp, record, name)
+            finally:
+                sampler.stop()
+                sampler.tick(sampler.sample_containers)   # one more reading, after the last run
+            record["measured"] = measure(sampler, idle, temp, runs, left, record["docker"], started)
+            record["verdict"] = judge(record["measured"])
+    except KeyboardInterrupt:
+        record["interrupted"] = True
+        raise
+    except Exception as error:
+        record["error"] = f"{type(error).__name__}: {error}"
+        raise
     finally:
         try:
             end_leftovers(system, temp, record, "cleanup")
         except Exception as error:
             errors.append(f"ending leftover processes: {error}")
         try:
+            states = docker_states()
+        except Exception as error:
+            states = f"not read: {error}"
+        record.setdefault("docker", {})["before cleanup"] = states
+        try:
+            system.compose("unpause", *services.SERVICES)   # a pause case cut short leaves one paused
+        except Exception as error:
+            record["unpause"] = f"not needed or not possible: {error}"
+        try:
             system.compose("down", "-v")
         except Exception as error:
             errors.append(f"docker compose down -v: {error}")
-        record["ended_at_utc"] = now()
+        record["ended_at_utc"] = system.now()
         try:
             record["project_containers_after"] = system.project_containers()
         except Exception as error:
@@ -701,14 +843,17 @@ def run_check(out: Path, temp: Path, keep: bool, system: System) -> int:
             errors.append(f"copying the records: {error}")
         if not keep:
             shutil.rmtree(temp, ignore_errors=True)
+        record["outcome"] = outcome(record)
+        record["exit_code"] = EXIT[record["outcome"]]
         (out / "record.json").write_text(json.dumps(record, indent=2) + "\n")
         for error in errors:
             print(f"cleanup: {error}", file=sys.stderr)
-    report(record)
-    if errors or record["project_containers_after"]:
-        print("does not count: the cleanup did not finish; see `docker compose -f docker/compose.yaml ps -a`")
-        return 2
-    return 0 if record["verdict"]["passed"] else 1 if record["verdict"]["counts"] else 2
+    if "measured" in record:
+        report(record)
+    if record["outcome"] == "tool error":
+        print("tool error (exit 3): the cleanup did not finish; see record.json and "
+              "`docker compose -f docker/compose.yaml ps -a`")
+    return record["exit_code"]
 
 
 def show(criterion: str, value: int | None) -> str:
@@ -723,12 +868,12 @@ def state(result: dict) -> str:
 
 def conclusion(verdict: dict) -> str:
     if not verdict["counts"]:
-        return "does not count"
+        return "not counted (exit 2): an invalid run; the reasons are listed above"
     if not verdict["passed"]:
-        return f"failed: {len(verdict['misses'])} miss(es), listed above"
-    return ("passed: the container limits held, with no oom or oom_kill event, and both pytest runs passed with "
-            "nothing left behind. This validates the container limits only: the native-process targets are not "
-            "approved budgets, and this run does not validate them.")
+        return f"failed measurement (exit 1): {len(verdict['misses'])} miss(es), listed above"
+    return ("passed (exit 0): the container limits held, with no oom or oom_kill event and no container stopped, "
+            "and both pytest runs passed with nothing left behind. This validates the container limits only: the "
+            "native-process targets are not approved budgets, and this run does not validate them.")
 
 
 def report(record: dict) -> None:
@@ -737,13 +882,13 @@ def report(record: dict) -> None:
     for limit in verdict["container_limits"]:
         c = m["containers"][limit["container"]]
         print(f"  {limit['container']}: limit {size(limit['limit_bytes'])}; memory.peak {size(limit['peak_bytes'])} "
-              f"at most, over {len(c['segments'])} segment(s); oom {limit['oom']}, oom_kill {limit['oom_kill']}: "
-              + ("held" if limit["held"] else "not held"))
-        for i, s in enumerate(c["segments"], 1):
-            print(f"    segment {i} ({s['readings']} readings from {s['from_utc']}): memory.peak "
+              f"at most, over {len(c['lifetimes'])} lifetime(s); oom {limit['oom']}, oom_kill {limit['oom_kill']}"
+              + "".join(f"; {what}" for what in limit["stopped"]) + (": held" if limit["held"] else ": not held"))
+        for n, s in enumerate(c["lifetimes"], 1):
+            print(f"    lifetime {n} (cgroup {s['cgroup']}, {s['readings']} readings from {s['from_utc']}): memory.peak "
                   f"{size(s['peak_bytes'])} of {size(s['limit_bytes'])}; anon {size(s['anon_bytes'])}, file "
-                  f"{size(s['file_bytes'])}, kernel {size(s['kernel_bytes'])}; events "
-                  + ", ".join(f"{name} +{count}" for name, count in s["events"].items()))
+                  f"{size(s['file_bytes'])}, kernel {size(s['kernel_bytes'])}; events since it began "
+                  + ", ".join(f"{name} {count}" for name, count in s["events"].items()))
     print("Supplementary container figures (proposed thresholds, reported only):")
     for r in verdict["supplementary_container"]:
         print(f"  {r['criterion']}: {show(r['criterion'], r['value'])} against "
@@ -782,11 +927,18 @@ def main(argv: list[str] | None = None, system: System | None = None) -> int:
           f"{CONDITIONS['idle_available'] / GiB:.1f} GiB")
     for problem in problems:
         print(f"not ready: {problem}")
-    if args.preflight or problems:
-        return 2 if problems else 0
+    if problems:
+        print("not counted (exit 2): not started")
+        return EXIT["not counted"]
+    if args.preflight:
+        return 0
     args.out.mkdir(parents=True)   # a new folder, so no record is overwritten
     temp = Path(tempfile.mkdtemp(prefix="etf-risk-memory-")).resolve()
-    return run_check(args.out, temp, args.keep, system)
+    try:
+        return run_check(args.out, temp, args.keep, system)
+    except Exception as error:
+        print(f"tool error (exit 3): the check stopped: {type(error).__name__}: {error}", file=sys.stderr)
+        return EXIT["tool error"]
 
 
 if __name__ == "__main__":

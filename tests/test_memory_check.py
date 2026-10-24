@@ -1,10 +1,11 @@
 """tests/memory_check.py without Docker, services, Spark or timing. Readings of cgroups,
-vm_stat, command lines, records and JUnit files; segments across restarts; the sampler, one
-tick at a time on stand-in processes and readings; the check's run with every effect stood in
-for, through success, refusal, interruption and failed cleanup; and, with short-lived real
-processes and handshakes in place of sleeps, the time limit and the ending of leftovers. Each
-planted problem must reach the verdict that covers it, and no proposed threshold may change a
-verdict.
+Docker's records, vm_stat, command lines, run records and JUnit files; container lifetimes
+across restarts, each counted from zero; the sampler, one tick at a time on stand-in processes
+and readings; the check's run with every effect stood in for (a fake clock included), through
+success, refusal, interruption, errors and failed cleanup; and, with short-lived real processes
+and handshakes in place of sleeps, the time limit and the leftovers that belong to a run. Each
+planted problem must reach the outcome that covers it, failed measurements, invalid runs and
+tool errors apart, and no proposed threshold may change an outcome.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
@@ -16,6 +17,7 @@ import socket
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,11 +32,18 @@ _spec.loader.exec_module(mc)
 MiB, GiB = mc.MiB, mc.GiB
 NO_EVENTS = dict.fromkeys(mc.EVENTS, 0)
 PY = "/repo/.venv/bin/python"
+STACK_STARTED = "2026-10-24T10:00:00+00:00"
 
 
-def reading(peak, anon=100 * MiB, *, limit=512 * MiB, file=50 * MiB, kernel=10 * MiB, at=None, **events):
-    return {"at_utc": at, "peak": peak, "limit": limit, "current": peak, "anon": anon, "file": file,
-            "kernel": kernel, "kernel_from": "kernel", "events": {**NO_EVENTS, **events}}
+def reading(peak, anon=100 * MiB, *, cgroup=1, limit=512 * MiB, file=50 * MiB, kernel=10 * MiB, at=None, **events):
+    return {"at_utc": at, "cgroup": cgroup, "peak": peak, "limit": limit, "current": peak, "anon": anon,
+            "file": file, "kernel": kernel, "kernel_from": "kernel", "events": {**NO_EVENTS, **events}}
+
+
+def running(**change) -> dict:
+    """Docker's record of a container this run created, and still running."""
+    return {"id": "c0ffee000000", "created": "2026-10-24T10:00:01.123456789Z", "restart_count": 0,
+            "status": "running", "started": "2026-10-24T10:00:02Z", "exit_code": 0, "oom_killed": False, **change}
 
 
 def write(path: Path, data: dict) -> None:
@@ -42,17 +51,36 @@ def write(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data))
 
 
+def runner(*results, seen=None):
+    """A stand-in for subprocess.run that returns, or raises, each result in turn."""
+    queue = list(results)
+
+    def run(command, **kwargs):
+        if seen is not None:
+            seen.append((command, kwargs))
+        result = queue.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+    return run
+
+
+def done(stdout="", code=0):
+    return subprocess.CompletedProcess([], code, stdout, "")
+
+
 # Reading a cgroup
 
-CGROUP_OUTPUT = ("peak 419430400\nlimit 536870912\ncurrent 400000000\nstat_anon 314572800\nstat_file 73400320\n"
-                 "stat_kernel 20971520\nstat_kernel_stack 1048576\nstat_slab 8388608\nstat_sock 0\n"
-                 "events_low 0\nevents_high 0\nevents_max 7\nevents_oom 0\nevents_oom_kill 0\nevents_oom_group_kill 0\n")
+CGROUP_OUTPUT = ("cgroup 4242\npeak 419430400\nlimit 536870912\ncurrent 400000000\nstat_anon 314572800\n"
+                 "stat_file 73400320\nstat_kernel 20971520\nstat_kernel_stack 1048576\nstat_slab 8388608\n"
+                 "stat_sock 0\nevents_low 0\nevents_high 0\nevents_max 7\nevents_oom 0\nevents_oom_kill 0\n"
+                 "events_oom_group_kill 0\n")
 
 
-def test_a_cgroup_reading_keeps_the_total_its_kinds_of_memory_and_the_events():
+def test_a_cgroup_reading_keeps_its_identity_the_total_its_kinds_of_memory_and_the_events():
     assert mc.parse_cgroup(CGROUP_OUTPUT) == {
-        "peak": 419430400, "limit": 536870912, "current": 400000000, "anon": 314572800, "file": 73400320,
-        "kernel": 20971520, "kernel_from": "kernel", "events": {**NO_EVENTS, "max": 7}}
+        "cgroup": 4242, "peak": 419430400, "limit": 536870912, "current": 400000000, "anon": 314572800,
+        "file": 73400320, "kernel": 20971520, "kernel_from": "kernel", "events": {**NO_EVENTS, "max": 7}}
 
 
 def test_kernel_memory_is_the_sum_of_its_parts_without_a_kernel_line():
@@ -61,9 +89,9 @@ def test_kernel_memory_is_the_sum_of_its_parts_without_a_kernel_line():
     assert (r["kernel"], r["kernel_from"]) == (1048576 + 8388608 + 2097152 + 1048576, "parts")
 
 
-def test_no_limit_and_missing_counters_read_as_such():
+def test_no_limit_and_missing_counters_or_identity_read_as_such():
     r = mc.parse_cgroup("peak 1\nlimit max\nstat_anon 1\n")
-    assert (r["limit"], r["file"], r["current"], r["events"]) == (None, None, None, NO_EVENTS)
+    assert (r["cgroup"], r["limit"], r["file"], r["current"], r["events"]) == (None, None, None, None, NO_EVENTS)
 
 
 @pytest.mark.parametrize("text", ["", "Error response from daemon: container is paused\n", "peak 1\nlimit max\n",
@@ -72,63 +100,100 @@ def test_output_without_a_total_or_an_anon_figure_is_no_reading(text):
     assert mc.parse_cgroup(text) is None
 
 
-def runner(result=None, error=None, seen=None):
-    def run(command, **kwargs):
-        if seen is not None:
-            seen.append((command, kwargs))
-        if error is not None:
-            raise error
-        return result
-    return run
+@pytest.mark.parametrize("result", [subprocess.TimeoutExpired("docker", 10), FileNotFoundError("docker"),
+                                    done('service "mysql" is not running', code=1), done("garbage")])
+def test_a_cgroup_that_cannot_be_read_gives_no_reading(result):
+    assert mc.read_cgroup("mysql", run=runner(result)) is None
 
 
-@pytest.mark.parametrize("run", [
-    runner(error=subprocess.TimeoutExpired("docker", 10)),
-    runner(error=FileNotFoundError("docker")),
-    runner(subprocess.CompletedProcess([], 1, "", 'service "mysql" is not running')),
-    runner(subprocess.CompletedProcess([], 0, "garbage", "")),
-])
-def test_a_cgroup_that_cannot_be_read_gives_no_reading(run):
-    assert mc.read_cgroup("mysql", run=run) is None
-
-
-def test_a_cgroup_is_read_through_docker_compose_exec_within_ten_seconds():
+def test_a_cgroup_and_its_identity_are_read_through_docker_compose_exec_within_ten_seconds():
     seen = []
-    result = mc.read_cgroup("kafka", run=runner(subprocess.CompletedProcess([], 0, CGROUP_OUTPUT, ""), seen=seen))
+    result = mc.read_cgroup("kafka", run=runner(done(CGROUP_OUTPUT), seen=seen))
     command, kwargs = seen[0]
-    assert result["peak"] == 419430400 and command[4:9] == ["exec", "-T", "kafka", "sh", "-c"]
+    assert (result["cgroup"], result["peak"]) == (4242, 419430400)
+    assert command[4:9] == ["exec", "-T", "kafka", "sh", "-c"] and "ls -di ." in command[9]
     assert kwargs["timeout"] == 10
 
 
-# Restarts
+# Lifetimes
 
-def test_segments_start_where_a_counter_goes_down_and_not_at_gaps():
-    readings = [reading(100), None, reading(150), reading(60), reading(80), reading(90, max=3), None,
-                reading(95, max=1)]
-    assert [[r["peak"] for r in life] for life in mc.segments(readings)] == [[100, 150], [60, 80, 90], [95]]
-
-
-def test_events_count_from_the_run_start_and_from_zero_after_each_restart():
-    readings = [reading(300 * MiB, 200 * MiB, max=4, oom=1),      # the run's first reading
-                reading(500 * MiB, 310 * MiB, file=150 * MiB, max=9, oom=1),
-                reading(200 * MiB, 150 * MiB, at="restarted"),     # a restart: new counters
-                reading(450 * MiB, 330 * MiB, kernel=30 * MiB, max=2, oom_kill=1)]
-    summary = mc.summarize_container(readings, 512 * MiB)
-    first, second = summary["segments"]
-    assert (first["readings"], first["peak_bytes"], first["anon_bytes"], first["file_bytes"]) == (
-        2, 500 * MiB, 310 * MiB, 150 * MiB)
-    assert first["events"] == {**NO_EVENTS, "max": 5}                   # the oom came before the run
-    assert (second["from_utc"], second["peak_bytes"], second["kernel_bytes"]) == ("restarted", 450 * MiB, 30 * MiB)
-    assert second["events"] == {**NO_EVENTS, "max": 2, "oom_kill": 1}   # counted from zero
-    assert (summary["peak_bytes"], summary["anon_bytes"], summary["budget_bytes"]) == (
-        500 * MiB, 330 * MiB, 512 * MiB)
-    assert summary["events"] == {**NO_EVENTS, "max": 7, "oom_kill": 1}
+def test_lifetimes_split_where_the_cgroup_changes_and_not_at_gaps():
+    # the second lifetime starts above the first one's last peak, and no counter goes down
+    readings = [reading(100, cgroup=1), None, reading(150, cgroup=1), reading(400, cgroup=2), reading(420, cgroup=2),
+                None, reading(90, cgroup=3)]
+    assert [[r["peak"] for r in life] for life in mc.lifetimes(readings)] == [[100, 150], [400, 420], [90]]
 
 
-def test_a_container_never_read_has_no_segments_and_no_figures():
-    summary = mc.summarize_container([None, None], 640 * MiB)
-    assert (summary["segments"], summary["peak_bytes"], summary["anon_bytes"], summary["events"]) == (
+def test_every_lifetime_counts_its_events_from_zero_with_startup_and_idle_included():
+    readings = [reading(300 * MiB, 200 * MiB, cgroup=1, max=4, oom=1),   # an oom before the first reading
+                reading(500 * MiB, 310 * MiB, cgroup=1, file=150 * MiB, max=9, oom=1),
+                reading(200 * MiB, 150 * MiB, cgroup=2, at="restarted"),
+                reading(450 * MiB, 330 * MiB, cgroup=2, kernel=30 * MiB, max=2, oom_kill=1)]
+    summary = mc.summarize_container(readings, 512 * MiB, True)
+    first, second = summary["lifetimes"]
+    assert (summary["verified"], summary["problems"]) == (True, [])
+    assert (first["cgroup"], first["readings"], first["peak_bytes"], first["anon_bytes"], first["file_bytes"]) == (
+        1, 2, 500 * MiB, 310 * MiB, 150 * MiB)
+    assert first["events"] == {**NO_EVENTS, "max": 9, "oom": 1}
+    assert first["events_at_first_reading"] == {**NO_EVENTS, "max": 4, "oom": 1}
+    assert (second["cgroup"], second["from_utc"], second["peak_bytes"], second["kernel_bytes"]) == (
+        2, "restarted", 450 * MiB, 30 * MiB)
+    assert second["events"] == {**NO_EVENTS, "max": 2, "oom_kill": 1}
+    assert (summary["peak_bytes"], summary["anon_bytes"], summary["budget_bytes"]) == (500 * MiB, 330 * MiB, 512 * MiB)
+    assert summary["events"] == {**NO_EVENTS, "max": 11, "oom": 1, "oom_kill": 1}
+
+
+@pytest.mark.parametrize("readings, fresh, problem", [
+    ([reading(300, max=5), reading(310, max=4)], True, "a counter went down within lifetime 1"),
+    ([reading(300), reading(250)], True, "a counter went down within lifetime 1"),
+    ([reading(300, cgroup=None)], True, "a reading does not name its cgroup"),
+    ([reading(300)], False, "its container is not verified as created by this run"),
+])
+def test_a_lifetime_that_cannot_be_counted_from_zero_is_not_verified(readings, fresh, problem):
+    summary = mc.summarize_container(readings, 512 * MiB, fresh)
+    assert summary["verified"] is False and problem in summary["problems"]
+
+
+def test_a_container_never_read_has_no_lifetimes_and_no_figures():
+    summary = mc.summarize_container([None, None], 640 * MiB, True)
+    assert (summary["lifetimes"], summary["peak_bytes"], summary["anon_bytes"], summary["events"]) == (
         [], None, None, NO_EVENTS)
+
+
+# Docker's records
+
+def test_docker_time_keeps_the_microseconds_of_a_nanosecond_stamp():
+    assert mc.docker_time("2026-10-24T09:10:42.388096553Z") == datetime(2026, 10, 24, 9, 10, 42, 388096,
+                                                                        tzinfo=timezone.utc)
+    assert mc.docker_time("2026-10-24T09:10:42Z").microsecond == 0
+    assert mc.docker_time("garbage") is None and mc.docker_time(None) is None
+
+
+def test_dockers_record_of_a_container_is_read():
+    seen = []
+    state = ('2026-10-24T10:00:30.1Z 0 {"Status":"exited","StartedAt":"2026-10-24T10:00:31Z",'
+             '"ExitCode":137,"OOMKilled":true}')
+    assert mc.docker_state("kafka", run=runner(done("abcdef0123456789\n"), done(state), seen=seen)) == {
+        "id": "abcdef012345", "created": "2026-10-24T10:00:30.1Z", "restart_count": 0, "status": "exited",
+        "started": "2026-10-24T10:00:31Z", "exit_code": 137, "oom_killed": True}
+    assert seen[0][0][-3:] == ["ps", "-aq", "kafka"] and seen[1][0][:2] == ["docker", "inspect"]
+
+
+@pytest.mark.parametrize("results", [
+    (done(""),), (done("one\ntwo\n"),), (done("", code=1),), (subprocess.TimeoutExpired("docker", 30),),
+    (done("abc\n"), done("", code=1)), (done("abc\n"), done("not json")), (done("abc\n"), FileNotFoundError("docker")),
+])
+def test_dockers_record_is_none_without_exactly_one_container_or_when_docker_fails(results):
+    assert mc.docker_state("mysql", run=runner(*results)) is None
+
+
+@pytest.mark.parametrize("created, expected", [
+    ("2026-10-24T10:00:03.5Z", True), ("2026-10-24T09:59:57Z", True),           # within the clocks' tolerance
+    ("2026-10-24T09:59:50Z", False), ("2026-10-23T08:10:42.388096553Z", False), ("not a time", False),
+])
+def test_a_container_counts_as_created_by_this_run_only_after_the_stack_was_started(created, expected):
+    assert mc.created_by_this_run({"created": created}, STACK_STARTED) is expected
+    assert mc.created_by_this_run(None, STACK_STARTED) is False
 
 
 # The sampler
@@ -299,23 +364,27 @@ def test_the_junit_counts_are_read_and_a_missing_or_broken_file_has_none(tmp_pat
     assert mc.junit_counts(tmp_path / "missing.xml") == mc.junit_counts(tmp_path / "broken.xml") == none
 
 
-def test_measure_takes_growth_from_the_idle_reading_and_peaks_from_the_records(tmp_path):
+def test_measure_takes_growth_from_the_idle_reading_and_freshness_from_dockers_record(tmp_path):
     write(tmp_path / "acceptance" / "live0" / "job-1-attempt-1" / "logs" / "verify.launcher.json",
           {"peak_rss_bytes": GiB})
     idle = {"available_bytes": 5 * GiB, "compressor_bytes": 100 * MiB, "swap_bytes": 0}
     fake = SimpleNamespace(
         host=[{"compressor_bytes": 150 * MiB, "swap_bytes": 0}, {"at_utc": "a failed host reading"},
               {"compressor_bytes": 120 * MiB, "swap_bytes": 8 * MiB}],
-        available_min=3 * GiB, errors=1, readings={"mysql": [reading(300 * MiB, 250 * MiB)], "kafka": [None]},
+        available_min=3 * GiB, errors=1,
+        readings={"mysql": [reading(300 * MiB, 250 * MiB)], "kafka": [reading(400 * MiB, limit=640 * MiB)]},
         rss={"worker": 64 * MiB, "reconciler": 52 * MiB, "submit": 0, "pytest": 200 * MiB, "vm": 2 * GiB},
         pids={"worker": {1, 2}, "reconciler": {3}, "submit": set(), "pytest": {4}, "vm": {5}})
-    measured = mc.measure(fake, idle, tmp_path, {"suites": {}, "acceptance": {}}, {"suites": 0, "acceptance": 1})
+    docker = {"started": {"mysql": running(), "kafka": running(created="2026-10-23T08:10:42.388096553Z")}}
+    measured = mc.measure(fake, idle, tmp_path, {"suites": {}, "acceptance": {}}, {"suites": 0, "acceptance": 1},
+                          docker, STACK_STARTED)
     assert (measured["host"]["compressor_growth_bytes"], measured["host"]["swap_growth_bytes"]) == (50 * MiB, 8 * MiB)
     assert measured["steps"] == {"verify": GiB} and measured["leftovers"] == {"suites": 0, "acceptance": 1}
-    assert measured["containers"]["mysql"]["anon_bytes"] == 250 * MiB
-    assert measured["containers"]["kafka"]["segments"] == []
+    assert measured["containers"]["mysql"]["verified"] and measured["containers"]["mysql"]["anon_bytes"] == 250 * MiB
+    assert measured["containers"]["kafka"]["problems"] == ["its container is not verified as created by this run"]
     assert measured["processes"]["worker"] == {"rss_bytes": 64 * MiB, "processes": 2}
     assert measured["processes"]["submit"] == {"rss_bytes": 0, "processes": 0} and measured["sampler_errors"] == 1
+    assert measured["docker"] is docker
 
 
 def test_a_listening_port_is_in_use():
@@ -394,16 +463,18 @@ def test_an_interrupt_of_the_check_interrupts_its_command(tmp_path, monkeypatch)
     assert started and not psutil.pid_exists(started[0])
 
 
-def test_leftovers_are_the_processes_that_name_the_folder_or_carry_its_stores_markers(tmp_path):
+def test_leftovers_are_the_processes_that_name_the_folder_carry_its_token_or_its_stores_marker(tmp_path):
     temp = tmp_path / "check"
-    (temp / "acceptance" / "live0" / "out" / "store1").mkdir(parents=True)
+    (temp / "suites" / "test_x0" / "deep" / "out" / "store1" / "job-1-attempt-1").mkdir(parents=True)
     children = {"names the folder": spawn("--output-root", str(temp / "acceptance" / "live0" / "out")),
-                "marked by its store": spawn(env={"ETF_RISK_ATTEMPT": "store1:run-1:0123456789abcdef"}),
+                "carries the token": spawn(env={mc.RUN_ENV: str(temp)}),
+                "a store found at any depth": spawn(env={"ETF_RISK_ATTEMPT": "store1:run-1:0123456789abcdef"}),
+                "another check's token": spawn(env={mc.RUN_ENV: str(tmp_path / "other")}),
                 "another store": spawn(env={"ETF_RISK_ATTEMPT": "store2:run-1:0123456789abcdef"}),
                 "another folder": spawn("--output-root", str(tmp_path / "elsewhere"))}
     try:
-        assert {p.pid for p in mc.leftovers(temp)} == {children["names the folder"].pid,
-                                                       children["marked by its store"].pid}
+        assert {p.pid for p in mc.leftovers(temp)} == {
+            children[name].pid for name in ("names the folder", "carries the token", "a store found at any depth")}
     finally:
         for child in children.values():
             child.kill()
@@ -432,12 +503,13 @@ def test_ending_continues_a_stopped_process_and_kills_one_that_ignores_sigterm()
 class FakeSampler:
     def __init__(self, samples):
         self.started = self.stopped = False
+        self.final_readings = 0
         self.host = [{"compressor_bytes": GiB + 10 * MiB, "swap_bytes": 0}]
         self.available_min, self.errors = 3 * GiB, 0
         self.rss = {"worker": 64 * MiB, "reconciler": 52 * MiB, "submit": 60 * MiB, "pytest": 200 * MiB, "vm": GiB}
         self.pids = {"worker": {1}, "reconciler": {2}, "submit": {3}, "pytest": {4}, "vm": {5}}
-        self.readings = {"mysql": [reading(400 * MiB, 300 * MiB)],
-                         "kafka": [reading(450 * MiB, 350 * MiB, limit=640 * MiB)]}
+        self.readings = {"mysql": [reading(400 * MiB, 300 * MiB, cgroup=11)],
+                         "kafka": [reading(450 * MiB, 350 * MiB, cgroup=12, limit=640 * MiB)]}
 
     def start(self):
         self.started = True
@@ -445,15 +517,26 @@ class FakeSampler:
     def stop(self):
         self.stopped = True
 
+    def tick(self, sample):
+        sample()
+
+    def sample_containers(self):
+        self.final_readings += 1
+        for readings in self.readings.values():
+            readings.append(dict(readings[-1]))
+
 
 class FakeSystem:
-    """The machine, stood in for: every call is logged, and each failure is planted where asked."""
+    """The machine, stood in for, with a clock of its own: every call is logged, and each failure,
+    leftover and Docker record is planted where asked."""
 
-    def __init__(self, available=5 * GiB, fail=(), left=0, containers=0, dirty=False, others=0, busy=(),
-                 snapshot=True):
-        self.log, self.fail, self.available_bytes, self.left = [], dict(fail), available, left
+    def __init__(self, available=5 * GiB, fail=(), left=None, docker=None, containers=0, dirty=False, others=0,
+                 busy=(), snapshot=True):
+        self.log, self.fail, self.available_bytes = [], dict(fail), available
+        self.left, self.leftover_calls = left or (lambda call: 0), 0
+        self.docker, self.docker_calls = docker or (lambda service, n: running()), {}
         self.containers, self.dirty, self.others, self.busy = containers, dirty, others, set(busy)
-        self.snapshot, self.samplers = snapshot, []
+        self.snapshot, self.samplers, self.pytest_env, self.clock = snapshot, [], {}, 0.0
 
     def _call(self, name, *details):
         self.log.append((name, *details))
@@ -467,7 +550,14 @@ class FakeSystem:
         self._call("ready")
 
     def sleep(self, seconds):
+        self.clock += seconds
         self._call("sleep", seconds)
+
+    def monotonic(self):
+        return self.clock
+
+    def now(self):
+        return STACK_STARTED
 
     def host_memory(self):
         self._call("host_memory")
@@ -476,6 +566,11 @@ class FakeSystem:
     def available(self):
         return self.available_bytes
 
+    def docker_state(self, service):
+        self._call("docker_state", service)
+        n = self.docker_calls[service] = self.docker_calls.get(service, -1) + 1   # 0 started, 1 after suites, ...
+        return self.docker(service, n)
+
     def sampler(self, samples):
         self._call("sampler")
         self.samplers.append(FakeSampler(samples))
@@ -483,6 +578,7 @@ class FakeSystem:
 
     def run_pytest(self, name, files, env, out, temp, timeout):
         self._call(f"pytest {name}", env.get("ETF_RISK_LIVE_PIPELINE"), timeout)
+        self.pytest_env[name] = env
         if name == "acceptance":
             attempt = temp / "acceptance" / "live0" / "out" / "store" / "job-1-attempt-1"
             for step, peak in (("windows", 130 * MiB), ("spark_pipeline", int(2.7 * GiB)), ("verify", 2 * GiB)):
@@ -495,7 +591,8 @@ class FakeSystem:
 
     def leftovers(self, temp):
         self._call("leftovers")
-        found, self.left = [object()] * self.left, 0    # what a run left is found once
+        found = [object()] * self.left(self.leftover_calls)
+        self.leftover_calls += 1
         return found
 
     def end(self, procs, rescan=None):
@@ -539,69 +636,120 @@ def record_in(out: Path) -> dict:
     return json.loads((out / "record.json").read_text())
 
 
+def names(system) -> list[str]:
+    return [entry[0] for entry in system.log]
+
+
+CLEANUP = ["leftovers", "docker_state", "docker_state", "compose unpause", "compose down", "project_containers"]
+
+
 def test_a_clean_run_passes_and_cleans_up_in_order(tmp_path):
     system = FakeSystem()
     code, out, temp = check(tmp_path, system)
     assert code == 0
-    assert [entry[0] for entry in system.log] == [
-        "keep_awake", "compose up", "ready", "sleep", "host_memory", "sampler", "pytest suites", "leftovers",
-        "pytest acceptance", "leftovers", "leftovers", "compose down", "project_containers"]
-    assert ("sleep", mc.SETTLE_S) in system.log
+    assert names(system) == [
+        "keep_awake", "compose up", "ready", "docker_state", "docker_state", "sleep", "host_memory", "sampler",
+        "pytest suites", "docker_state", "docker_state", "leftovers",
+        "pytest acceptance", "docker_state", "docker_state", "leftovers", *CLEANUP]
     assert ("pytest suites", None, 1800) in system.log and ("pytest acceptance", "1", 3600) in system.log
     record = record_in(out)
-    assert record["verdict"]["passed"] and record["cleanup_errors"] == [] and record["project_containers_after"] == 0
-    assert record["measured"]["jobs"] == {"rolling, stride 21": {"spark_pipeline": int(2.7 * GiB)}}
+    assert (record["outcome"], record["exit_code"], record["verdict"]["validates"]) == (
+        "passed", 0, "container limits only")
     assert record["supplementary"]["native_approved"] is False and record["verdict"]["native_targets"]["approved"] is False
-    assert sorted(record["supplementary"]["native"]) == [
-        "process reconciler", "process submit", "process worker", "step spark_pipeline", "step verify", "step windows"]
-    assert system.samplers[0].started and system.samplers[0].stopped and not temp.exists()
+    assert sorted(record["docker"]) == ["after acceptance", "after suites", "before cleanup", "started"]
+    assert all(c["verified"] and len(c["lifetimes"]) == 1 for c in record["measured"]["containers"].values())
+    assert system.samplers[0].final_readings == 1 and system.samplers[0].stopped
+    assert record["measured"]["containers"]["mysql"]["lifetimes"][0]["readings"] == 2   # the final reading
+    assert system.pytest_env["suites"][mc.RUN_ENV] == system.pytest_env["acceptance"][mc.RUN_ENV] == str(temp)
+    assert record["leftovers"] == {name: {"seen": 0, "remaining": 0} for name in ("suites", "acceptance", "cleanup")}
+    assert not temp.exists()
     assert (out / "records" / "acceptance" / "live0" / "out" / "store" / "job-1-attempt-1" / "attempt.json").exists()
 
 
-def test_too_little_memory_with_the_stack_idle_stops_before_any_test_and_cleans_up(tmp_path):
+def test_too_little_memory_with_the_stack_idle_is_not_counted_and_the_stack_is_removed(tmp_path):
     system = FakeSystem(available=3 * GiB)
     code, out, _ = check(tmp_path, system)
-    names = [entry[0] for entry in system.log]
-    assert code == 2 and "sampler" not in names and not any(name.startswith("pytest") for name in names)
-    assert names[-3:] == ["leftovers", "compose down", "project_containers"]
-    assert record_in(out)["verdict"]["invalid"] == ["3.00 GiB available with the stack idle, below 4.0 GiB"]
+    record = record_in(out)
+    assert (code, record["outcome"], record["exit_code"]) == (2, "not counted", 2)
+    assert "sampler" not in names(system) and not any(name.startswith("pytest") for name in names(system))
+    assert names(system)[-len(CLEANUP):] == CLEANUP
+    assert record["verdict"]["invalid"] == ["3.00 GiB available with the stack idle, below 4.0 GiB"]
 
 
-def test_a_failed_start_still_removes_the_stack_and_writes_the_record(tmp_path):
+def test_a_container_this_run_did_not_create_is_not_counted(tmp_path):
+    system = FakeSystem(docker=lambda service, n: running(created="2026-10-23T08:10:42.388096553Z"))
+    code, out, _ = check(tmp_path, system)
+    record = record_in(out)
+    assert (code, record["outcome"]) == (2, "not counted")
+    assert "mysql: its container is not verified as created by this run" in record["verdict"]["invalid"]
+
+
+def test_an_oom_killed_container_fails_the_measurement_though_no_cgroup_reading_shows_it(tmp_path):
+    def docker(service, n):
+        return running(status="exited", exit_code=137, oom_killed=True) if service == "kafka" and n >= 2 else running()
+    code, out, _ = check(tmp_path, FakeSystem(docker=docker))
+    record = record_in(out)
+    kafka = next(limit for limit in record["verdict"]["container_limits"] if limit["container"] == "kafka")
+    assert (code, record["outcome"], kafka["held"], kafka["oom_kill"]) == (1, "failed", False, 0)
+    assert "kafka: OOM-killed, exit code 137, by Docker's record after acceptance" in record["verdict"]["misses"]
+
+
+def test_a_processes_left_behind_after_the_settle_are_ended_and_fail_the_measurement(tmp_path):
+    polls = int(mc.SETTLE_LEFTOVERS_S / 0.5) + 1      # the first look, then one every 0.5 s of the settle
+    system = FakeSystem(left=lambda call: 2 if call < polls else 0)
+    code, out, _ = check(tmp_path, system)
+    record = record_in(out)
+    assert (code, record["outcome"]) == (1, "failed") and ("end", 2) in system.log
+    assert record["leftovers"]["suites"] == {"seen": 2, "remaining": 2, "ended": {
+        "terminated": [0, 1], "killed": [], "remaining": []}}
+    assert record["verdict"]["misses"] == ["pytest suites left 2 process(es) behind"]
+
+
+def test_processes_that_end_on_their_own_during_the_settle_are_not_left_behind(tmp_path):
+    system, record = FakeSystem(left=lambda call: 2 if call < 3 else 0), {}
+    assert mc.end_leftovers(system, tmp_path, record, "suites") == 0
+    assert record["leftovers"]["suites"] == {"seen": 2, "remaining": 0}
+    assert [entry for entry in system.log if entry[0] == "sleep"] == [("sleep", 0.5)] * 3
+    assert "end" not in names(system)
+
+
+def test_a_failed_start_is_a_tool_error_recorded_after_the_cleanup(tmp_path):
     system = FakeSystem(fail={"compose up": subprocess.CalledProcessError(1, "docker compose up")})
     with pytest.raises(subprocess.CalledProcessError):
         check(tmp_path, system)
     record = record_in(tmp_path / "out")
-    assert ("compose down",) in system.log and "measured" not in record and record["cleanup_errors"] == []
+    assert (record["outcome"], record["exit_code"]) == ("tool error", 3)
+    assert record["error"].startswith("CalledProcessError") and names(system)[-len(CLEANUP):] == CLEANUP
 
 
 def test_an_interrupt_during_the_acceptance_cases_stops_sampling_and_still_cleans_up(tmp_path):
     system = FakeSystem(fail={"pytest acceptance": KeyboardInterrupt()})
     with pytest.raises(KeyboardInterrupt):
         check(tmp_path, system)
-    assert system.samplers[0].stopped
-    assert [entry[0] for entry in system.log][-3:] == ["leftovers", "compose down", "project_containers"]
-    assert record_in(tmp_path / "out")["ended_at_utc"]
+    record = record_in(tmp_path / "out")
+    assert system.samplers[0].stopped and system.samplers[0].final_readings == 1
+    assert names(system)[-len(CLEANUP):] == CLEANUP
+    assert (record["outcome"], record["exit_code"]) == ("interrupted", 130)
 
 
-def test_a_cleanup_that_fails_is_recorded_and_the_run_does_not_count(tmp_path):
+def test_a_cleanup_that_fails_is_a_tool_error(tmp_path):
     system = FakeSystem(fail={"compose down": subprocess.CalledProcessError(1, "docker compose down")})
     code, out, _ = check(tmp_path, system)
-    errors = record_in(out)["cleanup_errors"]
-    assert code == 2 and len(errors) == 1 and errors[0].startswith("docker compose down -v:")
-
-
-def test_containers_still_there_after_the_cleanup_mean_the_run_does_not_count(tmp_path):
-    code, out, _ = check(tmp_path, FakeSystem(containers=2))
-    assert code == 2 and record_in(out)["project_containers_after"] == 2
-
-
-def test_processes_a_run_left_behind_are_ended_and_fail_the_run(tmp_path):
-    system = FakeSystem(left=2)
-    code, out, _ = check(tmp_path, system)
     record = record_in(out)
-    assert code == 1 and ("end", 2) in system.log and record["ended"]["suites"]["terminated"] == [0, 1]
-    assert record["verdict"]["misses"] == ["pytest suites left 2 process(es) behind"]
+    assert (code, record["outcome"]) == (3, "tool error") and record["verdict"]["passed"]
+    assert len(record["cleanup_errors"]) == 1 and record["cleanup_errors"][0].startswith("docker compose down -v:")
+
+
+def test_containers_still_there_after_the_cleanup_are_a_tool_error(tmp_path):
+    code, out, _ = check(tmp_path, FakeSystem(containers=2))
+    assert (code, record_in(out)["project_containers_after"]) == (3, 2)
+
+
+def test_an_unpause_that_is_not_needed_is_ignored(tmp_path):
+    system = FakeSystem(fail={"compose unpause": subprocess.CalledProcessError(1, "docker compose unpause")})
+    code, out, _ = check(tmp_path, system)
+    assert code == 0 and record_in(out)["unpause"].startswith("not needed or not possible")
+    assert names(system)[-3:] == ["compose unpause", "compose down", "project_containers"]
 
 
 def test_keep_leaves_the_runs_outputs(tmp_path):
@@ -635,40 +783,72 @@ def test_preflight_is_clear_on_a_ready_machine():
     assert mc.preflight(FakeSystem()) == []
 
 
-def test_the_preflight_alone_starts_nothing(capsys):
+def test_a_clear_preflight_alone_exits_0_and_starts_nothing():
+    system = FakeSystem()
+    assert mc.main(["--preflight"], system) == 0 and not any(name.startswith("compose") for name in names(system))
+
+
+def test_a_preflight_that_finds_problems_is_not_counted_and_starts_nothing(capsys):
     system = FakeSystem(others=4)
     assert mc.main(["--preflight"], system) == 2
-    assert "not ready: 4 running container(s) outside the etf-risk-jobs project" in capsys.readouterr().out
-    assert not any(entry[0].startswith("compose") for entry in system.log)
+    out = capsys.readouterr().out
+    assert "not ready: 4 running container(s) outside the etf-risk-jobs project" in out
+    assert "not counted (exit 2): not started" in out and not any(name.startswith("compose") for name in names(system))
 
 
 def test_a_machine_that_is_not_ready_gets_no_run_and_no_folder(tmp_path):
     system = FakeSystem(dirty=True)
     assert mc.main(["--out", str(tmp_path / "out")], system) == 2
-    assert not (tmp_path / "out").exists() and not any(entry[0].startswith("compose") for entry in system.log)
+    assert not (tmp_path / "out").exists() and not any(name.startswith("compose") for name in names(system))
 
 
 def test_a_ready_machine_gets_a_run_in_a_new_folder_and_never_overwrites_one(tmp_path):
     system = FakeSystem()
     assert mc.main(["--out", str(tmp_path / "out")], system) == 0
-    assert (tmp_path / "out" / "record.json").exists()
+    assert record_in(tmp_path / "out")["outcome"] == "passed"
     with pytest.raises(FileExistsError):
         mc.main(["--out", str(tmp_path / "out")], system)
+
+
+def test_an_error_during_the_check_is_exit_3_once_the_stack_is_removed(tmp_path, capsys):
+    system = FakeSystem(fail={"ready": subprocess.TimeoutExpired("services ready", 300)})
+    assert mc.main(["--out", str(tmp_path / "out")], system) == 3
+    assert record_in(tmp_path / "out")["outcome"] == "tool error" and names(system)[-len(CLEANUP):] == CLEANUP
+    assert "tool error (exit 3): the check stopped: TimeoutExpired" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("record, expected", [
+    ({"verdict": {"passed": True, "counts": True}}, "passed"),
+    ({"verdict": {"passed": False, "counts": True}}, "failed"),
+    ({"verdict": {"passed": False, "counts": False}}, "not counted"),
+    ({"verdict": {"passed": True, "counts": True}, "cleanup_errors": ["docker compose down -v: failed"]}, "tool error"),
+    ({"verdict": {"passed": True, "counts": True}, "project_containers_after": 1}, "tool error"),
+    ({"verdict": {"passed": True, "counts": True}, "project_containers_after": None}, "tool error"),
+    ({"error": "CalledProcessError: docker compose up"}, "tool error"),
+    ({}, "tool error"),
+    ({"interrupted": True}, "interrupted"),
+])
+def test_the_outcome_keeps_failed_measurements_invalid_runs_and_tool_errors_apart(record, expected):
+    assert mc.outcome({"cleanup_errors": [], "project_containers_after": 0, **record}) == expected
+    assert mc.EXIT[expected] == {"passed": 0, "failed": 1, "not counted": 2, "tool error": 3,
+                                 "interrupted": 130}[expected]
 
 
 # Verdicts
 
 def container(peak, anon, budget, **events):
-    """A container read twice in one life, with its budget as its limit."""
+    """A container read twice in one lifetime, created by this run, with its budget as its limit."""
     return mc.summarize_container([reading(peak // 2, anon // 2, limit=budget),
-                                   reading(peak, anon, limit=budget, **events)], budget)
+                                   reading(peak, anon, limit=budget, **events)], budget, True)
 
 
 def clean() -> dict:
     """The figures of a run that counts and passes."""
     run = {"exit_code": 0, "seconds": 1.0, "readable": True, "tests": 10, "failures": 0, "errors": 0, "skipped": 0}
+    states = {"mysql": running(), "kafka": running()}
     return {"pytest": {"suites": {**run, "tests": 473, "skipped": 10}, "acceptance": dict(run)},
             "leftovers": {"suites": 0, "acceptance": 0},
+            "docker": {"started": dict(states), "after suites": dict(states), "after acceptance": dict(states)},
             "host": {"idle": {"available_bytes": 4 * GiB + 512 * MiB}, "available_min_bytes": 2 * GiB,
                      "compressor_growth_bytes": 10 * MiB, "swap_growth_bytes": 0, "vm_rss_bytes": GiB},
             "containers": {"mysql": container(450 * MiB, 300 * MiB, 512 * MiB),
@@ -691,6 +871,7 @@ def planted(change) -> dict:
 def test_a_clean_run_counts_and_passes_on_the_container_limits_alone():
     verdict = mc.judge(clean())
     assert (verdict["counts"], verdict["passed"], verdict["invalid"], verdict["misses"]) == (True, True, [], [])
+    assert verdict["validates"] == "container limits only"
     assert [(limit["container"], limit["limit_bytes"], limit["held"]) for limit in verdict["container_limits"]] == [
         ("mysql", 512 * MiB, True), ("kafka", 640 * MiB, True)]
     assert [r["criterion"] for r in verdict["supplementary_container"]] == [
@@ -701,14 +882,17 @@ def test_a_clean_run_counts_and_passes_on_the_container_limits_alone():
     assert all(r["within"] for r in verdict["supplementary_container"] + verdict["native_targets"]["results"])
 
 
-def test_a_container_over_its_limit_or_with_an_oom_kill_is_not_held():
+def test_a_container_over_its_limit_or_oom_killed_is_not_held():
     measured = clean()
     measured["containers"]["mysql"] = mc.summarize_container(
-        [reading(400 * MiB), reading(100 * MiB), reading(520 * MiB)], 512 * MiB)
-    measured["containers"]["kafka"] = container(500 * MiB, 400 * MiB, 640 * MiB, oom_kill=1)
-    limits = {limit["container"]: limit for limit in mc.judge(measured)["container_limits"]}
-    assert (limits["mysql"]["held"], limits["mysql"]["segment_peaks_bytes"]) == (False, [400 * MiB, 520 * MiB])
-    assert (limits["kafka"]["held"], limits["kafka"]["oom_kill"]) == (False, 1)
+        [reading(400 * MiB, cgroup=1), reading(100 * MiB, cgroup=2), reading(520 * MiB, cgroup=2)], 512 * MiB, True)
+    measured["docker"]["after acceptance"]["kafka"] = running(status="exited", exit_code=137, oom_killed=True)
+    verdict = mc.judge(measured)
+    limits = {limit["container"]: limit for limit in verdict["container_limits"]}
+    assert (limits["mysql"]["held"], limits["mysql"]["lifetime_peaks_bytes"]) == (False, [400 * MiB, 520 * MiB])
+    assert (limits["kafka"]["held"], limits["kafka"]["stopped"]) == (
+        False, ["OOM-killed, exit code 137, by Docker's record after acceptance"])
+    assert verdict["validates"] == "nothing"
 
 
 @pytest.mark.parametrize("change, reason", [
@@ -716,15 +900,23 @@ def test_a_container_over_its_limit_or_with_an_oom_kill_is_not_held():
     (lambda m: m["host"].update(swap_growth_bytes=257 * MiB), "the swap grew by 257 MiB"),
     (lambda m: m["pytest"]["acceptance"].update(skipped=10), "acceptance cases: 10 of 10 skipped"),
     (lambda m: m["pytest"]["suites"].update(readable=False, tests=0), "pytest suites: no results"),
-    (lambda m: m["containers"].update(kafka=mc.summarize_container([None], 640 * MiB)), "kafka: no cgroup reading"),
-    (lambda m: m["containers"].update(mysql=mc.summarize_container([reading(400 * MiB, limit=GiB)], 512 * MiB)),
+    (lambda m: m["containers"].update(kafka=mc.summarize_container([None], 640 * MiB, True)),
+     "kafka: no cgroup reading"),
+    (lambda m: m["containers"].update(mysql=mc.summarize_container([reading(400 * MiB, limit=GiB)], 512 * MiB, True)),
      "mysql: its limit is not its 512 MiB budget"),
+    (lambda m: m["containers"].update(mysql=mc.summarize_container([reading(400 * MiB)], 512 * MiB, False)),
+     "mysql: its container is not verified as created by this run"),
+    (lambda m: m["containers"].update(mysql=mc.summarize_container(
+        [reading(400 * MiB, max=3), reading(410 * MiB, max=1)], 512 * MiB, True)),
+     "mysql: a counter went down within lifetime 1"),
+    (lambda m: m["docker"]["after acceptance"].update(kafka=None),
+     "kafka: Docker's record after acceptance could not be read"),
     (lambda m: m["steps"].pop("verify"), "no launch of verify was recorded"),
     (lambda m: m["processes"]["reconciler"].update(processes=0), "no reconciler process was sampled"),
 ])
-def test_a_run_short_of_memory_or_of_its_measurements_does_not_count(change, reason):
+def test_an_invalid_run_does_not_count(change, reason):
     verdict = planted(change)
-    assert not verdict["counts"] and not verdict["passed"], verdict
+    assert not verdict["counts"] and not verdict["passed"] and verdict["validates"] == "nothing", verdict
     assert any(r.startswith(reason) for r in verdict["invalid"]), verdict
 
 
@@ -733,15 +925,19 @@ def test_a_run_short_of_memory_or_of_its_measurements_does_not_count(change, rea
     (lambda m: m["pytest"]["acceptance"].update(exit_code=None), "pytest acceptance: exit None"),
     (lambda m: m["leftovers"].update(acceptance=3), "pytest acceptance left 3 process(es) behind"),
     (lambda m: m["containers"].update(mysql=mc.summarize_container(
-        [reading(400 * MiB), reading(100 * MiB), reading(520 * MiB)], 512 * MiB)),
-     "mysql segment 2: memory.peak 520 MiB, above its 512 MiB limit"),
+        [reading(400 * MiB, cgroup=1), reading(100 * MiB, cgroup=2), reading(520 * MiB, cgroup=2)], 512 * MiB, True)),
+     "mysql lifetime 2: memory.peak 520 MiB, above its 512 MiB limit"),
     (lambda m: m["containers"].update(kafka=container(500 * MiB, 400 * MiB, 640 * MiB, oom=1)), "kafka: 1 oom event"),
     (lambda m: m["containers"].update(kafka=container(500 * MiB, 400 * MiB, 640 * MiB, oom_kill=2)),
      "kafka: 2 oom_kill event"),
+    (lambda m: m["docker"]["after acceptance"].update(kafka=running(status="exited", exit_code=137, oom_killed=True)),
+     "kafka: OOM-killed, exit code 137, by Docker's record after acceptance"),
+    (lambda m: m["docker"]["after suites"].update(mysql=running(status="exited", exit_code=1)),
+     "mysql: exited, exit code 1, by Docker's record after suites"),
 ])
-def test_failed_runs_leftovers_and_the_containers_budgets_are_misses(change, miss):
+def test_a_failed_measurement_counts_and_fails(change, miss):
     verdict = planted(change)
-    assert verdict["counts"] and not verdict["passed"], verdict
+    assert verdict["counts"] and not verdict["passed"] and verdict["validates"] == "nothing", verdict
     assert any(m.startswith(miss) for m in verdict["misses"]), verdict
 
 
@@ -752,7 +948,7 @@ def test_failed_runs_leftovers_and_the_containers_budgets_are_misses(change, mis
     (lambda m: m["steps"].update(spark_pipeline=int(3.1 * GiB)), "native", "step spark_pipeline"),
     (lambda m: m["processes"]["worker"].update(rss_bytes=129 * MiB), "native", "process worker"),
 ])
-def test_a_supplementary_threshold_exceeded_is_reported_in_its_section_and_changes_no_verdict(change, section,
+def test_a_supplementary_threshold_exceeded_is_reported_in_its_section_and_changes_no_outcome(change, section,
                                                                                               criterion):
     verdict = planted(change)
     results = verdict["supplementary_container"] if section == "container" else verdict["native_targets"]["results"]
@@ -767,11 +963,12 @@ def test_an_unsampled_submit_is_reported_as_not_measured():
 
 
 def test_the_conclusion_never_claims_more_than_the_verdict():
-    assert mc.conclusion(mc.not_counted("too little memory")) == "does not count"
+    assert mc.conclusion(mc.not_counted("too little memory")) == (
+        "not counted (exit 2): an invalid run; the reasons are listed above")
     failed = planted(lambda m: m["containers"].update(kafka=container(500 * MiB, 400 * MiB, 640 * MiB, oom=1)))
-    assert mc.conclusion(failed) == "failed: 1 miss(es), listed above"
+    assert mc.conclusion(failed) == "failed measurement (exit 1): 1 miss(es), listed above"
     passed = mc.conclusion(mc.judge(clean()))
-    assert passed.startswith("passed: the container limits held") and passed.endswith(
+    assert passed.startswith("passed (exit 0): the container limits held") and passed.endswith(
         "This validates the container limits only: the native-process targets are not approved budgets, and this "
         "run does not validate them.")
 
@@ -779,7 +976,8 @@ def test_the_conclusion_never_claims_more_than_the_verdict():
 def test_the_report_keeps_the_container_limits_apart_from_the_supplementary_targets(capsys):
     measured = clean()
     measured["containers"]["mysql"] = mc.summarize_container(
-        [reading(300 * MiB, max=1), reading(400 * MiB, 300 * MiB, max=4), reading(200 * MiB, at="t2")], 512 * MiB)
+        [reading(300 * MiB, max=1, cgroup=7), reading(400 * MiB, 300 * MiB, max=4, cgroup=7),
+         reading(200 * MiB, cgroup=8, at="t2")], 512 * MiB, True)
     mc.report({"measured": measured, "verdict": mc.judge(measured)})
     out = capsys.readouterr().out
     sections = [out.index(header) for header in (
@@ -788,16 +986,16 @@ def test_the_report_keeps_the_container_limits_apart_from_the_supplementary_targ
         "Native-process targets (proposed, not approved budgets; reported only, and not validated by this run):",
         "Host and harness (recorded only):")]
     assert sections == sorted(sections)
-    for text in ("  mysql: limit 512 MiB; memory.peak 400 MiB at most, over 2 segment(s); oom 0, oom_kill 0: held",
-                 "    segment 1 (2 readings from None): memory.peak 400 MiB of 512 MiB; anon 300 MiB, file 50 MiB, "
-                 "kernel 10 MiB; events low +0, high +0, max +3",
-                 "    segment 2 (1 readings from t2)",
-                 "  mysql anon: 300 MiB against 410 MiB: within", "  mysql limit hits: 3 against 0: above",
+    for text in ("  mysql: limit 512 MiB; memory.peak 400 MiB at most, over 2 lifetime(s); oom 0, oom_kill 0: held",
+                 "    lifetime 1 (cgroup 7, 2 readings from None): memory.peak 400 MiB of 512 MiB; anon 300 MiB, "
+                 "file 50 MiB, kernel 10 MiB; events since it began low 0, high 0, max 4",
+                 "    lifetime 2 (cgroup 8, 1 readings from t2)",
+                 "  mysql anon: 300 MiB against 410 MiB: within", "  mysql limit hits: 4 against 0: above",
                  "  step spark_pipeline: 2.70 GiB against 3.00 GiB: within",
                  "  process worker: 64 MiB against 128 MiB: within (4 process(es) sampled)",
                  "    calendar-year: spark_pipeline 2.00 GiB",
                  "4.50 GiB available idle, 2.00 GiB at the lowest; compressor +10 MiB, swap +0 MiB",
-                 "\npassed: the container limits held",
+                 "\npassed (exit 0): the container limits held",
                  "This validates the container limits only: the native-process targets are not approved budgets, "
                  "and this run does not validate them.\n"):
         assert text in out, (text, out)
