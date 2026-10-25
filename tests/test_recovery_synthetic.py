@@ -443,6 +443,9 @@ def run_batch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(kafka, "KafkaPublisher", QueuePublisher)
     monkeypatch.setattr(harness, "deadline_seconds", lambda case, timing, s: LATE.get(case, DEADLINE_S))
+    monkeypatch.setattr(harness, "host_state", lambda: {     # a host on AC power, lid open, whatever runs the test
+        "available_bytes": 4 * 2**30, "total_bytes": 8 * 2**30, "swap_used_bytes": 0, "swap_in_bytes": 0,
+        "swap_out_bytes": 0, "memory_pressure": 1, "power_source": "AC Power", "lid_closed": False})
     assert batch.run() == 0
     return batch, processed
 
@@ -479,6 +482,7 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     result = crm.collect(batch.out, processed_root=processed)
     assert (result["purpose"], result["validity_failed"]) == ("preflight", [])
     assert result["validity"]["records_complete"] == {"passed": True, "setup_errors": [], "final_errors": []}
+    assert result["verdicts"] == {"correctness": {"valid": True, "failed": []}, "timing": {"valid": True, "failed": []}}
     rows = {r["position"]: r for r in result["rows"]}
     assert [rows[p]["status"] for p in rows] == ["made"] * 9
     assert [rows[p]["q1_verdict"] for p in rows] == ["ok"] * 9

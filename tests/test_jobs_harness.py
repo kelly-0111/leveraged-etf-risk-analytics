@@ -26,9 +26,10 @@ DEFAULTS = harness.Settings()
 
 
 def test_a_plan_has_two_jobs_of_every_case_in_an_order_fixed_by_its_seed():
-    """P1's preferred draft (2026-10-24): 2 jobs of each case in one batch, 28 in all."""
+    """P1's preferred draft (2026-10-24): 2 jobs of each case in one batch, 28, shuffled; with the
+    approved controls, a C0 at each end, 30 in all."""
     jobs = harness.plan_jobs(DEFAULTS, seed=7)
-    assert len(jobs) == 28 and Counter(jobs) == {case: 2 for case in harness.CASES}
+    assert len(jobs) == 30 and Counter(jobs) == {**{case: 2 for case in harness.CASES}, "C0": 4}
     assert jobs == harness.plan_jobs(DEFAULTS, seed=7) != harness.plan_jobs(DEFAULTS, seed=8)
 
 
@@ -117,20 +118,22 @@ def test_settings_refuse_unknown_names_and_cases_and_survive_a_plan(tmp_path):
         harness.Settings.from_dict({"cases": ["C0", "W9"]})
     plan = harness.make_plan(DEFAULTS, seed=1)
     again = json.loads(json.dumps(plan))
-    assert harness.Settings.from_dict(again["settings"]) == DEFAULTS and len(again["jobs"]) == 28
+    assert harness.Settings.from_dict(again["settings"]) == DEFAULTS and len(again["jobs"]) == 30
     assert again["deadlines_s"]["W7"] == 170 and set(again["code"]) >= {"source_digest", "uv_lock_sha256"}
 
 
 def test_the_estimate_of_the_preferred_draft_and_of_the_84_job_alternative():
-    """Under Assumptions (none measured): 1,403 s for one job of each case; 2,986 s for the
-    preferred batch of 28 jobs; 4,389 s for each of the alternative's two batches of 42."""
+    """Under Assumptions (none measured): 1,403 s for one job of each case; 3,070 s for the
+    preferred batch of 30 jobs (28 and two C0 controls); 4,473 s for each of the alternative's two
+    batches of 44."""
     result = harness.estimate(harness.make_plan(DEFAULTS, seed=1))
     per = result["per_case_s"]
     assert (per["C0"], per["W1"], per["W4"], per["W7"], per["K2"], per["D1"], per["D2"]) == (42, 74, 159, 159, 118, 116,
                                                                                             149)
-    assert sum(per.values()) == 1403 and (result["jobs"], result["batch_s"]) == (28, 2 * 1403 + 180) == (28, 2986)
+    assert sum(per.values()) == 1403
+    assert (result["jobs"], result["batch_s"]) == (30, 2 * 1403 + 2 * 42 + 180) == (30, 3070)
     alternative = harness.estimate(harness.make_plan(harness.Settings(jobs_per_case=3), seed=1))
-    assert (alternative["jobs"], alternative["batch_s"]) == (42, 3 * 1403 + 180) == (42, 4389)    # twice: 8,778 s
+    assert (alternative["jobs"], alternative["batch_s"]) == (44, 3 * 1403 + 2 * 42 + 180) == (44, 4473)   # twice
 
 
 def test_a_plan_states_its_purpose_and_a_preflight_keeps_the_listed_order():
@@ -492,3 +495,14 @@ def test_the_host_state_has_memory_swap_pressure_power_and_the_lid():
                for k in ("available_bytes", "swap_used_bytes", "swap_in_bytes", "swap_out_bytes"))
     unknown = harness.host_state(command=lambda *argv: "")                 # a host that gives none of them
     assert (unknown["memory_pressure"], unknown["power_source"], unknown["lid_closed"]) == (None, None, None)
+
+
+
+def test_the_controls_bracket_the_shuffled_order_and_a_listed_order_gets_none():
+    """Section 12, condition 6, approved on 2026-10-24: a C0 control at each end of the shuffle."""
+    bracketed = harness.plan_jobs(DEFAULTS, seed=7)
+    plain = harness.plan_jobs(harness.Settings(bracket_controls=False), seed=7)
+    assert bracketed == ["C0", *plain, "C0"] and len(plain) == 28        # the same shuffle inside
+    assert harness.make_plan(DEFAULTS, seed=7)["controls"] == "a C0 at each end"
+    listed = harness.make_plan(DEFAULTS, seed=7, purpose="preflight", jobs=["W1", "C0"])
+    assert (listed["jobs"], listed["controls"]) == (["W1", "C0"], None)

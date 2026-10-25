@@ -6,8 +6,8 @@
     uv run --group jobs python -m etf_risk.jobs.harness batch --plan PLAN.json --out .../<purpose>/<batch> [--formal]
 
 plan fixes a batch before it runs (8.1): its purpose, its jobs in an order shuffled from the
-seed (or, with --jobs, in the order listed), the case of each, the settings and the code
-identity. Settings holds every value that section 8 of the outline leaves provisional (timing,
+seed with a C0 control at each end (or, with --jobs, in the order listed, with no controls
+added), the case of each, the settings and the code identity. Settings holds every value that section 8 of the outline leaves provisional (timing,
 repetitions, deadlines, the harness's waits, the memory thresholds); a settings file (JSON)
 replaces any of them, and the plan records the values used.
 
@@ -99,6 +99,7 @@ class Settings:
     stride: int = 21
     max_attempts: int = 3
     jobs_per_case: int = 2               # P1, the preferred draft: 2 per case, one batch (28 jobs)
+    bracket_controls: bool = True        # a C0 control at each end of the shuffled order (30 jobs; approved)
     cases: tuple[str, ...] = CASES
     timing: tuple[str, ...] = ()         # --timing overrides; P2: none
     slowest_steps_s: float = 35.1        # S (P3): M2's slowest windows + spark_pipeline + verify, calendar-year
@@ -130,10 +131,12 @@ def timing_of(settings: Settings) -> Timing:
 
 
 def plan_jobs(settings: Settings, seed: int) -> list[str]:
-    """The batch's cases in run order: jobs_per_case of each case, shuffled with the seed."""
+    """The batch's cases in run order: jobs_per_case of each case, shuffled with the seed, and,
+    with bracket_controls, a C0 control at each end, measured in the same batch as the cases
+    (docs/recovery-part-a.md, section 12, condition 6)."""
     jobs = [case for case in settings.cases for _ in range(settings.jobs_per_case)]
     random.Random(seed).shuffle(jobs)
-    return jobs
+    return ["C0", *jobs, "C0"] if settings.bracket_controls else jobs
 
 
 def deadline_reference(case: str) -> str:
@@ -170,15 +173,18 @@ def deadline_seconds(case: str, timing: Timing, settings: Settings) -> float:
 
 
 def make_plan(settings: Settings, seed: int, *, purpose: str = "formal", jobs: list[str] | None = None) -> dict:
-    """A plan (8.1). jobs, if given, is the run order as listed, as a preflight's is (8.6);
-    otherwise plan_jobs shuffles every case of settings.cases with the seed."""
+    """A plan (8.1). jobs, if given, is the run order as listed, as a preflight's is (8.6), with no
+    controls added; otherwise plan_jobs shuffles every case of settings.cases with the seed and,
+    with bracket_controls, puts a C0 control at each end."""
     if purpose not in PURPOSES:
         raise ValueError(f"purpose must be one of {PURPOSES}, not {purpose!r}")
     if jobs is not None and (bad := sorted(set(jobs) - set(CASES))):
         raise ValueError(f"unknown cases: {bad}")
     timing = timing_of(settings)
     cases = settings.cases if jobs is None else tuple(c for c in CASES if c in jobs)
+    controls = "a C0 at each end" if jobs is None and settings.bracket_controls else None
     return {"format": 1, "purpose": purpose, "seed": seed, "order": "shuffled" if jobs is None else "as listed",
+            "controls": controls,
             "created_at_utc": datetime.now(timezone.utc).isoformat(), "settings": asdict(settings),
             "timing": asdict(timing), "code": code_identity(),
             "deadlines_s": {case: deadline_seconds(case, timing, settings) for case in cases},

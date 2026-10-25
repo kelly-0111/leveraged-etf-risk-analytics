@@ -59,7 +59,15 @@ def write_csv(path, header, rows):
         w.writerows(rows)
 
 
-def make_batch(tmp_path, *, step_code=CODE):
+def host_reading(stage, position=None, *, power="AC Power", lid_closed=False):
+    """A host_state event as the harness writes it (docs/recovery-part-a.md, section 12)."""
+    e = {"event": "host_state", "stage": stage, "available_bytes": 2 * 2**30, "total_bytes": 8 * 2**30,
+         "swap_used_bytes": 0, "swap_in_bytes": 0, "swap_out_bytes": 0, "memory_pressure": 1,
+         "power_source": power, "lid_closed": lid_closed}
+    return e if position is None else {**e, "position": position}
+
+
+def make_batch(tmp_path, *, step_code=CODE, host=True):
     """Four planned jobs: C0 and W3 on worker A, W5a on B, and a K2 that memory stopped."""
     b = tmp_path / "batch"
     dates = nyse_sessions("2024-01-02", 31)
@@ -161,6 +169,10 @@ def make_batch(tmp_path, *, step_code=CODE):
          "result_digest": "c" * 64}]))
     (export / "store.json").write_text(json.dumps({"store_id": STORE}))
     (export / "invariant_violations.json").write_text("{}")
+    if host:                                    # on AC power with the lid open, at every reading the batch needs
+        with open(b / "harness.jsonl", "a") as f:
+            for e in (host_reading("start"), *(host_reading("job", p) for p in (1, 2, 3)), host_reading("end")):
+                f.write(json.dumps(e) + "\n")
     return b
 
 
@@ -186,7 +198,7 @@ def test_the_metrics_of_each_job_with_their_reasons(batch, tmp_path):
 def test_validity_passes_and_outcomes_stay_apart(batch, tmp_path):
     result = crm.collect(batch, processed_root=tmp_path / "processed")
     assert result["validity_failed"] == []
-    assert result["validity"]["machine_state"]["passed"] is None                  # not recorded, not a pass
+    assert result["verdicts"] == {"correctness": {"valid": True, "failed": []}, "timing": {"valid": True, "failed": []}}
     assert result["outcomes"]["overlap"]["verdict"] == "no overlap"
     assert result["outcomes"]["q1_not_ok"] == [] and result["outcomes"]["invariant_violations"] == {}
     accepted = {a["job_id"]: a["problems"] for a in result["outcomes"]["accepted_attempts"]}
@@ -297,7 +309,8 @@ def test_the_purpose_comes_from_the_plan_and_heads_every_summary(batch, tmp_path
     assert json.loads((batch / "validity.json").read_text())["purpose"] == "preflight"
 
 
-def test_host_memory_spark_scratch_and_the_cleanup_listing_are_reported(batch, tmp_path):
+def test_host_memory_spark_scratch_and_the_cleanup_listing_are_reported(tmp_path):
+    batch = make_batch(tmp_path, host=False)                   # memory-only readings, as before host_state
     with open(batch / "harness.jsonl", "a") as f:
         for position, available in ((1, 3 * 2**30), (2, 2 * 2**30), (3, 2**30)):
             f.write(json.dumps({"event": "host_memory", "position": position, "available_bytes": available,
@@ -322,7 +335,8 @@ def test_a_recorded_setup_or_final_error_fails_validity(batch, tmp_path):
     assert validity["validity"]["records_complete"]["setup_errors"] == ["RuntimeError: init-db: exit 1"]
 
 
-def test_the_host_state_gives_each_job_its_swap_activity_power_and_pressure(batch, tmp_path):
+def test_the_host_state_gives_each_job_its_swap_activity_power_and_pressure(tmp_path):
+    batch = make_batch(tmp_path, host=False)
     gib, mib = 2**30, 2**20
     with open(batch / "harness.jsonl", "a") as f:
         for stage, position, swapped_out, power, pressure in (("start", None, 0, "AC Power", 1),
@@ -346,3 +360,51 @@ def test_the_host_state_gives_each_job_its_swap_activity_power_and_pressure(batc
         "jobs_with_a_reading": 3, "power_sources": ["AC Power", "Battery Power"], "on_battery": [2], "lid_closed": [2],
         "max_memory_pressure": 4, "min_available_bytes": 2 * gib, "swap_used_change_bytes": 80 * mib,
         "swap_out_batch_bytes": 80 * mib, "swap_in_batch_bytes": 0}
+
+
+# The host protocol's timing conditions (docs/recovery-part-a.md, section 12)
+
+def set_reading(batch, where, **fields):
+    """Change the host_state reading at a position, or at "start" or "end"."""
+    def change(e):
+        if e["event"] == "host_state" and (e.get("position") == where or e["stage"] == where):
+            return {**e, **fields}
+        return e
+    edit_harness(batch, change)
+
+
+def test_a_reading_on_battery_fails_the_recovery_times_but_not_the_correctness(batch, tmp_path):
+    set_reading(batch, 2, power_source="Battery Power")
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["host_power"] == {"passed": False, "failed": [2], "unknown": []}
+    assert result["verdicts"] == {"correctness": {"valid": True, "failed": []},
+                                  "timing": {"valid": False, "failed": ["host_power"]}}
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+
+
+def test_a_closed_lid_fails_the_recovery_times(batch, tmp_path):
+    set_reading(batch, "end", lid_closed=True)
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["host_lid"] == {"passed": False, "failed": ["end"], "unknown": []}
+    assert result["verdicts"]["timing"] == {"valid": False, "failed": ["host_lid"]}
+
+
+def test_a_missing_reading_or_value_is_unknown_and_never_passes(batch, tmp_path):
+    set_reading(batch, "start", power_source=None)                       # a reading without its power source
+    edit_harness(batch, lambda e: None if e["event"] == "host_state" and e.get("position") == 3 else e)   # none at all
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["host_power"] == {"passed": False, "failed": [], "unknown": ["start", 3]}
+    assert result["validity"]["host_lid"] == {"passed": False, "failed": [], "unknown": [3]}
+    assert result["verdicts"]["timing"] == {"valid": False, "failed": ["host_power", "host_lid"]}
+    assert result["verdicts"]["correctness"]["valid"] is True
+
+
+def test_a_batch_from_before_the_power_readings_has_unknown_conditions(tmp_path):
+    """Memory-only readings, as preflight-2 and -3 recorded them, say nothing of power or the lid."""
+    batch = make_batch(tmp_path, host=False)
+    with open(batch / "harness.jsonl", "a") as f:
+        for position in (1, 2, 3):
+            f.write(json.dumps({"event": "host_memory", "position": position, "available_bytes": 2**30}) + "\n")
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["host_power"]["unknown"] == ["start", 1, 2, 3, "end"]
+    assert result["verdicts"]["timing"]["valid"] is False and result["verdicts"]["correctness"]["valid"] is True

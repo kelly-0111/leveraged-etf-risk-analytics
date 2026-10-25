@@ -27,8 +27,12 @@ It writes into the batch folder:
 - tally.csv: per case, the jobs planned, made, missed, not run and unrecorded, and every verdict value of
   Q1, Q2, deadline_met, Q3a and Q3b, with zeros;
 - validity.json: the batch's purpose (preflight or formal, from its plan), the checks of 6.1
-  (what counts; a recorded setup or final error fails records_complete) and, apart from them,
-  the outcome checks of 6.2-6.5, each with what it found (6.5's new Spark scratch included).
+  (what counts; a recorded setup or final error fails records_complete; the host protocol's
+  power and lid conditions, where a missing reading fails as unknown), two verdicts, and, apart
+  from them, the outcome checks of 6.2-6.5, each with what it found (6.5's new Spark scratch
+  included). The verdicts (docs/recovery-part-a.md, section 12): its correctness observations
+  stand on the checks that do not involve time; its recovery times need those, the clock check,
+  and AC power with the lid open at every reading.
   A preflight's results are never formal results (8.6), whatever its checks found.
 It prints a summary and exits with 1 if a validity check fails. A failed outcome check is a
 finding: it is reported and never changes the exit code. Nothing is dropped: a missed or
@@ -70,6 +74,8 @@ Q3A_VERDICTS = ("reported once", "no matching report", "one attempt reported mor
 Q3B_VERDICTS = ("matches", "other store", "no such attempt", "wrong worker", "attempt not accepted", "wrong digest")
 NOT_RUN = ("not run", "not submitted")
 UNRECORDED = ("no record", "no injection record")     # the harness's records lack the job's deadline or injection
+CORRECTNESS_CHECKS = ("code_identity", "fingerprints_agree", "inputs_unchanged", "records_complete")
+TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid")
 LIVENESS = ("serve_restarted", "retry", "rewound", "gave_up", "failed_after_ack", "consumer_error", "pass_failed")
 FIELDS = ["position", "case", "job_id", "status", "missed", "injection", "worker", "t_inj", "reference", "deadline_s",
           "detection_s", "rerun_s", "finish_s", "overhead_s", "claims", "accepted", "executions", "complete_executions",
@@ -379,6 +385,31 @@ def host_row(host: dict, position: int, end: dict | None) -> dict:
             "swap_out_during_bytes": swapped}
 
 
+def host_conditions(b: BatchFolder, host: dict, ran: list[int]) -> dict:
+    """Conditions 1 and 2 of the protocol (docs/recovery-part-a.md, section 12), over the readings
+    a batch needs: its start, before each job that ran, and its end. A reading on battery, or with
+    the lid closed, fails its condition. A missing reading, or one without the value (as the
+    memory-only readings of earlier batches are), is unknown, and unknown fails too: neither
+    condition ever passes by default."""
+    start = (named(b.harness, "host_state", stage="start") or [None])[0]
+    end = (named(b.harness, "host_state", stage="end") or [None])[-1]
+    readings = [("start", start), *[(position, host.get(position)) for position in ran], ("end", end)]
+
+    def condition(key, fails) -> dict:
+        failed = [where for where, r in readings if r is not None and r.get(key) is not None and fails(r[key])]
+        unknown = [where for where, r in readings if r is None or r.get(key) is None]
+        return {"passed": not failed and not unknown, "failed": failed, "unknown": unknown}
+
+    return {"host_power": condition("power_source", lambda value: value != "AC Power"),
+            "host_lid": condition("lid_closed", lambda value: value is not False)}
+
+
+def verdict(validity: dict, checks: tuple[str, ...]) -> dict:
+    """Valid only if every one of checks passed; the ones that did not."""
+    failed = [name for name in checks if validity[name].get("passed") is not True]
+    return {"valid": not failed, "failed": failed}
+
+
 def host_summary(b: BatchFolder, host: dict) -> dict:
     """The batch's host record: where it ran on battery or with the lid closed, the highest
     memory pressure, the lowest available memory, and the swap from its start to its end."""
@@ -457,13 +488,14 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
         "clock": clock_check(b, clock_tolerance_s),
         "fingerprints_agree": {"passed": bool(final.get("fingerprints_agree")), "values": final.get("fingerprints")},
         "inputs_unchanged": input_check(b, processed_root),
-        "machine_state": {"passed": None, "why": "not recorded: 8.3 leaves the host-state rules open"},
+        **host_conditions(b, host, [r["position"] for r in rows if r.get("job_id") is not None]),
         "records_complete": {"passed": not named(b.harness, "setup_error") and not named(b.harness, "final_error"),
                              "setup_errors": [e.get("error") for e in named(b.harness, "setup_error")],
                              "final_errors": [e.get("error") for e in named(b.harness, "final_error")]},
     }
     validity_failed = [name for name, check in validity.items()
                        if isinstance(check, dict) and check.get("passed") is False]
+    verdicts = {"correctness": verdict(validity, CORRECTNESS_CHECKS), "timing": verdict(validity, TIMING_CHECKS)}
     outcomes = {
         "q1_not_ok": [r["job_id"] for r in rows if r.get("q1_verdict") not in (None, "ok")],
         "status_check_exit": final.get("status_check_exit"),
@@ -482,7 +514,8 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
         "batch_peaks": final.get("batch_peaks"),
     }
     return {"purpose": b.plan.get("purpose", "not recorded"), "rows": rows, "tally": tally(rows, b),
-            "validity": validity, "validity_failed": validity_failed, "outcomes": outcomes, "c0_median_s": c0_median}
+            "validity": validity, "validity_failed": validity_failed, "verdicts": verdicts, "outcomes": outcomes,
+            "c0_median_s": c0_median}
 
 
 def tally(rows: list[dict], b: BatchFolder) -> list[dict]:
@@ -520,7 +553,8 @@ def write(folder: Path, result: dict) -> None:
         writer.writeheader()
         writer.writerows(result["tally"])
     (folder / "validity.json").write_text(json.dumps(
-        {k: result[k] for k in ("purpose", "validity", "validity_failed", "outcomes", "c0_median_s")}, indent=2,
+        {k: result[k] for k in ("purpose", "validity", "validity_failed", "verdicts", "outcomes", "c0_median_s")},
+        indent=2,
         default=str) + "\n")
 
 
@@ -541,6 +575,9 @@ def main(argv: list[str] | None = None) -> int:
           f" {len(v['unrecorded'])} without a complete harness record")
     print("validity: " + ("all checks passed" if not result["validity_failed"]
                           else "FAILED: " + ", ".join(result["validity_failed"])))
+    for claim, label in (("correctness", "correctness observations"), ("timing", "recovery times")):
+        check = result["verdicts"][claim]
+        print(f"{label}: " + ("valid" if check["valid"] else "INVALID: " + ", ".join(check["failed"])))
     print(f"overlap: {result['outcomes']['overlap']['verdict']}; jobs whose Q1 verdict is not ok:"
           f" {result['outcomes']['q1_not_ok'] or 'none'}")
     return 1 if result["validity_failed"] else 0
