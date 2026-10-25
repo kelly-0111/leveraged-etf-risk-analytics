@@ -13,8 +13,9 @@ fixture, the frozen expected rows and the run that validated the queries are in
 [recovery-sql.md](recovery-sql.md); the author accepted that run as tooling evidence, not as approval
 of Part A. Since 2026-10-24 the tooling exists on `feature/recovery-harness`, written with Claude
 Code at the author's decision (section 9). Its offline tests passed on 2026-10-24, one of them a
-synthetic batch run end to end without services; none of it has run against the services, and no
-formal experiment was run._
+synthetic batch run end to end without services. The same day a live preflight ran against the
+services as functional validation under memory pressure ([recovery-part-a.md](recovery-part-a.md),
+section 11). No formal experiment was run._
 
 ## 1. Questions and scope
 
@@ -106,8 +107,8 @@ One direct run of the three CLIs per parameter set, under the host execution loc
 launcher takes it: an exclusive `flock`, the wait until no earlier tree survives, and an entry in
 the registry, so that a later launcher waits for the reference run's survivors too. A reference run
 then cannot overlap a worker's step, and its interval enters the overlap check (6.5). The reference
-runs come before the workers start, so that they delay no measured step. Implemented, not yet run
-(the synthetic batch replaces it): the harness drives each reference step through
+runs come before the workers start, so that they delay no measured step. Implemented, and run in
+the live preflight with an absolute batch folder (G9): the harness drives each reference step through
 `etf_risk.jobs.launcher` as the launcher's parent, so the step gets the same lock, registry, marker
 and launcher record as a worker's step.
 
@@ -117,7 +118,7 @@ Each process records its code identity in its first event when it starts (every 
 reconciler, each `submit`), each step launch records it in `step_started`, and the harness records
 it at the start and end of the batch. The identity is `source_digest`, one SHA-256 over the per-file
 `source_sha256` map of `provenance.code_state()`, with `uv_lock_sha256`; the commit and the clean
-flag are only reported. Implemented and tested offline, not yet run against the services:
+flag are only reported. Implemented, tested offline, and run in the live preflight:
 `provenance.code_identity()` for starting processes, and `provenance.source_identity()`, the same
 two hashes without asking git, for each step launch. A crashed attempt writes no `attempt.json`, so
 identity is never read from that file; it is read only for accepted attempts, to find their run
@@ -137,7 +138,7 @@ name, start order or `client.id` ordering. Implemented: kafka.py writes `assigne
 `lost` events from its rebalance callbacks, and the harness reads the owner only after a started
 worker's first `assigned` event, so a stale assignment is never taken for the owner. The offline
 tests and the synthetic batch exercise the events and the harness's reading of them with a
-stand-in group; the live Kafka test has not run.
+stand-in group; on 2026-10-24 the live Kafka test and the live preflight ran them against Kafka.
 
 **Restart rule.** A killed worker starts again only once its job has finished (read from the
 table), when the other worker is idle; the harness waits for the rebalance and records the new
@@ -538,7 +539,8 @@ first copies of the documents, on `docs/recovery-outline`, stay as they were at 
 
 ### 8.6 The live preflight (proposal)
 
-- **What.** One small batch against the services, before any formal batch, and only after the M2
+- **What.** It ran on 2026-10-24; its outcomes are in [recovery-part-a.md](recovery-part-a.md),
+  section 11. One small batch against the services, before any formal batch, and only after the M2
   session releases the window: the reference run through the launcher (2.2), then C0, W1, W6, W7,
   K1, K2, D1, D2 and a second C0, in that order, on the default clock (P2), with the provisional
   settings of P3 and P4 and the hooks of P5. Plan: `plan --purpose preflight --jobs
@@ -616,8 +618,9 @@ first copies of the documents, on `docs/recovery-outline`, stay as they were at 
 - **Mutation checks, 2026-10-24.** The 27 focused mutations of `tests/mutation_check.py`, each run
   against the one test file that should catch it, after those files passed unmutated: 27 caught,
   none survived, no error. The 49 earlier mutations of the job queue were not run again.
-- **Not done:** the MySQL and Kafka variants of the tests, the live preflight (8.6), and any formal
-  batch.
+- **Not done:** the fix of G9 ([recovery-part-a.md](recovery-part-a.md), section 9), live runs of
+  W2, W3, W4, W5a, W5b and X1, and any formal batch. The MySQL and Kafka variants of the tests and
+  the live preflight ran on 2026-10-24 (the same document, section 11).
 - **Authorship.** Spec §11: the job code is written with Claude Code. At the author's decision of
   2026-10-24, Claude Code also writes the recovery experiments' tooling listed above, and each new
   module says so. The items in 1.1, and the experiments' decisions, runs and answers, are the
@@ -673,3 +676,12 @@ not the job system.
   cleanup listing, host memory and Spark scratch produced, X1's refusals corrected to `succeeded`,
   and the command examples. Workload, deadlines and memory rules stay provisional; Part A is not
   approved.
+- **Revision 7, 2026-10-24.** The live preflight, the job tests against the services, the live
+  pipeline module and the full offline suite ran in the window M2 handed over; their outcomes, kept
+  apart from formal results, are in [recovery-part-a.md](recovery-part-a.md), section 11.
+  - preflight-1 failed in setup on a defect, G9: a relative batch folder breaks the reference run's
+    launcher;
+  - preflight-2, with an absolute folder, made all 9 injections and passed validity.
+
+  All of it ran under memory pressure, so it is functional validation only. Part A stays
+  provisional.

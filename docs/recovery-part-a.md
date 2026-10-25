@@ -4,8 +4,10 @@ _**Draft, not approved.** A proposal for the author's decision; no formal batch 
 workload, deadlines and memory rules below are provisional. It condenses
 [recovery-experiments.md](recovery-experiments.md) for the preferred draft. Every command, event
 and record in it was checked against the tooling at `772b647` and the fixes of section 9. The
-memory rules stay provisional until M2's isolated memory-budget check. Drafted with Claude Code
-(Opus 5.5) at the author's request on 2026-10-24; the decisions in section 10 are the author's._
+memory rules stay provisional until M2's isolated memory-budget check. A live preflight ran on
+2026-10-24 as functional validation under recorded memory pressure (section 11); its times and
+memory readings are not performance or budget evidence. Drafted with Claude Code (Opus 5.5) at the
+author's request on 2026-10-24; the decisions in section 10 are the author's._
 
 ## 1. Workload
 
@@ -57,7 +59,10 @@ and 2S is 70.2 s (twice M2's slowest step sum, 35.1 s). `max_lag_s` is 1 s and t
 | K2 | Kafka's return | g + P + 19 = 54 s | 125 s |
 | D1, D2 | MySQL's return | L + P = 65 s | 140 s |
 
-A missed injection takes C0's deadline from its submit.
+A missed injection takes C0's deadline from its submit. The preflight's two C0 jobs took 52.4 and
+46.8 s (median 49.6 s). That is above the 40 s assumed but below 70.2 s, so by P3's own rule D is
+not re-derived; the margins shrink from 31–35 s to about 20–25 s. Both values come from a host
+under memory pressure (section 11).
 
 ## 4. Predictions
 
@@ -149,10 +154,11 @@ git status --short                                             # clean: the batc
 # 1. Live preflight (8.6 of the outline): before any formal batch, kept apart from formal results
 uv run --group jobs python -m etf_risk.jobs.harness plan --purpose preflight --seed 1 \
     --jobs C0,W1,W6,W7,K1,K2,D1,D2,C0 --out data/outputs-recovery/preflight/plan-1.json
+# --out must be an absolute path until G9 is fixed (section 9)
 caffeinate -i uv run --group jobs python -m etf_risk.jobs.harness batch \
-    --plan data/outputs-recovery/preflight/plan-1.json --out data/outputs-recovery/preflight/preflight-1
+    --plan data/outputs-recovery/preflight/plan-1.json --out "$PWD/data/outputs-recovery/preflight/preflight-2"
 uv run --group jobs python analysis/collect_recovery_measurements.py \
-    --batch data/outputs-recovery/preflight/preflight-1
+    --batch data/outputs-recovery/preflight/preflight-2
 # The job tests and the live pipeline tests against both services, outputs kept with the preflight
 docker compose -f docker/compose.yaml up -d --wait mysql kafka
 uv run --group jobs python -m etf_risk.services ready mysql kafka
@@ -168,7 +174,7 @@ uv run --group jobs python -m etf_risk.jobs.harness plan --purpose formal --seed
     --out data/outputs-recovery/formal/plan-<SEED>.json
 uv run --group jobs python -m etf_risk.jobs.harness estimate --plan data/outputs-recovery/formal/plan-<SEED>.json
 caffeinate -i uv run --group jobs python -m etf_risk.jobs.harness batch \
-    --plan data/outputs-recovery/formal/plan-<SEED>.json --out data/outputs-recovery/formal/batch-1 --formal
+    --plan data/outputs-recovery/formal/plan-<SEED>.json --out "$PWD/data/outputs-recovery/formal/batch-1" --formal
 
 # 3. Collection: injections.csv, tally.csv and validity.json in the batch folder; exit 1 on invalidity
 uv run --group jobs python analysis/collect_recovery_measurements.py --batch data/outputs-recovery/formal/batch-1
@@ -188,32 +194,29 @@ and the snapshot's input files for its input check.
 
 ## 8. Runtime
 
+Revised with the preflight's measurements (section 11), all taken under memory pressure:
+
 | Part | Seconds | Basis |
 |---|---|---|
-| Containers up and ready, `init-db`, topic | about 60 | assumed |
-| Reference run (windows and spark_pipeline under the launcher) | about 35 | M2's steps (25.6 s) plus starts, assumed |
-| Reconciler and two workers started and joined | about 25 | assumed |
-| 28 jobs | 2,806 | the estimator, 2 × 1,403 |
-| Quiescence, final snapshot, `down -v` | about 60 | assumed |
-| **Batch** | **2,986, about 50 min** | the estimator, with 180 s for the fixed parts |
+| Containers, `init-db`, topic, reference run, the three processes | 81 | preflight-2's setup (services 14 s, reference run 58 s) |
+| 28 jobs | 2,836 | the estimator with T 49.6 s, restores 11 s and restarts 5 s |
+| Quiescence, final snapshot, `down -v` | about 20 | preflight-2 (3 s to `batch_ended`) plus teardown |
+| **Batch** | **2,936, about 49 min** | the estimator, with 100 s for the fixed parts |
 | Plan and collection | about 120 | assumed |
-| **End to end** | **about 52 min** | |
+| **End to end** | **about 51 min** | |
 
-The batch comes to 52, 55 or 60 minutes if T is 45, 50 or 60 s. Restarts of 20 s instead of 12 add
-about 2 minutes (16 restarts), and restores of 40 s instead of 20 add about 1 minute. A job that
-hangs stops the batch at its drain limit, at most 2D from its reference (340 s for W7). The
-preflight measures each of these:
-- `services_up` seconds;
-- the reference steps' times;
-- process starts and restarts;
-- T, from its two C0 jobs.
+- **Ranges.** The batch comes to 51.6 min if T is 55 s. It comes to 51.7 min if restores take
+  20 s, since D2 then takes its fenced branch, as D1 did in the preflight.
+- **Earlier figures.** The first estimate, with unmeasured assumptions, was 49.8 min. Preflight-2
+  took 15.1 min against an estimated 17.8.
+- **Limits.** A job that hangs stops the batch at its drain limit, at most 2D from its reference
+  (340 s for W7).
+- **Status.** Planning figures, not performance evidence.
 
-The preflight itself takes about 18 minutes for the batch and about 15 more for the two test runs.
+## 9. Gaps in the service-only paths: G1–G8 fixed on 2026-10-24, G9 open
 
-## 9. Gaps in the service-only paths, fixed on 2026-10-24
-
-Found by reviewing the paths that only a live batch runs; fixed at the author's approval and
-checked offline only (no services yet).
+G1–G8 were found by reviewing the paths that only a live batch runs, fixed at the author's approval,
+and checked offline. G9 was found by preflight-1 and is not fixed.
 
 | | Gap | Now | Checked by |
 |---|---|---|---|
@@ -225,6 +228,7 @@ checked offline only (no services yet).
 | G6 | The collector's example path predated the purpose folders | `.../formal/<batch>` and `.../preflight/<name>` | — |
 | G7 | `plan --out` needed its folder to exist | `plan` creates it | harness test |
 | G8 | The outline's X1 row predicted `lease held` for the first duplicate | `succeeded`, in the outline and here | — |
+| G9 | With a relative batch folder, the harness passed relative paths to the reference run's launcher, which runs in `.work`; the step could not start (launcher exit 71, `launch_failed`) | **open**: run with an absolute `--out`, as preflight-2 did; proposed fix: the batch makes its folder absolute, with a test and a mutation | preflight-1 (failed), preflight-2 (absolute) |
 
 ## 10. Author decisions
 
@@ -232,10 +236,75 @@ checked offline only (no services yet).
 |---|---|
 | Workload (P1) | 28 jobs in one batch; the 84 jobs stay the alternative |
 | Clock (P2) | the defaults, confirmed by the preflight |
-| Deadlines (P3) | as in section 3; re-derived from the measured T only if T > 70.2 s |
+| Deadlines (P3) | as in section 3; the preflight's T (median 49.6 s) is below 70.2 s, so no re-derivation |
 | Harness waits | 3 s phase delay, 90 s W7 stop, 30 s outages |
 | Clock-check tolerance | 1 s |
 | Injection method (P5) | the fault file, as implemented |
-| Memory (P4) | flag at 90%, stop at 95%, host memory recorded and not used as a gate; provisional until M2's check |
+| Memory (P4) | flag at 90%, stop at 95%, host memory recorded and not used as a gate; provisional until M2's isolated check, which could not run with about 1.2 GiB available |
+| G9 | fix it (the batch makes its folder absolute) before any formal batch, with a test and a mutation |
+| Live coverage of W2, W3, W4, W5a, W5b and X1 | after the G9 fix, a second preflight with C0 and these six (about 12 min), rather than their first live run in the formal batch |
+| Host state for a formal batch | first the isolated memory check, passing on a host with enough free memory; then a stated minimum of available memory before each job, recorded per job (8.3) |
 | A preflight that finds a defect | fix it, then run a new preflight in a new folder; keep both |
 | Seed | an integer the author fixes in the plan before the batch |
+
+## 11. Live preflight, 2026-10-24: functional validation only
+
+_Run in the exclusive window that M2 handed over, on code `7bd4d20`, under recorded memory
+pressure: 1.2–1.5 GiB of 8 GiB available before each job, with about 10 GiB of swap in use. M2's
+isolated memory check could not run for the same reason, so the container budgets are unvalidated.
+The times and memory below show that the paths work; they are not performance or budget evidence.
+Every record stays under `data/outputs-recovery/preflight/`, apart from formal results._
+
+| Run | Outcome |
+|---|---|
+| preflight-1: the plan, relative batch folder | **failed in setup**: the reference run's windows step could not start (launcher exit 71, `launch_failed`; G9). Recorded as `setup_error`, all 9 jobs `not_run`; the final snapshot and teardown ran; harness exit 1; validity failed (`records_complete`) |
+| preflight-2: the same plan, absolute batch folder | 9 of 9 injections made, none missed or unrecorded; all 9 jobs on time; validity passed; harness exit 0; 15.1 min |
+| job tests against MySQL 8.4 and Kafka | 515 passed, 10 skipped (the live cases, run next), 0 failed, in 2 min 53 s |
+| live pipeline module | 10 passed, 0 failed, in 10 min 54 s; its overlap check now compares monotonic times |
+| full offline suite, after the services were removed | 622 passed, 30 skipped (the MySQL, Kafka and live tests, which passed in the two runs above), 0 failed, in 9 min 54 s, Spark tests included |
+
+Preflight-2 by case. Finish is measured from the deadline's reference; D is from section 3.
+
+| Case | Claims | Detection | Finish | D | Observed path |
+|---|---|---|---|---|---|
+| C0 | 1 | — | 52.4 s | 75 s | baseline |
+| W1 | 1 | standby's `delivered`, 13.5 s | 69.8 s | 90 s | killed at `before_claim`; the standby took over |
+| W6 | 2 | `requeued`, 57.9 s | 103.9 s | 140 s | the worker stopped; takeover; fenced after SIGCONT |
+| W7 | 2 | `requeued`, 57.5 s | 132.0 s | 170 s | a tree of 4 processes stopped for 90 s; the replacement ran after it |
+| K1 | 1 | — | 47.6 s | 75 s | Kafka ready 9.3 s after its restart began; the attempt went on |
+| K2 | 1 | `published`, 3.0 s after Kafka's return | 64.3 s | 125 s | Kafka back 33.9 s after the stop; one claim |
+| D1 | 2 | `renewal_failed`, 5.9 s after the stop | 54.6 s | 140 s | MySQL back 40.8 s after the stop, after F: fenced, then attempt 2 |
+| D2 | 1 | `retry` of `accept_result`, 3.9 s after the stop | 0.5 s | 140 s | MySQL back 31.6 s after the stop, before F: accepted |
+| C0 | 1 | — | 46.8 s | 75 s | baseline |
+
+- **E1 and the records:**
+  - every Q1 verdict `ok`, no overlapping step intervals, `status --check` exit 0 and no invariant
+    violation;
+  - all 9 accepted results equal the reference run, with matching digests, and the three
+    fingerprints are equal;
+  - Q3a `reported once` and Q3b `matches` throughout;
+  - quiescence left no process, no other client and no new Spark scratch, and the cleanup listing
+    is recorded;
+  - the clock check passed (`ts` minus `mono` −0.018 s over the batch), with 6 of 6 process starts
+    on one clock and one code identity over 50 records.
+- **Ownership:** read from the assignment events throughout. A owned the partition first, B from
+  its join until W6, and A after that. Every arming hit the owner.
+- **Liveness:** 28 `retry` events (D2's acceptance during the outage) and 15 failed reconciler
+  passes (during the MySQL outages). There was no `failed_after_ack`, no `consumer_error` and no
+  serve restart.
+- **Against the assumptions:**
+
+  | Quantity | Assumed | Observed |
+  |---|---|---|
+  | T | 40 s | 52.4 and 46.8 s |
+  | restart and rejoin | 12 s | 3.7–5.2 s |
+  | restore after start | 20 s | Kafka 3.9 s; MySQL 1.6 and 10.8 s |
+  | fixed batch parts | 180 s | about 100 s (setup 81 s) |
+  | reference steps | 25.6 s (M2) | windows 9.1 s, spark_pipeline 48.5 s |
+
+- **Memory, informational only:**
+  - container peaks in preflight-2: MySQL 250 of 512 MiB (49%) and Kafka 386 of 640 MiB (60%);
+  - after the two test runs: 208 and 372 MiB;
+  - host memory available before each job: 1.19–1.5 GiB.
+- **Not covered live:** W2, W3, W4, W5a, W5b and X1 ran only in the synthetic batch. The live
+  hook path was exercised through W1, and the mid-step path through W6, W7, K1 and D1.
