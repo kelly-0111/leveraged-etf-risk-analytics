@@ -307,7 +307,8 @@ def test_host_memory_spark_scratch_and_the_cleanup_listing_are_reported(batch, t
     result = crm.collect(batch, processed_root=tmp_path / "processed")
     rows = {r["position"]: r for r in result["rows"]}
     assert [rows[p].get("host_available_bytes") for p in (1, 2, 3, 4)] == [3 * 2**30, 2 * 2**30, 2**30, None]
-    assert result["outcomes"]["host_memory"] == {"jobs_with_a_reading": 3, "min_available_bytes": 2**30}
+    host = result["outcomes"]["host_state"]                       # host_memory events, as recorded before host_state
+    assert (host["jobs_with_a_reading"], host["min_available_bytes"], host["power_sources"]) == (3, 2**30, [])
     assert result["outcomes"]["nothing_left"]["spark_scratch_new"] == ["/private/tmp/spark-x"]
     assert result["outcomes"]["cleanup_listing"] == "cleanup.txt"
 
@@ -319,3 +320,29 @@ def test_a_recorded_setup_or_final_error_fails_validity(batch, tmp_path):
     validity = json.loads((batch / "validity.json").read_text())
     assert "records_complete" in validity["validity_failed"]
     assert validity["validity"]["records_complete"]["setup_errors"] == ["RuntimeError: init-db: exit 1"]
+
+
+def test_the_host_state_gives_each_job_its_swap_activity_power_and_pressure(batch, tmp_path):
+    gib, mib = 2**30, 2**20
+    with open(batch / "harness.jsonl", "a") as f:
+        for stage, position, swapped_out, power, pressure in (("start", None, 0, "AC Power", 1),
+                                                              ("job", 1, 10, "AC Power", 1),
+                                                              ("job", 2, 10, "Battery Power", 2),
+                                                              ("job", 3, 50, "AC Power", 4),
+                                                              ("end", None, 80, "AC Power", 1)):
+            e = {"event": "host_state", "stage": stage, "available_bytes": 2 * gib, "total_bytes": 8 * gib,
+                 "swap_used_bytes": swapped_out * mib, "swap_in_bytes": 0, "swap_out_bytes": swapped_out * mib,
+                 "memory_pressure": pressure, "power_source": power, "lid_closed": position == 2}
+            if position is not None:
+                e["position"] = position
+            f.write(json.dumps(e) + "\n")
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    rows = {r["position"]: r for r in result["rows"]}
+    assert [rows[p]["swap_out_during_bytes"] for p in (1, 2, 3)] == [0, 40 * mib, 30 * mib]   # the last, to the end
+    assert [(rows[p]["power_source"], rows[p]["memory_pressure"], rows[p]["lid_closed"]) for p in (1, 2, 3)] == [
+        ("AC Power", 1, False), ("Battery Power", 2, True), ("AC Power", 4, False)]
+    assert "power_source" not in rows[4]                              # K2 was not run: no reading
+    assert result["outcomes"]["host_state"] == {
+        "jobs_with_a_reading": 3, "power_sources": ["AC Power", "Battery Power"], "on_battery": [2], "lid_closed": [2],
+        "max_memory_pressure": 4, "min_available_bytes": 2 * gib, "swap_used_change_bytes": 80 * mib,
+        "swap_out_batch_bytes": 80 * mib, "swap_in_batch_bytes": 0}

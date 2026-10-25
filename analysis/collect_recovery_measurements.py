@@ -4,7 +4,8 @@ sections 5 and 6).
 A batch folder is what etf_risk.jobs.harness batch wrote:
 
     harness.jsonl   the harness's events: plan, injections, deadlines, observations, peaks, owners,
-                    the host's memory before each job, Spark scratch, setup and final errors
+                    the host's state (memory, swap, pressure, power, lid) at the start, before
+                    each job and at the end, Spark scratch, setup and final errors
     events/         the workers' logs (A.jsonl, B.jsonl), the reconciler's, and submit.jsonl
     jobs/<store>/   the attempts' folders, with logs/*.launcher.json and, when complete, manifest.json
     reference/      the reference run, under the launcher
@@ -21,7 +22,8 @@ Run from the repository root, on a batch in the folder of its purpose:
 It writes into the batch folder:
 - injections.csv: one row per planned job, with the case, the injection, the metrics of
   section 5, each n/a with its reason or unknown when its record is missing, the verdicts of
-  Q1, Q2 and Q3a, and the host's available memory before the job;
+  Q1, Q2 and Q3a, and the host before the job (available memory, memory pressure, power source,
+  lid) with the bytes swapped out until the next reading;
 - tally.csv: per case, the jobs planned, made, missed, not run and unrecorded, and every verdict value of
   Q1, Q2, deadline_met, Q3a and Q3b, with zeros;
 - validity.json: the batch's purpose (preflight or formal, from its plan), the checks of 6.1
@@ -72,7 +74,7 @@ LIVENESS = ("serve_restarted", "retry", "rewound", "gave_up", "failed_after_ack"
 FIELDS = ["position", "case", "job_id", "status", "missed", "injection", "worker", "t_inj", "reference", "deadline_s",
           "detection_s", "rerun_s", "finish_s", "overhead_s", "claims", "accepted", "executions", "complete_executions",
           "wasted_step_s", "fenced_events", "timeliness", "deadline_met", "q1_verdict", "q3a_verdict",
-          "host_available_bytes"]
+          "host_available_bytes", "memory_pressure", "power_source", "lid_closed", "swap_out_during_bytes"]
 
 
 # Reading the folder
@@ -352,6 +354,53 @@ def input_check(b: BatchFolder, processed_root: Path) -> dict:
     return {"passed": not differ, "jobs_differing": differ}
 
 
+# The host (docs/recovery-part-a.md, section 12)
+
+def host_readings(b: BatchFolder) -> dict:
+    """The reading before each job, by position: host_state events, or the host_memory events of
+    batches recorded before 2026-10-24's power and swap recording, which hold memory only."""
+    readings = {e["position"]: e for e in named(b.harness, "host_memory")}
+    readings.update({e["position"]: e for e in named(b.harness, "host_state", stage="job")})
+    return readings
+
+
+def host_row(host: dict, position: int, end: dict | None) -> dict:
+    """A job's host columns. swap_out_during_bytes is what the host swapped out from this reading to
+    the next one (the next job's, or the batch's end reading), so it covers the job; None without
+    both."""
+    reading = host[position]
+    later = sorted(p for p in host if p > position)
+    after = host[later[0]] if later else end
+    swapped = None
+    if after is not None and reading.get("swap_out_bytes") is not None and after.get("swap_out_bytes") is not None:
+        swapped = after["swap_out_bytes"] - reading["swap_out_bytes"]
+    return {"host_available_bytes": reading.get("available_bytes"), "memory_pressure": reading.get("memory_pressure"),
+            "power_source": reading.get("power_source"), "lid_closed": reading.get("lid_closed"),
+            "swap_out_during_bytes": swapped}
+
+
+def host_summary(b: BatchFolder, host: dict) -> dict:
+    """The batch's host record: where it ran on battery or with the lid closed, the highest
+    memory pressure, the lowest available memory, and the swap from its start to its end."""
+    start = (named(b.harness, "host_state", stage="start") or [{}])[0]
+    end = (named(b.harness, "host_state", stage="end") or [{}])[-1]
+    jobs = list(host.values())
+
+    def change(key):
+        return end[key] - start[key] if start.get(key) is not None and end.get(key) is not None else None
+
+    return {"jobs_with_a_reading": len(jobs),
+            "power_sources": sorted({e["power_source"] for e in [start, *jobs, end] if e.get("power_source")}),
+            "on_battery": [p for p, e in sorted(host.items()) if e.get("power_source") == "Battery Power"],
+            "lid_closed": [p for p, e in sorted(host.items()) if e.get("lid_closed")],
+            "max_memory_pressure": max((e["memory_pressure"] for e in [start, *jobs, end]
+                                        if e.get("memory_pressure") is not None), default=None),
+            "min_available_bytes": min((e["available_bytes"] for e in jobs if e.get("available_bytes") is not None),
+                                       default=None),
+            "swap_used_change_bytes": change("swap_used_bytes"), "swap_out_batch_bytes": change("swap_out_bytes"),
+            "swap_in_batch_bytes": change("swap_in_bytes")}
+
+
 # The batch
 
 def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path = REPO / "data" / "processed") -> dict:
@@ -360,7 +409,8 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
     injections = {e["position"]: e for e in named(b.harness, "injection")}
     not_run = {e["position"]: e for e in named(b.harness, "not_run")}
     not_submitted = {e["position"]: e for e in named(b.harness, "job_not_submitted")}
-    host = {e["position"]: e for e in named(b.harness, "host_memory")}
+    host = host_readings(b)
+    host_end = (named(b.harness, "host_state", stage="end") or [None])[-1]
     q1, q2, q3a = by_job(b.q["Q1"]), by_job(b.q["Q2"]), by_job(b.q["Q3a"])
     c0 = []
     for position, e in deadlines.items():
@@ -373,7 +423,7 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
     for position, case in enumerate(b.plan["jobs"], start=1):
         row = {"position": position, "case": case}
         if position in host:
-            row["host_available_bytes"] = host[position].get("available_bytes")
+            row.update(host_row(host, position, host_end))
         if position in not_run or position in not_submitted:
             row["status"] = "not run" if position in not_run else "not submitted"
             rows.append(row)
@@ -425,8 +475,7 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
                          "other_connections": quiescent.get("other_connections"),
                          "spark_scratch_new": quiescent.get("spark_scratch_new")},
         "cleanup_listing": "cleanup.txt" if (folder / "cleanup.txt").exists() else "not recorded",
-        "host_memory": {"jobs_with_a_reading": len(host),
-                        "min_available_bytes": min((e.get("available_bytes") for e in host.values()), default=None)},
+        "host_state": host_summary(b, host),
         "q2b_rows": b.q["Q2b"],
         "q3b_not_matching": [r for r in b.q["Q3b"] if r.get("report_verdict") != "matches"],
         "liveness": {name: len(named(b.worker_events() + b.reconciler, name)) for name in LIVENESS},

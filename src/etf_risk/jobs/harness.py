@@ -30,7 +30,8 @@ batch runs one plan on fresh containers (2.1-2.5):
 - then quiescence (4.4), the final snapshot with crosscheck.sql (4.5), and the services
   removed.
 Its records go to DIR (section 9): harness.jsonl (the harness's own events, among them the
-host's memory before each job and the Spark scratch at the start), events/ (every process's
+host's state at the start, before each job and at the end: memory, swap, memory pressure, power
+source and lid; and the Spark scratch at the start), events/ (every process's
 log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
 status-check.txt, cleanup.txt (cleanup's dry-run listing), and plan.json. A failure in the setup
 is recorded as setup_error, with every planned job as not_run; a failure in the final steps as
@@ -357,11 +358,40 @@ def spark_scratch(folders) -> list[str]:
     return sorted(names)
 
 
-def host_memory() -> dict:
-    """The host's memory, read before each job (P4: recorded, never a gate)."""
+def parse_power_source(text: str) -> str | None:
+    """'AC Power' or 'Battery Power', from the first line of `pmset -g batt`; None without one."""
+    match = re.search(r"Now drawing from '([^']+)'", text)
+    return match.group(1) if match else None
+
+
+def parse_lid_closed(text: str) -> bool | None:
+    """Whether the lid is closed, from `ioreg -r -k AppleClamshellState -d 4`; None without it."""
+    match = re.search(r'"AppleClamshellState" = (Yes|No)', text)
+    return None if match is None else match.group(1) == "Yes"
+
+
+def _command_output(*argv: str) -> str:
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def host_state(command=_command_output) -> dict:
+    """The host as the protocol of docs/recovery-part-a.md (section 12) records it, at a batch's
+    start and end and before each job; never a gate. Memory available; swap in use and the bytes
+    swapped in and out so far (psutil), whose differences between readings give the swap
+    activity; macOS's memory-pressure level (kern.memorystatus_vm_pressure_level: 1 normal,
+    2 warning, 4 critical); the power source; whether the lid is closed. A value the host does not
+    give is None."""
     import psutil
-    memory = psutil.virtual_memory()
-    return {"available_bytes": memory.available, "total_bytes": memory.total}
+    memory, swap = psutil.virtual_memory(), psutil.swap_memory()
+    pressure = command("sysctl", "-n", "kern.memorystatus_vm_pressure_level").strip()
+    return {"available_bytes": memory.available, "total_bytes": memory.total,
+            "swap_used_bytes": swap.used, "swap_in_bytes": swap.sin, "swap_out_bytes": swap.sout,
+            "memory_pressure": int(pressure) if pressure.isdigit() else None,
+            "power_source": parse_power_source(command("pmset", "-g", "batt")),
+            "lid_closed": parse_lid_closed(command("ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"))}
 
 
 # The batch
@@ -813,7 +843,7 @@ class Batch:
 
     def run_job(self, position: int, case: str) -> dict:
         s = self.settings
-        self.log.log("host_memory", position=position, **host_memory())    # P4: recorded, never a gate
+        self.log.log("host_state", stage="job", position=position, **host_state())    # recorded, never a gate
         record = {"position": position, "case": case, "owner_before": self.wait_owner()}
         armed, release, injection = None, None, None
         if case in HOOKS:
@@ -1037,6 +1067,7 @@ class Batch:
                      clock=clock_pair(), settings=asdict(self.settings), topic=self.topic)
         self.scratch_before = spark_scratch(self.scratch_folders())
         self.log.log("spark_scratch", stage="start", entries=self.scratch_before)
+        self.log.log("host_state", stage="start", **host_state())
         incomplete = False
         try:
             try:
@@ -1077,6 +1108,7 @@ class Batch:
             for proc in self.procs.values():
                 if proc.poll() is None:
                     proc.kill()
+            self.log.log("host_state", stage="end", **host_state())
             self.log.log("batch_ended", clock=clock_pair(), code=code_identity(), stop_reason=self.stop_reason)
             if self.services_started:                       # never containers this batch did not start
                 self.compose("down", "-v")

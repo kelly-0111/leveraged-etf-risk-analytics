@@ -454,8 +454,11 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert harness.events_named(events, "job_error") == [] and harness.events_named(events, "final_error") == []
     assert harness.events_named(events, "batch_ended")[0]["stop_reason"] is None
     assert len(harness.events_named(events, "restarted")) == 6           # W1, W2, W3, W4, W5a and W5b each killed one
-    memory = harness.events_named(events, "host_memory")                 # read before every job (P4)
-    assert [e["position"] for e in memory] == list(range(1, 10)) and all(e["available_bytes"] > 0 for e in memory)
+    host = harness.events_named(events, "host_state")                    # at the start, before every job, at the end
+    assert [e["stage"] for e in host] == ["start"] + ["job"] * 9 + ["end"]
+    assert [e["position"] for e in host if e["stage"] == "job"] == list(range(1, 10))
+    assert all(e["available_bytes"] > 0 and e["swap_out_bytes"] >= 0 and "power_source" in e and "lid_closed" in e
+               for e in host)
     quiescent = harness.events_named(events, "quiescent")[0]           # 6.5: the killed W3 attempt's Spark scratch
     assert quiescent["spark_scratch_new"] == [str(batch.scratch_dir / "spark-job-4-attempt-1")]
     cleanup = (batch.out / "cleanup.txt").read_text()                  # 6.2: the unaccepted attempts' folders
@@ -503,7 +506,7 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert outcomes["q3b_not_matching"] == [] and outcomes["q2b_rows"] == []
     assert outcomes["nothing_left"] == {"processes_left": False, "other_connections": 0,
                                         "spark_scratch_new": [str(batch.scratch_dir / "spark-job-4-attempt-1")]}
-    assert outcomes["cleanup_listing"] == "cleanup.txt" and outcomes["host_memory"]["jobs_with_a_reading"] == 9
+    assert outcomes["cleanup_listing"] == "cleanup.txt" and outcomes["host_state"]["jobs_with_a_reading"] == 9
     assert all(rows[p]["host_available_bytes"] > 0 for p in rows)
     tally = {t["case"]: t for t in result["tally"]}
     for case in set(JOBS):

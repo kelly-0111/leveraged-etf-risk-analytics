@@ -344,6 +344,7 @@ def test_a_setup_failure_is_recorded_and_every_planned_job_kept_as_not_run(tmp_p
         (1, "an error in the setup"), (2, "an error in the setup")]
     assert harness.events_named(events, "batch_ended")[0]["stop_reason"] == "an error in the setup"
     assert batch.calls == [("quiesce",), ("final_snapshot",), ("compose", "down", "-v")]   # its own services
+    assert [e["stage"] for e in harness.events_named(events, "host_state")] == ["start", "end"]   # recorded all the same
 
 
 def test_containers_found_running_are_never_taken_down(tmp_path):
@@ -465,3 +466,29 @@ def test_a_relative_batch_folder_reaches_the_reference_launcher_as_absolute_path
         step = command[command.index("--") + 1:]
         assert all(Path(value).is_absolute() for flag, value in zip(step, step[1:])
                    if flag.startswith("--") and "/" in value)        # the step's own folders too
+
+
+
+# The host's state (docs/recovery-part-a.md, section 12)
+
+PMSET_AC = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining present: true\n"
+PMSET_BATTERY = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t97%; discharging; 7:54 remaining\n"
+IOREG_OPEN = '  |   "AppleClamshellCausesSleep" = No\n  |   "AppleClamshellState" = No\n'
+IOREG_CLOSED = '  |   "AppleClamshellState" = Yes\n'
+
+
+def test_the_power_source_and_the_lid_are_read_from_pmset_and_ioreg():
+    assert [harness.parse_power_source(t) for t in (PMSET_AC, PMSET_BATTERY, "")] == ["AC Power", "Battery Power", None]
+    assert [harness.parse_lid_closed(t) for t in (IOREG_OPEN, IOREG_CLOSED, "")] == [False, True, None]
+
+
+def test_the_host_state_has_memory_swap_pressure_power_and_the_lid():
+    outputs = {"sysctl": "4\n", "pmset": PMSET_BATTERY, "ioreg": IOREG_CLOSED}
+    state = harness.host_state(command=lambda *argv: outputs[argv[0]])
+    assert set(state) == {"available_bytes", "total_bytes", "swap_used_bytes", "swap_in_bytes", "swap_out_bytes",
+                          "memory_pressure", "power_source", "lid_closed"}
+    assert (state["memory_pressure"], state["power_source"], state["lid_closed"]) == (4, "Battery Power", True)
+    assert all(isinstance(state[k], int) and state[k] >= 0
+               for k in ("available_bytes", "swap_used_bytes", "swap_in_bytes", "swap_out_bytes"))
+    unknown = harness.host_state(command=lambda *argv: "")                 # a host that gives none of them
+    assert (unknown["memory_pressure"], unknown["power_source"], unknown["lid_closed"]) == (None, None, None)
