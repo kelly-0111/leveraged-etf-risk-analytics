@@ -258,9 +258,11 @@ never repeated on its own.
 
 ## Status on 2026-10-24 (`feature/worker-pipeline`)
 
-- **Offline:** the whole suite on 6d8a232, before the memory check's tests were added: 551
-  passed and 29 skipped (the tests that need MySQL, Kafka or ETF_RISK_LIVE_PIPELINE). The
-  Spark-marked end-to-end test passed.
+- **Offline:** the whole suite (`uv run --group measure --group plots pytest`) on eff994d,
+  whose code is that of 05337a6, the commit the memory check ran on: 669 passed and 29 skipped
+  (the tests that need MySQL, Kafka or ETF_RISK_LIVE_PIPELINE), in 7 min 28 s. The 669
+  include the memory check's 118 offline tests and the Spark-marked end-to-end test. On
+  6d8a232, before the memory check's tests were added, it gave 551 passed and 29 skipped.
 - **Against MySQL 8.4.13 and Kafka 4.3.1** on fresh containers: the job suites, run with the
   README's command (all of `tests/test_jobs_*.py`) on 6d8a232, 463 passed and 10 skipped. The
   10 skipped are the acceptance cases: they also need ETF_RISK_LIVE_PIPELINE, and their own
