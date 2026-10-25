@@ -7,9 +7,10 @@
 
 plan fixes a batch before it runs (8.1): its purpose, its jobs in an order shuffled from the
 seed with a C0 control at each end (or, with --jobs, in the order listed, with no controls
-added), the case of each, the settings and the code identity. Settings holds every value that section 8 of the outline leaves provisional (timing,
-repetitions, deadlines, the harness's waits, the memory thresholds); a settings file (JSON)
-replaces any of them, and the plan records the values used.
+added), the case of each, the settings and the code identity. Settings holds the values that
+Part A approved (docs/recovery-part-a.md, section 10: timing, repetitions, deadlines, the
+harness's waits, the memory thresholds); a settings file (JSON) replaces any of them, and the
+plan records the values used.
 
 A plan's purpose keeps a preflight apart from formal results (8.6): batch writes only into a
 folder named after the purpose (data/outputs-recovery/preflight/<batch> or .../formal/<batch>),
@@ -31,17 +32,17 @@ batch runs one plan on fresh containers (2.1-2.5):
   removed.
 Its records go to DIR (section 9): harness.jsonl (the harness's own events, among them the
 host's state at the start, before each job and at the end: memory, swap, memory pressure, power
-source and lid; and the Spark scratch at the start), events/ (every process's
-log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
+source, lid and the running containers outside this project; and the Spark scratch at the
+start), events/ (every process's log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
 status-check.txt, cleanup.txt (cleanup's dry-run listing), and plan.json. A failure in the setup
 is recorded as setup_error, with every planned job as not_run; a failure in the final steps as
 final_error. Either makes the exit code 1. The containers are removed only if this batch
 started them.
 
-No batch has run against the services: Part A is not approved, and no formal experiment has been
-run. The offline parts are tested with tests/test_jobs_harness.py, and a synthetic batch, with
-SQLite and in-process stand-ins for the services, runs end to end in
-tests/test_recovery_synthetic.py.
+The live runs are reported in docs/recovery-part-a.md (the preflights, section 11) and
+docs/recovery-part-b.md (the formal batches). The offline parts are tested with
+tests/test_jobs_harness.py, and a synthetic batch, with SQLite and in-process stand-ins for the
+services, runs end to end in tests/test_recovery_synthetic.py.
 
 AI contribution: written with Claude Code (Opus 5.5), at the author's request (2026-10-24).
 """
@@ -93,12 +94,12 @@ _QUERY_NAME = re.compile(r"^-- (Q\w+)\.")
 
 @dataclass(frozen=True)
 class Settings:
-    """The provisional values of the outline's section 8 (P1-P4) and the harness's waits (8.5)."""
+    """The values Part A approved (docs/recovery-part-a.md, section 10): P1-P4 and the harness's waits."""
     snapshot: str = "full-2026-10-12"
     kind: str = "calendar-year"          # P1: every case on the calendar-year job
     stride: int = 21
     max_attempts: int = 3
-    jobs_per_case: int = 2               # P1, the preferred draft: 2 per case, one batch (28 jobs)
+    jobs_per_case: int = 2               # P1: 2 per case, one batch (28 jobs, and the controls)
     bracket_controls: bool = True        # a C0 control at each end of the shuffled order (30 jobs; approved)
     cases: tuple[str, ...] = CASES
     timing: tuple[str, ...] = ()         # --timing overrides; P2: none
@@ -506,6 +507,19 @@ class Batch:
         for service in ("mysql", "kafka"):
             self.wait_ready(service)
 
+    def other_containers(self) -> int | None:
+        """The running containers outside this project (section 12, condition 4); None when docker
+        cannot say, which the collector counts as unknown."""
+        try:
+            return self.services.other_containers()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return None
+
+    def log_host(self, stage: str, **where) -> None:
+        """A host reading (section 12): host_state() and the running containers outside this
+        project, at the start, before each job and at the end; recorded, never a gate."""
+        self.log.log("host_state", stage=stage, **where, **host_state(), other_containers=self.other_containers())
+
     def read_peaks(self, closes: str | None = None) -> str:
         """Both containers' memory.peak (4.6); the worst verdict of P4."""
         verdicts = []
@@ -849,7 +863,7 @@ class Batch:
 
     def run_job(self, position: int, case: str) -> dict:
         s = self.settings
-        self.log.log("host_state", stage="job", position=position, **host_state())    # recorded, never a gate
+        self.log_host("job", position=position)
         record = {"position": position, "case": case, "owner_before": self.wait_owner()}
         armed, release, injection = None, None, None
         if case in HOOKS:
@@ -1073,7 +1087,7 @@ class Batch:
                      clock=clock_pair(), settings=asdict(self.settings), topic=self.topic)
         self.scratch_before = spark_scratch(self.scratch_folders())
         self.log.log("spark_scratch", stage="start", entries=self.scratch_before)
-        self.log.log("host_state", stage="start", **host_state())
+        self.log_host("start")
         incomplete = False
         try:
             try:
@@ -1114,7 +1128,7 @@ class Batch:
             for proc in self.procs.values():
                 if proc.poll() is None:
                     proc.kill()
-            self.log.log("host_state", stage="end", **host_state())
+            self.log_host("end")
             self.log.log("batch_ended", clock=clock_pair(), code=code_identity(), stop_reason=self.stop_reason)
             if self.services_started:                       # never containers this batch did not start
                 self.compose("down", "-v")

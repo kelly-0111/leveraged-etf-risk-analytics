@@ -412,6 +412,9 @@ class SyntheticBatch(harness.Batch):
     def other_connections(self):
         return 0                                                       # SQLite: no server to ask
 
+    def other_containers(self):
+        return 0                                                       # no Docker in a synthetic batch
+
     def observe(self, job_id):
         self._local.unreachable = job_id in UNOBSERVED
         try:
@@ -461,7 +464,7 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert [e["stage"] for e in host] == ["start"] + ["job"] * 9 + ["end"]
     assert [e["position"] for e in host if e["stage"] == "job"] == list(range(1, 10))
     assert all(e["available_bytes"] > 0 and e["swap_out_bytes"] >= 0 and "power_source" in e and "lid_closed" in e
-               for e in host)
+               and e["other_containers"] == 0 for e in host)
     quiescent = harness.events_named(events, "quiescent")[0]           # 6.5: the killed W3 attempt's Spark scratch
     assert quiescent["spark_scratch_new"] == [str(batch.scratch_dir / "spark-job-4-attempt-1")]
     cleanup = (batch.out / "cleanup.txt").read_text()                  # 6.2: the unaccepted attempts' folders

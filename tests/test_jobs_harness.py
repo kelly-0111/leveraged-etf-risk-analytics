@@ -335,6 +335,9 @@ class SetupFails(harness.Batch):
     def scratch_folders(self):
         return []
 
+    def other_containers(self):
+        return 0
+
 
 def test_a_setup_failure_is_recorded_and_every_planned_job_kept_as_not_run(tmp_path):
     plan = harness.make_plan(DEFAULTS, seed=1, purpose="preflight", jobs=["C0", "W1"])
@@ -347,7 +350,8 @@ def test_a_setup_failure_is_recorded_and_every_planned_job_kept_as_not_run(tmp_p
         (1, "an error in the setup"), (2, "an error in the setup")]
     assert harness.events_named(events, "batch_ended")[0]["stop_reason"] == "an error in the setup"
     assert batch.calls == [("quiesce",), ("final_snapshot",), ("compose", "down", "-v")]   # its own services
-    assert [e["stage"] for e in harness.events_named(events, "host_state")] == ["start", "end"]   # recorded all the same
+    assert [(e["stage"], e["other_containers"]) for e in harness.events_named(events, "host_state")] == [
+        ("start", 0), ("end", 0)]                                         # recorded all the same
 
 
 def test_containers_found_running_are_never_taken_down(tmp_path):
@@ -495,6 +499,29 @@ def test_the_host_state_has_memory_swap_pressure_power_and_the_lid():
                for k in ("available_bytes", "swap_used_bytes", "swap_in_bytes", "swap_out_bytes"))
     unknown = harness.host_state(command=lambda *argv: "")                 # a host that gives none of them
     assert (unknown["memory_pressure"], unknown["power_source"], unknown["lid_closed"]) == (None, None, None)
+
+
+def test_every_host_reading_records_the_containers_outside_this_project(tmp_path, monkeypatch):
+    """Section 12, condition 4, at every reading since 2026-10-25: a count, or None when docker cannot say."""
+    plan = harness.make_plan(DEFAULTS, seed=1, purpose="preflight", jobs=["C0"])
+    batch = harness.Batch(plan, tmp_path / "preflight" / "b")
+    monkeypatch.setattr(harness, "host_state", lambda: {"power_source": "AC Power", "lid_closed": False})
+
+    class Counted:
+        def other_containers(self):
+            return 2
+
+    class Broken:
+        def other_containers(self):
+            raise RuntimeError("docker ps failed with exit code 1")
+
+    batch.services = Counted()
+    batch.log_host("start")
+    batch.services = Broken()
+    batch.log_host("job", position=1)
+    readings = harness.events_named(read_events(batch.out / "harness.jsonl"), "host_state")
+    assert [(e["stage"], e.get("position"), e["power_source"], e["other_containers"]) for e in readings] == [
+        ("start", None, "AC Power", 2), ("job", 1, "AC Power", None)]
 
 
 

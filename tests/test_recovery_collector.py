@@ -1,6 +1,6 @@
 """The recovery collector (analysis/collect_recovery_measurements.py) on synthetic batch folders:
 the metrics of section 5 with their n/a reasons, unknown intervals, the per-case tally with
-zeros, and validity apart from outcomes. No real batch exists yet.
+zeros, and validity apart from outcomes.
 
 AI contribution: written with Claude Code (Opus 5.5), at the author's request (2026-10-24).
 """
@@ -59,11 +59,11 @@ def write_csv(path, header, rows):
         w.writerows(rows)
 
 
-def host_reading(stage, position=None, *, power="AC Power", lid_closed=False):
+def host_reading(stage, position=None, *, power="AC Power", lid_closed=False, other_containers=0):
     """A host_state event as the harness writes it (docs/recovery-part-a.md, section 12)."""
     e = {"event": "host_state", "stage": stage, "available_bytes": 2 * 2**30, "total_bytes": 8 * 2**30,
          "swap_used_bytes": 0, "swap_in_bytes": 0, "swap_out_bytes": 0, "memory_pressure": 1,
-         "power_source": power, "lid_closed": lid_closed}
+         "power_source": power, "lid_closed": lid_closed, "other_containers": other_containers}
     return e if position is None else {**e, "position": position}
 
 
@@ -358,7 +358,7 @@ def test_the_host_state_gives_each_job_its_swap_activity_power_and_pressure(tmp_
     assert "power_source" not in rows[4]                              # K2 was not run: no reading
     assert result["outcomes"]["host_state"] == {
         "jobs_with_a_reading": 3, "power_sources": ["AC Power", "Battery Power"], "on_battery": [2], "lid_closed": [2],
-        "max_memory_pressure": 4, "min_available_bytes": 2 * gib, "swap_used_change_bytes": 80 * mib,
+        "other_containers_at": [], "max_memory_pressure": 4, "min_available_bytes": 2 * gib, "swap_used_change_bytes": 80 * mib,
         "swap_out_batch_bytes": 80 * mib, "swap_in_batch_bytes": 0}
 
 
@@ -395,7 +395,8 @@ def test_a_missing_reading_or_value_is_unknown_and_never_passes(batch, tmp_path)
     result = crm.collect(batch, processed_root=tmp_path / "processed")
     assert result["validity"]["host_power"] == {"passed": False, "failed": [], "unknown": ["start", 3]}
     assert result["validity"]["host_lid"] == {"passed": False, "failed": [], "unknown": [3]}
-    assert result["verdicts"]["timing"] == {"valid": False, "failed": ["host_power", "host_lid"]}
+    assert result["validity"]["other_containers"] == {"passed": False, "failed": [], "unknown": [3]}
+    assert result["verdicts"]["timing"] == {"valid": False, "failed": ["host_power", "host_lid", "other_containers"]}
     assert result["verdicts"]["correctness"]["valid"] is True
 
 
@@ -407,18 +408,19 @@ def test_a_batch_from_before_the_power_readings_has_unknown_conditions(tmp_path)
             f.write(json.dumps({"event": "host_memory", "position": position, "available_bytes": 2**30}) + "\n")
     result = crm.collect(batch, processed_root=tmp_path / "processed")
     assert result["validity"]["host_power"]["unknown"] == ["start", 1, 2, 3, "end"]
+    assert result["validity"]["other_containers"]["unknown"] == ["start", 1, 2, 3, "end"]
     assert result["verdicts"]["timing"]["valid"] is False and result["verdicts"]["correctness"]["valid"] is True
 
 
 # The exit status follows the verdicts: a required check that failed or is unknown gives 1
 
-HOST_POWER_ONLY = {"host_power": {"passed": True, "failed": [], "unknown": []}}       # host_lid missing
+HOST_LID_MISSING = {name: {"passed": True, "failed": [], "unknown": []} for name in ("host_power", "other_containers")}
 
 
 @pytest.mark.parametrize("function, returns, check, invalid", [
     ("clock_check", {"passed": None}, "clock", {"timing"}),
     ("identity_check", {"passed": None}, "code_identity", {"correctness", "timing"}),
-    ("host_conditions", HOST_POWER_ONLY, "host_lid", {"timing"}),
+    ("host_conditions", HOST_LID_MISSING, "host_lid", {"timing"}),
 ])
 def test_a_required_check_that_is_unknown_or_missing_fails_its_verdicts_and_exits_1(
         batch, tmp_path, monkeypatch, capsys, function, returns, check, invalid):
@@ -429,3 +431,44 @@ def test_a_required_check_that_is_unknown_or_missing_fails_its_verdicts_and_exit
     assert result["validity_failed"] == [check]
     assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
     assert f"{check} (unknown)" in capsys.readouterr().out
+
+
+# Condition 4's containers, at every reading (recorded since the formal batches of 2026-10-25)
+
+def test_a_container_outside_the_project_fails_the_recovery_times_but_not_the_correctness(batch, tmp_path):
+    set_reading(batch, 2, other_containers=1)
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["other_containers"] == {"passed": False, "failed": [2], "unknown": []}
+    assert result["verdicts"] == {"correctness": {"valid": True, "failed": []},
+                                  "timing": {"valid": False, "failed": ["other_containers"]}}
+    assert result["outcomes"]["host_state"]["other_containers_at"] == [2]
+    assert {r["position"]: r for r in result["rows"]}[2]["other_containers"] == 1
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+
+
+def test_a_reading_without_the_container_count_is_unknown_and_fails(batch, tmp_path, capsys):
+    set_reading(batch, "end", other_containers=None)                     # docker could not say
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["other_containers"] == {"passed": False, "failed": [], "unknown": ["end"]}
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+    assert "recovery times: INVALID: other_containers (unknown)" in capsys.readouterr().out
+
+
+# The summary's Q1 line: a job without a Q1 row has an unknown verdict, never an ok one
+
+def test_without_q1_rows_every_submitted_job_is_unknown_not_ok(batch, tmp_path, capsys):
+    (batch / "crosscheck" / "Q1.csv").unlink()                          # the cross-check did not run
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert (result["outcomes"]["q1_not_ok"], result["outcomes"]["q1_missing"]) == ([], [1, 2, 3])
+    crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")])
+    out = capsys.readouterr().out
+    assert "no Q1 rows: every submitted job's Q1 verdict is unknown" in out and "not ok: none" not in out
+
+
+def test_a_job_missing_from_q1_is_listed_apart(batch, tmp_path):
+    write_csv(batch / "crosscheck" / "Q1.csv", ["job_id", "n_claims", "n_accepted", "verdict"],
+              [[1, 1, 1, "ok"], [3, 1, 1, "ok"]])
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert crm.q1_summary(result["rows"], result["outcomes"]) == (
+        "jobs whose Q1 verdict is not ok: none; jobs without a Q1 verdict: [2]")
+    assert crm.q1_summary([], {"q1_missing": [], "q1_not_ok": []}) == "no job was submitted, so there is no Q1 verdict"

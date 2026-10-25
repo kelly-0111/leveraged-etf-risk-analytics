@@ -23,16 +23,18 @@ It writes into the batch folder:
 - injections.csv: one row per planned job, with the case, the injection, the metrics of
   section 5, each n/a with its reason or unknown when its record is missing, the verdicts of
   Q1, Q2 and Q3a, and the host before the job (available memory, memory pressure, power source,
-  lid) with the bytes swapped out until the next reading;
+  lid, running containers outside this project) with the bytes swapped out until the next
+  reading;
 - tally.csv: per case, the jobs planned, made, missed, not run and unrecorded, and every verdict value of
   Q1, Q2, deadline_met, Q3a and Q3b, with zeros;
 - validity.json: the batch's purpose (preflight or formal, from its plan), the checks of 6.1
   (what counts; a recorded setup or final error fails records_complete; the host protocol's
-  power and lid conditions, where a missing reading fails as unknown), two verdicts, and, apart
+  power, lid and other-container conditions, where a missing reading fails as unknown), two
+  verdicts, and, apart
   from them, the outcome checks of 6.2-6.5, each with what it found (6.5's new Spark scratch
   included). The verdicts (docs/recovery-part-a.md, section 12): its correctness observations
   stand on the checks that do not involve time; its recovery times need those, the clock check,
-  and AC power with the lid open at every reading.
+  and, at every reading, AC power, the lid open and no running container outside this project.
   A preflight's results are never formal results (8.6), whatever its checks found.
 It prints a summary and exits with 1 unless both verdicts are valid: any required check that
 failed, has no result or is missing gives 1, and the summary marks the unknown ones. A failed
@@ -76,12 +78,13 @@ Q3B_VERDICTS = ("matches", "other store", "no such attempt", "wrong worker", "at
 NOT_RUN = ("not run", "not submitted")
 UNRECORDED = ("no record", "no injection record")     # the harness's records lack the job's deadline or injection
 CORRECTNESS_CHECKS = ("code_identity", "fingerprints_agree", "inputs_unchanged", "records_complete")
-TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid")   # every required check
+TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid", "other_containers")   # every required check
 LIVENESS = ("serve_restarted", "retry", "rewound", "gave_up", "failed_after_ack", "consumer_error", "pass_failed")
 FIELDS = ["position", "case", "job_id", "status", "missed", "injection", "worker", "t_inj", "reference", "deadline_s",
           "detection_s", "rerun_s", "finish_s", "overhead_s", "claims", "accepted", "executions", "complete_executions",
           "wasted_step_s", "fenced_events", "timeliness", "deadline_met", "q1_verdict", "q3a_verdict",
-          "host_available_bytes", "memory_pressure", "power_source", "lid_closed", "swap_out_during_bytes"]
+          "host_available_bytes", "memory_pressure", "power_source", "lid_closed", "other_containers",
+          "swap_out_during_bytes"]
 
 
 # Reading the folder
@@ -383,15 +386,16 @@ def host_row(host: dict, position: int, end: dict | None) -> dict:
         swapped = after["swap_out_bytes"] - reading["swap_out_bytes"]
     return {"host_available_bytes": reading.get("available_bytes"), "memory_pressure": reading.get("memory_pressure"),
             "power_source": reading.get("power_source"), "lid_closed": reading.get("lid_closed"),
-            "swap_out_during_bytes": swapped}
+            "other_containers": reading.get("other_containers"), "swap_out_during_bytes": swapped}
 
 
 def host_conditions(b: BatchFolder, host: dict, ran: list[int]) -> dict:
-    """Conditions 1 and 2 of the protocol (docs/recovery-part-a.md, section 12), over the readings
-    a batch needs: its start, before each job that ran, and its end. A reading on battery, or with
-    the lid closed, fails its condition. A missing reading, or one without the value (as the
-    memory-only readings of earlier batches are), is unknown, and unknown fails too: neither
-    condition ever passes by default."""
+    """Conditions 1 and 2 of the protocol (docs/recovery-part-a.md, section 12), and condition 4's
+    containers, over the readings a batch needs: its start, before each job that ran, and its end.
+    A reading on battery, with the lid closed, or with a running container outside this project
+    fails its condition. A missing reading, or one without the value (as the readings of batches
+    recorded before each value was are), is unknown, and unknown fails too: no condition ever
+    passes by default."""
     start = (named(b.harness, "host_state", stage="start") or [None])[0]
     end = (named(b.harness, "host_state", stage="end") or [None])[-1]
     readings = [("start", start), *[(position, host.get(position)) for position in ran], ("end", end)]
@@ -402,7 +406,8 @@ def host_conditions(b: BatchFolder, host: dict, ran: list[int]) -> dict:
         return {"passed": not failed and not unknown, "failed": failed, "unknown": unknown}
 
     return {"host_power": condition("power_source", lambda value: value != "AC Power"),
-            "host_lid": condition("lid_closed", lambda value: value is not False)}
+            "host_lid": condition("lid_closed", lambda value: value is not False),
+            "other_containers": condition("other_containers", lambda value: value != 0)}
 
 
 def check_state(validity: dict, name: str) -> str:
@@ -422,14 +427,27 @@ def verdict(validity: dict, checks: tuple[str, ...]) -> dict:
     return {"valid": not failed, "failed": failed}
 
 
+def q1_summary(rows: list[dict], outcomes: dict) -> str:
+    """The summary's Q1 line. A submitted job without a Q1 row has an unknown verdict, never an ok
+    one, so a batch whose cross-check did not run says so instead of "none"."""
+    submitted = [r for r in rows if r.get("job_id") is not None]
+    if not submitted:
+        return "no job was submitted, so there is no Q1 verdict"
+    if len(outcomes["q1_missing"]) == len(submitted):
+        return "no Q1 rows: every submitted job's Q1 verdict is unknown (the cross-check did not run)"
+    text = f"jobs whose Q1 verdict is not ok: {outcomes['q1_not_ok'] or 'none'}"
+    return text + (f"; jobs without a Q1 verdict: {outcomes['q1_missing']}" if outcomes["q1_missing"] else "")
+
+
 def listed(validity: dict, names: list[str]) -> str:
     """The checks named, each unknown one marked as such."""
     return ", ".join(name if check_state(validity, name) == "failed" else f"{name} (unknown)" for name in names)
 
 
 def host_summary(b: BatchFolder, host: dict) -> dict:
-    """The batch's host record: where it ran on battery or with the lid closed, the highest
-    memory pressure, the lowest available memory, and the swap from its start to its end."""
+    """The batch's host record: where it ran on battery, with the lid closed or with another
+    project's container, the highest memory pressure, the lowest available memory, and the swap
+    from its start to its end."""
     start = (named(b.harness, "host_state", stage="start") or [{}])[0]
     end = (named(b.harness, "host_state", stage="end") or [{}])[-1]
     jobs = list(host.values())
@@ -441,6 +459,7 @@ def host_summary(b: BatchFolder, host: dict) -> dict:
             "power_sources": sorted({e["power_source"] for e in [start, *jobs, end] if e.get("power_source")}),
             "on_battery": [p for p, e in sorted(host.items()) if e.get("power_source") == "Battery Power"],
             "lid_closed": [p for p, e in sorted(host.items()) if e.get("lid_closed")],
+            "other_containers_at": [p for p, e in sorted(host.items()) if e.get("other_containers")],
             "max_memory_pressure": max((e["memory_pressure"] for e in [start, *jobs, end]
                                         if e.get("memory_pressure") is not None), default=None),
             "min_available_bytes": min((e["available_bytes"] for e in jobs if e.get("available_bytes") is not None),
@@ -514,6 +533,7 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
     validity_failed = verdicts["timing"]["failed"]          # every required check that failed or is unknown
     outcomes = {
         "q1_not_ok": [r["job_id"] for r in rows if r.get("q1_verdict") not in (None, "ok")],
+        "q1_missing": [r["job_id"] for r in rows if r.get("job_id") is not None and r.get("q1_verdict") is None],
         "status_check_exit": final.get("status_check_exit"),
         "invariant_violations": _json(folder / "export" / "invariant_violations.json") if
         (folder / "export" / "invariant_violations.json").exists() else "no export",
@@ -578,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--batch", type=Path, required=True)
     parser.add_argument("--clock-tolerance", type=float, default=1.0,
-                        help="seconds (provisional; the outline's 8.5 leaves it open)")
+                        help="seconds (1 s as Part A approved, docs/recovery-part-a.md, section 10)")
     parser.add_argument("--processed-root", type=Path, default=REPO / "data" / "processed",
                         help="where the snapshot's input files are checked again (default data/processed)")
     args = parser.parse_args(argv)
@@ -594,8 +614,7 @@ def main(argv: list[str] | None = None) -> int:
     for claim, label in (("correctness", "correctness observations"), ("timing", "recovery times")):
         check = result["verdicts"][claim]
         print(f"{label}: " + ("valid" if check["valid"] else "INVALID: " + listed(result["validity"], check["failed"])))
-    print(f"overlap: {result['outcomes']['overlap']['verdict']}; jobs whose Q1 verdict is not ok:"
-          f" {result['outcomes']['q1_not_ok'] or 'none'}")
+    print(f"overlap: {result['outcomes']['overlap']['verdict']}; {q1_summary(result['rows'], result['outcomes'])}")
     return 0 if all(check["valid"] for check in result["verdicts"].values()) else 1
 
 
