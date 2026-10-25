@@ -21,7 +21,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
-| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress: the job queue with a simulated pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md)); the real pipeline, Redis and the experiments planned ([spec](docs/spec.md), §11) |
+| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress. The job queue runs the real pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is documented ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding. The Redis result cache and its experiment are planned ([spec](docs/spec.md), §11) |
 
 ## Reading guide
 
@@ -407,7 +407,10 @@ together with how it was checked.
    ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)).
 4. **Optional systems extension** (spec §11): Docker Compose with MySQL, Kafka
    and Redis for a job queue and a result cache, with recovery and caching
-   experiments. The job queue works with a simulated pipeline
-   ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md));
-   the real pipeline in the worker comes next, then the recovery experiments
-   and the result cache.
+   experiments. The job queue runs the real pipeline
+   ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md),
+   [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is
+   documented ([docs/recovery-part-a.md](docs/recovery-part-a.md),
+   [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting
+   correctness observations, and valid formal E2 recovery-time evidence remains
+   outstanding. The result cache and its experiment are planned.

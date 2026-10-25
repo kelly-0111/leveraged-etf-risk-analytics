@@ -3,7 +3,7 @@
 Author: _to be written by the author after review. Beyond spec §11, the only decisions by the
 author are those in 1.1._
 
-_Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised eleven times from the author's
+_Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised twelve times from the author's
 reviews (history at the end). This is an outline, not Part A: everything not in 1.1 or cited from
 spec §11 or M2 is Claude Code's proposal. The decisions of section 8 were approved on 2026-10-25 as
 [recovery-part-a.md](recovery-part-a.md) states them in its section 10, which prevails where they
@@ -108,6 +108,19 @@ How each item is met is Claude Code's proposal, in the sections named.
   with the two items of 2026-10-24, Part A is approved. The formal batch runs only after the 11
   Kafka cases that skip without a broker pass on the final code and cleanup is complete; the
   documents are committed by explicit path, and the run records the actual HEAD.
+- **After the formal batches (2026-10-25).**
+  - batch-2's correctness observations stay valid; its recovery times are invalid under the
+    approved batch-level protocol, because another project's container broke the exclusive window.
+  - Positions 1–17 are not a valid formal sub-batch; they may be reported only as supplementary
+    observations, with the limitation stated.
+  - Required: Part B with both batches side by side and every outcome kept; the Q1 summary
+    corrected when Q1 data is absent; the stale docstring updated; competing containers recorded
+    throughout the batch so that the collector detects this; the formal records unchanged; no
+    further formal batch for now.
+  - Approved: the answers to E1 and E2 as drafted with Claude Code (Part B, section 7). The README
+    and spec record the recovery study as documented, with E1 supported by correctness
+    observations and valid formal E2 recovery-time evidence outstanding; the systems extension is
+    not complete.
 - **Throughout.** No formal experiment ran before Part A's approval. Until the fourth review the
   work was documents only.
 
@@ -439,7 +452,7 @@ M2's final report (`6d8a232`):
 | container peaks | MySQL 345 MiB (67%) after the live job suites and 501 MiB (98%) after the live mutation session; Kafka 361–415 MiB (56–65%); informational, since another project's four containers shared Docker's VM and the host had about 1.3 GiB available |
 | MySQL stalls, M2's clock | 0, 1 and 2 failed renewals for `LOCK TABLES`, `pause` and `restart`; each run kept its first attempt; no outage duration reported |
 | acceptance runs | 10 of 10 passed on M2's clock in 11 min 20 s; the first run's failures were faults of the test harness |
-| isolated memory-budget check | not done: pending |
+| isolated memory-budget check | not done at the time; done later (8.3) |
 
 ### 8.1 Repetitions and workload
 
@@ -457,7 +470,7 @@ M2's final report (`6d8a232`):
   case with one made injection. Both keep each batch short of the ~50 runs after which M2 saw MySQL
   at 98% (another workload, so only a rough guide). A recorded shuffle spreads drift, such as memory
   growth, across cases instead of lining it up with one.
-- **Duration** (estimates, provisional, and finalized only after the live preflight, 8.6).
+- **Duration** (estimates made before the live preflight; Part A, section 8, revised them from it).
   `python -m etf_risk.jobs.harness estimate` adds, per job, the design's upper bounds of 3.2 and
   these assumptions, none of them measured: T 40 s (M2's slowest steps, 35.1 s, plus 5 s of the
   worker's own work), 12 s to restart a killed worker and rebalance, 20 s for a service from start
@@ -531,9 +544,9 @@ M2's final report (`6d8a232`):
   job lets it act in time. No measurement of the host's available memory with only this project's
   containers exists (M2's 1.3 GiB had another project's containers running), so a host gate would
   have no basis yet.
-- **Pending.** The isolated memory-budget check. Until it is done, these limits are provisional and
-  the budgets of spec §11 are not validated. The memory rules are finalized only after the live
-  preflight (8.6), which reads both containers' peaks as a batch does.
+- **Since.** M2's isolated check validated the containers' limits under host memory pressure;
+  native-process memory is not validated. The memory rules were approved with Part A (its
+  section 10, row 8), after the live preflight had read both containers' peaks as a batch does.
 
 ### 8.4 Injection method
 
@@ -646,7 +659,9 @@ documents, on `docs/recovery-outline`, stay as they were at revision 3.
 - **Mutation checks, 2026-10-24.** The 27 focused mutations of `tests/mutation_check.py`, each run
   against the one test file that should catch it, after those files passed unmutated: 27 caught,
   none survived, no error. The 49 earlier mutations of the job queue were not run again.
-- **Not done:** any formal batch.
+- **Formal batches:** batch-1, stopped by a host restart, and batch-2, the one rerun; both kept.
+  Their results and the author's decision are in [recovery-part-b.md](recovery-part-b.md). Not
+  done: any further formal batch.
 
   On 2026-10-24 G9 was fixed (`a94eefe`), the host's power, lid, memory pressure and swap came to be
   recorded per job (`8c5331d`), and the MySQL and Kafka variants of the tests and four live
@@ -658,6 +673,12 @@ documents, on `docs/recovery-outline`, stay as they were at revision 3.
   were caught, its two new ones included. On 2026-10-25 the Kafka tests ran on `fcaa645` against
   Kafka and MySQL: 27 passed, none skipped, the 11 cases that skip without a broker included. The
   earlier live results stay with the commits they ran on (the same document, sections 9, 11 and 12).
+  After the formal batches, the harness came to record the containers outside this project at
+  every host reading, and the collector to fail recovery times on any such container or on a
+  missing count (`5ecde71`); 19 of 19 host and collector mutations were caught, its five new ones
+  included. A missing count is unknown: for the batches recorded before, condition 4 is
+  unconfirmed, not violated. The count is a sample at each reading and can miss a container that
+  starts and stops between two readings.
 - **Authorship.** Spec §11: the job code is written with Claude Code. At the author's decision of
   2026-10-24, Claude Code also writes the recovery experiments' tooling listed above, and each new
   module says so. The items in 1.1, and the experiments' decisions, runs and answers, are the
@@ -667,10 +688,16 @@ documents, on `docs/recovery-outline`, stay as they were at revision 3.
 ## 10. Not claimed
 
 Times hold for this machine, the clock of 8.2, and one broker and one database (spec §11). Results
-are counts per case, not rates. The bounds in 3.2 hold only under their Kafka conditions and are not
-predictions until approved. Cases without an injection method are not measured. The memory budgets
-are not validated until the isolated check is done. The fixture run tests the SQL on made-up rows,
-not the job system.
+are counts per case, not rates. The bounds in 3.2 hold only under their Kafka conditions. Cases
+without an injection method are not measured. M2's isolated check validated the containers' memory
+limits under host memory pressure; native-process memory is not validated. The fixture run tests
+the SQL on made-up rows, not the job system.
+
+No valid formal recovery times exist. batch-1 is invalid, and the author ruled batch-2's recovery
+times invalid; its positions 1–17 are supplementary observations only
+([recovery-part-b.md](recovery-part-b.md)). Condition 4's container count is a sample at each host
+reading, so a container that starts and stops between two readings is not seen. For batches
+recorded before `5ecde71`, which have no count, condition 4 is unconfirmed, not violated.
 
 ## History
 
@@ -761,3 +788,20 @@ not the job system.
   volume or test process. The earlier live results stay with the commits they ran on. The author
   then approved all 13 remaining decisions, seed 544 included, and so Part A
   ([recovery-part-a.md](recovery-part-a.md), sections 10 and 11).
+- **Revision 12, 2026-10-25.** The formal batches ran on `1c11577` (the code of `fcaa645`).
+  - batch-1 stopped when the host restarted after its lid had been closed.
+  - batch-2, the one rerun, completed. Another project's container ran from position 18 on, and
+    the author ruled its recovery times invalid while its correctness observations stay valid.
+  - The collector's Q1 line, the stale docstrings and the recording of other containers at every
+    reading were fixed (`5ecde71`). The formal records are unchanged; notes beside them hold the
+    interruption, the container and the decision.
+  - Revision 11's "no volume" was confirmed afterwards by creation date: the label check used then
+    could not see compose's anonymous volumes.
+  - Part B was reviewed against the records. Status and limitations were aligned across this
+    outline, Part A (its section 13, added after the approved sections) and Part B: a missing
+    container count is insufficient evidence, and the count can miss a container between two
+    readings.
+  - The author approved the drafted answers to E1 and E2 (Part B, section 7), and the README and
+    spec status lines were brought up to date.
+
+  Part B gives the results ([recovery-part-b.md](recovery-part-b.md)).

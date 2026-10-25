@@ -5,6 +5,9 @@
 >   conditions, with the limitations of section 12; a control C0 at each end of the batch, making
 >   30 jobs.
 > - 2026-10-25: the 13 remaining decisions of section 10, seed 544 included.
+>
+> **After approval:** the formal batches ran on 2026-10-25. Their results and the author's decision
+> are in [recovery-part-b.md](recovery-part-b.md); section 13 lists what changed since.
 
 _This document condenses [recovery-experiments.md](recovery-experiments.md) for the preferred
 draft. Every command, event and record in it was checked against the tooling at `fcaa645`. M2's
@@ -498,3 +501,21 @@ preflight-4, the first batch to record macOS's pressure level, had it at warning
   - The exit status is 0 only when both verdicts are valid, so a required check that failed, has no
     result or is missing exits 1, and the summary marks the unknown ones (`fcaa645`).
   - `injections.csv` gives each job its power, lid, pressure and swap activity.
+
+## 13. After approval (2026-10-25)
+
+_Added after the formal batches. Sections 1–12 are unchanged as approved._
+
+- **The formal batches.** batch-1 stopped when the host restarted. batch-2, the one rerun of
+  row 11, completed. The author kept batch-2's correctness observations valid and ruled its
+  recovery times invalid, because another project's container broke the exclusive window
+  (condition 4). The results are in [recovery-part-b.md](recovery-part-b.md).
+- **Condition 4's containers.** As approved, other containers were counted at a batch's start only.
+  Since `5ecde71` the harness also records the count at every host reading, and the collector
+  fails recovery times on any such container. The count is a sample: a container that starts and
+  stops between two readings is not seen.
+- **Earlier batches under the later collector.** No batch before `5ecde71` recorded the count, so
+  the later collector reports `other_containers` as unknown for all of them. Their recovery times
+  come out invalid, preflight-4's for that reason alone; their correctness verdicts are unchanged.
+  An unknown count is insufficient evidence for condition 4, not evidence of a violation. The
+  verdicts in section 11 are those of the collector at `5a81bc5`, as labelled there.

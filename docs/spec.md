@@ -11,7 +11,10 @@ progress: an optional systems extension with MySQL, Kafka and Redis (§11), of
 which the job queue exists: the job table, Kafka delivery and the reconciler
 ([job-table.md](job-table.md), [job-queue.md](job-queue.md)), and a worker that runs
 the real pipeline under a watchdog and a host execution lock
-([worker-pipeline.md](worker-pipeline.md)).
+([worker-pipeline.md](worker-pipeline.md)). The recovery study is documented
+([recovery-part-a.md](recovery-part-a.md), [recovery-part-b.md](recovery-part-b.md)):
+E1 has supporting correctness observations, and valid formal E2 recovery-time
+evidence remains outstanding.
 Every section separates what is **implemented** from what is **planned**.
 Planned parts describe intentions, not results, and may change when each stage
 is reviewed.
@@ -22,7 +25,7 @@ is reviewed.
 | Stage 1 | Full-history download, checksum-enforced ingestion, data validation, [data-sources.md](data-sources.md) | **Implemented** |
 | Stage 2 | Fixed 252-trading-day holding windows, with the Spark grouping keys, 1x/2x pairing, breach end dates and reference check reworked together; a first sparse-stride run with measured runtime and memory | **Implemented**, including the review cleanup; stride-21 run reviewed |
 | Stage 3 | Spark SQL analysis of the results, a reproducible environment (Docker) and performance experiments | **Implemented**: three SQL analyses, the Docker image, the stride experiment ([experiments.md](experiments.md)), the shuffle-partition experiment ([partition-experiment.md](partition-experiment.md)), the pandas baseline ([pandas-baseline.md](pandas-baseline.md)) and the caching experiment ([caching-experiment.md](caching-experiment.md)) |
-| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | **In progress**: the job queue: the MySQL job table, Kafka delivery and the reconciler ([job-table.md](job-table.md), [job-queue.md](job-queue.md)), and a worker running the real pipeline ([worker-pipeline.md](worker-pipeline.md)); Redis and the experiments planned |
+| Extension (optional) | Job queue (MySQL job table, Kafka), result cache (Redis), Docker Compose; recovery and caching experiments (§11) | **In progress**: the job queue: the MySQL job table, Kafka delivery and the reconciler ([job-table.md](job-table.md), [job-queue.md](job-queue.md)), and a worker running the real pipeline ([worker-pipeline.md](worker-pipeline.md)); the recovery study documented ([recovery-part-a.md](recovery-part-a.md), [recovery-part-b.md](recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding; Redis and the caching experiment planned |
 | Stage 4 | Figures, final documentation and demo | **Implemented**: twelve figures drawn from the result files by `plots.py` and checked against the documented values, with the measurement CSVs of X1–X4 committed ([measurements/README.md](measurements/README.md)); the results write-up, whose conclusions the author approved ([results.md](results.md)); the demo ([demo.md](demo.md)) |
 
 ## 1. Purpose and scope
@@ -665,7 +668,7 @@ measured run. Design, run log, records and answers:
 
 ## 9. Status summary
 
-| Area | Implemented (prototype, Stages 1–4: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline, figures and write-up; the extension's job queue with the real pipeline in the worker) | Planned |
+| Area | Implemented (prototype, Stages 1–4: SQL analyses, Docker image, stride, shuffle-partition and caching experiments, pandas baseline, figures and write-up; the extension's job queue with the real pipeline in the worker, and its recovery study documented) | Planned |
 |---|---|---|
 | Data | download with manifest; five-ticker full-history snapshot; checksum-enforced ingest; calendar, split-day, dividend, zero-volume and flat-bar checks; list of unverified extreme days | second-source comparison; terms-of-use review |
 | Model | daily-reset model, breach rule, drawdown, rebalance; hand-calculated tests; daily turnover and realized variance per window (computed in Spark) | — |
@@ -674,8 +677,8 @@ measured run. Design, run log, records and answers:
 | Performance | fresh-process timed runs with process-tree memory sampling and a stop rule; the stride experiment (strides 21, 14 and 7, stride 3 exploratory; Spark defaults; drift detected) and its measurements CSV ([experiments.md](experiments.md)); the shuffle-partition experiment (settings A, B and C at stride 7; one batch meeting every acceptance criterion; no drift) with the partition flags, plan recording with actual partition counts, the batch collector and the session helpers ([partition-experiment.md](partition-experiment.md)); the pandas baseline (the Spark pipeline against a single-process pandas implementation at stride 7, end to end; one batch meeting every acceptance criterion; no drift) with the pandas pipeline, `measure --pipeline`, the batch collector and the session helpers ([pandas-baseline.md](pandas-baseline.md)); the caching experiment (no cache, the window-member rows, and those plus the four read-back tables at stride 7; one batch meeting every acceptance criterion; no drift) with the `--cache` option, cache records and checks from Spark's storage information and the plans, the batch collector and the session helpers ([caching-experiment.md](caching-experiment.md)) | — |
 | Figures | twelve figures from the result files (`plots.py`): the model results, the sensitivity analysis, the data and windows, and the four performance experiments; their numbers checked against the documented values, inputs validated before anything is drawn, and the measurement CSVs of X1–X4 committed ([results.md](results.md), [measurements/README.md](measurements/README.md)) | — |
 | Environment | uv lockfile; pandas below 3 for PySpark; pandas-market-calendars 5.5.0, yfinance 1.7.0, psutil 7.2.2 and matplotlib 3.11.2 pinned exactly; the job queue's clients PyMySQL 1.1.1 and confluent-kafka 2.16.0 pinned exactly in the `jobs` group; Docker image for the pipeline (Python 3.12, Java 17, locked dependencies, base images pinned by digest; data mounted, not copied; commit recorded at build time) | a NumPy pin (pandas 2.3 emits deprecation warnings under NumPy 2.5) |
-| Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases, a store id, and run digests recorded at acceptance ([job-table.md](job-table.md)); a worker running windows → spark_pipeline → verify with renewals, an absolute-deadline watchdog, a host execution lock, process-tree cleanup, reconnects and the job commands ([worker-pipeline.md](worker-pipeline.md)); Kafka delivery with confirmed publication and manual commits, and the reconciler ([job-queue.md](job-queue.md)); MySQL 8.4.13 and Kafka 4.3.1 in Compose for the integration tests | Redis result cache, recovery and caching experiments (§11) |
-| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [job-queue.md](job-queue.md), [results.md](results.md), [demo.md](demo.md), [measurements/README.md](measurements/README.md), [AI-usage logs](ai-usage/README.md) | design decisions |
+| Systems extension | MySQL job table with guarded state transitions, attempt tokens and leases, a store id, and run digests recorded at acceptance ([job-table.md](job-table.md)); a worker running windows → spark_pipeline → verify with renewals, an absolute-deadline watchdog, a host execution lock, process-tree cleanup, reconnects and the job commands ([worker-pipeline.md](worker-pipeline.md)); Kafka delivery with confirmed publication and manual commits, and the reconciler ([job-queue.md](job-queue.md)); MySQL 8.4.13 and Kafka 4.3.1 in Compose for the integration tests; the recovery study (E1, E2): its harness, collector and cross-check SQL, with two formal batches documented ([recovery-part-a.md](recovery-part-a.md), [recovery-part-b.md](recovery-part-b.md)), and E1 has supporting correctness observations | valid formal E2 recovery-time evidence (outstanding); Redis result cache and the caching experiment (§11) |
+| Documentation | README, [data-sources.md](data-sources.md), this specification, [experiments.md](experiments.md), [partition-experiment.md](partition-experiment.md), [pandas-baseline.md](pandas-baseline.md), [caching-experiment.md](caching-experiment.md), [job-table.md](job-table.md), [job-queue.md](job-queue.md), [recovery-experiments.md](recovery-experiments.md), [recovery-sql.md](recovery-sql.md), [recovery-part-a.md](recovery-part-a.md), [recovery-part-b.md](recovery-part-b.md), [results.md](results.md), [demo.md](demo.md), [measurements/README.md](measurements/README.md), [AI-usage logs](ai-usage/README.md) | design decisions |
 
 ## 10. Known issues and open items after the Stage 2 cleanup
 
@@ -745,7 +748,12 @@ last. These exist:
 - a worker that runs the real pipeline: renewals, an absolute-deadline watchdog,
   a host execution lock, process-tree cleanup, reconnects, the run digest
   recorded at acceptance, and the job commands
-  ([worker-pipeline.md](worker-pipeline.md)).
+  ([worker-pipeline.md](worker-pipeline.md));
+- the recovery study (E1, E2): its harness, collector and cross-check, two formal
+  batches and their results ([recovery-experiments.md](recovery-experiments.md),
+  [recovery-part-a.md](recovery-part-a.md), [recovery-part-b.md](recovery-part-b.md)).
+  E1 has supporting correctness observations; valid formal E2 recovery-time
+  evidence remains outstanding.
 
 These are tested on SQLite and against MySQL 8.4.13 and Kafka 4.3.1. Everything
 else below is planned and may change at review.
@@ -812,7 +820,9 @@ least once, and a lease can expire while a slow worker still runs.
   matches a reference run by content (Parquet files differ in bytes between runs).
 - Recovery (E1, E2): each failure case is injected on purpose; detection and
   recovery times, executions per job, accepted results per job and lost jobs are
-  recorded.
+  recorded. Documented in [recovery-part-b.md](recovery-part-b.md): E1 has
+  supporting correctness observations, and valid formal E2 recovery-time evidence
+  remains outstanding.
 - Result cache (E3): latency of a new Spark process, a warm Spark session and a
   Redis hit, at hit rates set by the workload; the fallback to Spark with Redis
   stopped.
