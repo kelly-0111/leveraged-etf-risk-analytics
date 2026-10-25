@@ -245,14 +245,29 @@ never repeated on its own.
   - the watchdog reading its lines before its deadline check;
   - a tree found by process group;
   - a step started without the host lock.
+- **[tests/memory_check.py](../tests/memory_check.py)** is the isolated memory-budget check:
+  fresh MySQL and Kafka containers, the job suites, then the 10 acceptance cases, with each
+  container's cgroup read per lifetime and Docker's record of it read after each run. Its
+  outcomes are passed, failed measurement, not counted and tool error, each with its own exit
+  status. [tests/test_memory_check.py](../tests/test_memory_check.py) tests it offline.
 
-## Status on 2026-10-23 (`feature/worker-pipeline`)
+  ```bash
+  uv run --group jobs python tests/memory_check.py --preflight     # the machine checks only
+  uv run --group jobs python tests/memory_check.py --out data/outputs-memory/<UTC stamp>
+  ```
 
-- **Offline:** the whole suite: 551 passed and 29 skipped (the tests that need MySQL, Kafka or
-  ETF_RISK_LIVE_PIPELINE). The Spark-marked end-to-end test passed.
-- **Against MySQL 8.4.13 and Kafka 4.3.1** on fresh containers: the job suites, 420 passed.
-  That includes the live reconnect tests (`KILL CONNECTION`, and a ping after an idle period)
-  and the standby test.
+## Status on 2026-10-24 (`feature/worker-pipeline`)
+
+- **Offline:** the whole suite (`uv run --group measure --group plots pytest`) on eff994d,
+  whose code is that of 05337a6, the commit the memory check ran on: 669 passed and 29 skipped
+  (the tests that need MySQL, Kafka or ETF_RISK_LIVE_PIPELINE), in 7 min 28 s. The 669
+  include the memory check's 118 offline tests and the Spark-marked end-to-end test. On
+  6d8a232, before the memory check's tests were added, it gave 551 passed and 29 skipped.
+- **Against MySQL 8.4.13 and Kafka 4.3.1** on fresh containers: the job suites, run with the
+  README's command (all of `tests/test_jobs_*.py`) on 6d8a232, 463 passed and 10 skipped. The
+  10 skipped are the acceptance cases: they also need ETF_RISK_LIVE_PIPELINE, and their own
+  runs are reported under "Acceptance runs" below. The 463 include the live reconnect tests
+  (`KILL CONNECTION`, and a ping after an idle period) and the standby test.
 - **Acceptance runs** (test_jobs_live_pipeline.py, 10 cases):
   - **First run:** 4 passed. 6 failed on three faults of the test harness: an attribute that
     hid a method, the test's own MySQL connection lost during the stalls, and a standby that
@@ -280,8 +295,9 @@ never repeated on its own.
     run, `no-host-lock` survived. The survivor check also stops a launcher whose
     predecessor's tree is registered. A new test now holds the lock outside any launcher.
   - **Against MySQL and Kafka:** 49 of 49 caught, none at the timeout.
-- **Memory.** These figures are informational: four containers of another project shared
-  Docker's VM throughout, and the host had about 1.3 GiB available.
+- **Memory during the runs above** (2026-10-23). These figures are informational: four
+  containers of another project shared Docker's VM throughout, and the host had about 1.3 GiB
+  available.
   - **The step trees** (peak summed RSS, sampled every 0.5 s by the launchers; the range over
     the first and the final acceptance run):
 
@@ -293,14 +309,50 @@ never repeated on its own.
   - **The job processes** (peak RSS during a calendar-year job): the worker 63.0 MiB and the
     reconciler 51.6 MiB.
   - **MySQL:**
-    - 345 MiB (67%) after the live job suites on a fresh container;
+    - 345 MiB (67%) after an earlier live run of 10 of the 16 job test files, on a fresh
+      container; no peak was read during the 463-test run above;
     - 501 MiB (98%) after the live mutation session (one full run and 49 shorter ones) on
       another fresh container.
   - **Kafka:** 361 to 415 MiB (56–65%).
   - **`docker compose restart` resets a container's `memory.peak`.** MySQL read 226 MiB after
     the acceptance runs' restarts, below the 345 MiB that container had reached earlier. The
     recovery harness must read peaks before each restart it injects.
-- **Not done:** the isolated memory-budget check, with no other project's containers in the
-  VM. Those containers were running throughout and were left alone.
+- **The isolated memory-budget check** (tests/memory_check.py, 2026-10-24, on 05337a6 with a
+  clean worktree): **passed, exit 0. It validates the two container limits only, measured
+  under host memory pressure.**
+  - **The run:** no other container in Docker's VM; MySQL and Kafka created by the check; the
+    job suites (473 collected: 463 passed and 10 skipped, the acceptance cases, in 162 s),
+    then the 10 acceptance cases (10 passed, in 672 s). No test failed or timed out.
+  - **The container limits held** (cgroup `memory.peak`, which includes page cache, read every
+    5 s; each acceptance-case restart gave the container a new cgroup, and each lifetime's
+    counters count from its start):
+
+    | Container | Limit | First lifetime | After the acceptance case's restart | oom, oom_kill and max events |
+    |---|---|---|---|---|
+    | MySQL | 512 MiB | 439 MiB (86%): anon 298, file 130, kernel 10 MiB | 209 MiB | 0 in each lifetime |
+    | Kafka | 640 MiB | 515 MiB (80%): anon 378, file 125, kernel 7 MiB | 372 MiB | 0 in each lifetime |
+
+    Docker recorded both containers as running and not OOM-killed after each run. Each first
+    lifetime's last reading came at most about 5 s before its restart, so those seconds are not
+    in its figures. The supplementary proposals (anon at most 410 MiB for MySQL and 512 MiB
+    for Kafka, no limit hits) were met; they are reported, not judged.
+  - **Host memory pressure:** 3.05 GiB available with the stack idle, below the 4.0 GiB that
+    representative native figures need, and 1.21 GiB at the lowest. The compressor grew by
+    3.34 GiB and swap by 1.30 GiB, each above its 256 MiB condition. The container verdict is
+    taken as unaffected because the cgroup accounting inside the VM does not see macOS
+    compressing or swapping the VM's memory; that is reasoning, not a result of this run.
+  - **The native processes are not validated, and their figures are not representative:**
+    they were measured under that pressure, against proposed targets that are not approved
+    budgets.
+    - **The step trees** (peak summed RSS from the launchers): spark_pipeline 1.40 GiB
+      (calendar-year) and 2.19 GiB (stride 21); verify 716 and 675 MiB; windows 124 and
+      127 MiB.
+    - **The job processes** (peak RSS, sampled every 0.5 s): the worker 125 MiB, the
+      reconciler 119 MiB and submit 120 MiB, a lower bound for a process that lasts about a
+      second. The worker and the reconciler read about twice their figures above; why is not
+      established.
+  - **Cleanup:** nothing was left: no container, no check process, and ports 3307 and 9094
+    free.
+  - **Records:** `data/outputs-memory/20261024T164908Z/` (outside Git).
 
 *AI contribution: written with Claude Code (Opus 5.5).*
