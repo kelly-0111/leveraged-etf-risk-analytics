@@ -3,10 +3,11 @@
 Author: _to be written by the author after review. Beyond spec §11, the only decisions by the
 author are those in 1.1._
 
-_Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised four times from the author's
-reviews (history at the end). This is an outline for review, not an approved Part A: everything not
-in 1.1 or cited from spec §11 or M2 is Claude Code's proposal, and the decisions in section 8 are
-proposals only. Design inputs: commit `6d8a232` (`feature/worker-pipeline`) and M2's final report in
+_Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised eleven times from the author's
+reviews (history at the end). This is an outline, not Part A: everything not in 1.1 or cited from
+spec §11 or M2 is Claude Code's proposal. The decisions of section 8 were approved on 2026-10-25 as
+[recovery-part-a.md](recovery-part-a.md) states them in its section 10, which prevails where they
+differ. Design inputs: commit `6d8a232` (`feature/worker-pipeline`) and M2's final report in
 it ([worker-pipeline.md](worker-pipeline.md), "Status on 2026-10-23"); `e4adc38` later corrected
 that report's live job-suite count, which this outline does not use. The SQL cross-check, its
 fixture, the frozen expected rows and the run that validated the queries are in
@@ -86,8 +87,29 @@ How each item is met is Claude Code's proposal, in the sections named.
   service-dependent recovery paths, with its outcomes kept apart from formal results (8.6). The
   28-job design is the preferred draft; deadlines, memory rules and runtime estimates are finalized
   only after the preflight (8.1–8.3).
-- **Throughout.** No formal experiment, and Part A is not approved. Until the fourth review the work
-  was documents only.
+- **Later reviews (2026-10-24).**
+  - G1–G8 fixed before the live preflight, and G9 after preflight-1 found it
+    ([recovery-part-a.md](recovery-part-a.md), section 9).
+  - The preflights are functional validation under the recorded memory pressure, not performance or
+    memory-budget evidence. Preflight-3 stays invalid for timing, with its correctness observations
+    kept apart.
+  - M2's 5 and 4.0 GiB gates and its 35.1 s are not validated standards for these experiments; a
+    protocol for this 8 GiB Mac instead, with power and swap recorded and observed recovery times
+    kept apart from performance claims (the same document, section 12).
+  - Approved: this host for correctness observations and for recovery times under its recorded
+    conditions, with the limitations stated in Part A; a control C0 at each end of the batch, making
+    30 jobs.
+  - Required: the collector's timing validity fails a battery reading or a closed lid, and a missing
+    reading is handled explicitly, never passed silently; the exit status agrees with the verdicts,
+    so any required check that failed or is unknown exits nonzero.
+  - Every remaining Part A decision in one table, with its proposed value and reason, for approval
+    together (the same document, section 10).
+- **Approval (2026-10-25).** All 13 remaining decisions of Part A, section 10, seed 544 included;
+  with the two items of 2026-10-24, Part A is approved. The formal batch runs only after the 11
+  Kafka cases that skip without a broker pass on the final code and cleanup is complete; the
+  documents are committed by explicit path, and the run records the actual HEAD.
+- **Throughout.** No formal experiment ran before Part A's approval. Until the fourth review the
+  work was documents only.
 
 ## 2. Batch protocol (proposal)
 
@@ -214,10 +236,12 @@ times (`step_started_mono` and `tree_ended_mono` in its record). On macOS this r
 clock; the launcher's handshake checks the worker and its launchers, and the harness checks each
 process it starts (the `mono` of its first event must lie between the harness's readings just before
 the start and just after it read that event). The clock pauses while the host sleeps, so the host
-must not sleep during a batch. `ts` (UTC) orders events and relates them to the tables' wall-clock
-columns, never for a duration. The harness records `ts` and `mono` together at the start and end of
-a batch; a difference in their elapsed times beyond a tolerance (8.5) means a sleep or a clock step
-and fails validity (6.1).
+must not sleep during a batch. Preflight-3 showed that `caffeinate -i` is not enough on battery:
+closing the lid put the host to sleep, and the clock check failed the batch
+([recovery-part-a.md](recovery-part-a.md), sections 11 and 12). `ts` (UTC) orders events and
+relates them to the tables' wall-clock columns, never for a duration. The harness records `ts` and
+`mono` together at the start and end of a batch; a difference in their elapsed times beyond a
+tolerance (8.5) means a sleep or a clock step and fails validity (6.1).
 
 ### 4.2 Deadlines
 
@@ -401,7 +425,9 @@ made-up rows; it says nothing about the job system.
 
 ## 8. Part A decisions: proposals
 
-_Claude Code's proposals, with reasons. None is decided, and Part A is not approved._ They rest on
+_Claude Code's proposals, with reasons, approved on 2026-10-25 as
+[recovery-part-a.md](recovery-part-a.md) states them in its section 10, which prevails where they
+differ (30 jobs, not 28; host memory never gated)._ They rest on
 M2's final report (`6d8a232`):
 
 | Input from M2 | Value |
@@ -530,12 +556,14 @@ M2's final report (`6d8a232`):
 
 ### 8.5 Still open
 
-The clock-check tolerance (4.1; the collector uses 1 s until it is decided); the harness's waits
-(the phase delay before a mid-step injection, how long W7 stays stopped, how long K2, D1 and D2 keep
-a service down: the settings hold 3 s, 90 s and 30 s for now); a host-memory gate, after the
-isolated check; and the branches: the tooling and these documents are on `feature/recovery-harness`,
-created from `e4adc38`, with a code checkpoint committed on 2026-10-24 and not pushed, while the
-first copies of the documents, on `docs/recovery-outline`, stay as they were at revision 3.
+Nothing: the author approved every remaining decision on 2026-10-25
+([recovery-part-a.md](recovery-part-a.md), section 10), these included: the clock-check tolerance
+(4.1; 1 s, as the collector uses) and the harness's waits (the phase delay before a mid-step
+injection, how long W7 stays stopped, how long K2, D1 and D2 keep a service down: 3 s, 90 s and
+30 s). The host-memory gate is dropped: memory is recorded, never gated (the same document,
+section 12). The branches: the tooling and these documents are on `feature/recovery-harness`,
+created from `e4adc38`, with commits from 2026-10-24, none pushed, while the first copies of the
+documents, on `docs/recovery-outline`, stay as they were at revision 3.
 
 ### 8.6 The live preflight (proposal)
 
@@ -618,9 +646,18 @@ first copies of the documents, on `docs/recovery-outline`, stay as they were at 
 - **Mutation checks, 2026-10-24.** The 27 focused mutations of `tests/mutation_check.py`, each run
   against the one test file that should catch it, after those files passed unmutated: 27 caught,
   none survived, no error. The 49 earlier mutations of the job queue were not run again.
-- **Not done:** the fix of G9 ([recovery-part-a.md](recovery-part-a.md), section 9), live runs of
-  W2, W3, W4, W5a, W5b and X1, and any formal batch. The MySQL and Kafka variants of the tests and
-  the live preflight ran on 2026-10-24 (the same document, section 11).
+- **Not done:** any formal batch.
+
+  On 2026-10-24 G9 was fixed (`a94eefe`), the host's power, lid, memory pressure and swap came to be
+  recorded per job (`8c5331d`), and the MySQL and Kafka variants of the tests and four live
+  preflights ran. Then the default plan gained a C0 control at each end, and the collector two
+  verdicts, correctness observations and recovery times; a battery, closed-lid or missing reading
+  fails the second (`5a81bc5`). Before that commit, 17 focused mutations, its six new ones included,
+  were run: 17 caught, each by its intended test. Last, the exit status came to follow the verdicts,
+  so a required check that failed or is unknown exits 1 (`fcaa645`); 8 of 8 collector mutations
+  were caught, its two new ones included. On 2026-10-25 the Kafka tests ran on `fcaa645` against
+  Kafka and MySQL: 27 passed, none skipped, the 11 cases that skip without a broker included. The
+  earlier live results stay with the commits they ran on (the same document, sections 9, 11 and 12).
 - **Authorship.** Spec §11: the job code is written with Claude Code. At the author's decision of
   2026-10-24, Claude Code also writes the recovery experiments' tooling listed above, and each new
   module says so. The items in 1.1, and the experiments' decisions, runs and answers, are the
@@ -685,3 +722,42 @@ not the job system.
 
   All of it ran under memory pressure, so it is functional validation only. Part A stays
   provisional.
+- **Revision 8, 2026-10-24.** G9 fixed (`a94eefe`), with a regression test and a focused mutation.
+  Preflight-3 ran W2, W3, W4, W5a, W5b and X1 live from a relative batch folder.
+  - Every correctness check held.
+  - The batch failed the clock check, because the host slept on battery with its lid closed during
+    W3.
+  - M2's isolated check validated the container limits under host pressure.
+
+  Host conditions for formal batches are proposed, apart for correctness and for timing claims
+  ([recovery-part-a.md](recovery-part-a.md), section 12). Part A stays provisional.
+- **Revision 9, 2026-10-24.** The host conditions are replaced by a protocol for this 8 GiB Mac:
+  AC power, the lid open, sleep prevented, no competing tests, memory pressure and swap recorded,
+  controls in the same batch, every outcome kept. No memory figure is used as a gate: M2's 5 and
+  4.0 GiB were its check's own gates, and its 35.1 s was measured under host pressure too.
+  - The harness records power, lid, memory pressure and swap (`8c5331d`).
+  - Preflight-3 stays invalid for timing, its correctness observations kept apart.
+  - Preflight-4 reran W3 on AC power with the lid open, between two controls, and passed validity.
+
+  Recovery times observed on this host are kept apart from performance claims, which are not made
+  ([recovery-part-a.md](recovery-part-a.md), sections 11 and 12). Part A stays provisional.
+- **Revision 10, 2026-10-24.** The author approved this host for correctness observations and for
+  recovery times under its recorded conditions, and a control C0 at each end of the batch (30
+  jobs); Part A is otherwise provisional.
+  - The default plan brackets the shuffled 28 jobs with the two controls (`5a81bc5`).
+  - The collector gives two verdicts. Recovery times also need the clock check, AC power and the
+    lid open at every reading the batch needs, and a missing reading counts as unknown, which fails.
+  - The exit status follows the verdicts: a required check that failed, has no result or is
+    missing exits 1 (`fcaa645`).
+  - Recomputed under these checks, without writing to the records: preflight-1 is invalid for both,
+    preflight-2 and preflight-3 are valid for correctness only, and preflight-4 is valid for both;
+    the first three would exit 1, preflight-4 0.
+
+  Part A gives the 30-job runtime (about 51 min for the batch) and every remaining decision in one
+  table, with values and reasons, for approval together ([recovery-part-a.md](recovery-part-a.md),
+  sections 8, 10–12).
+- **Revision 11, 2026-10-25.** The Kafka tests ran on `fcaa645` against Kafka and MySQL: 27 passed,
+  0 failed, 0 skipped, the 11 cases that skip without a broker included; cleanup left no container,
+  volume or test process. The earlier live results stay with the commits they ran on. The author
+  then approved all 13 remaining decisions, seed 544 included, and so Part A
+  ([recovery-part-a.md](recovery-part-a.md), sections 10 and 11).
