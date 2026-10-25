@@ -373,6 +373,14 @@ MUTATIONS = (
     Mutation("legacy-host-memory-ignored", COLLECTOR,
              '    readings = {e["position"]: e for e in named(b.harness, "host_memory")}',
              "    readings = {}", "the memory readings of earlier batches are no longer read", tests=COLLECTOR_TESTS),
+    Mutation("exit-ignores-unknown", COLLECTOR,
+             '    return 0 if all(check["valid"] for check in result["verdicts"].values()) else 1',
+             '    return 1 if any(check.get("passed") is False for check in result["validity"].values()\n'
+             '                    if isinstance(check, dict)) else 0',
+             "a required check without a result exits 0, as before the fix", tests=COLLECTOR_TESTS),
+    Mutation("missing-check-passes", COLLECTOR, "    check = validity.get(name) or {}",
+             '    check = validity.get(name) or {"passed": True}', "a missing required check passes",
+             tests=COLLECTOR_TESTS),
 )
 
 

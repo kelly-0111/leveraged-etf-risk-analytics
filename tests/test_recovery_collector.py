@@ -408,3 +408,24 @@ def test_a_batch_from_before_the_power_readings_has_unknown_conditions(tmp_path)
     result = crm.collect(batch, processed_root=tmp_path / "processed")
     assert result["validity"]["host_power"]["unknown"] == ["start", 1, 2, 3, "end"]
     assert result["verdicts"]["timing"]["valid"] is False and result["verdicts"]["correctness"]["valid"] is True
+
+
+# The exit status follows the verdicts: a required check that failed or is unknown gives 1
+
+HOST_POWER_ONLY = {"host_power": {"passed": True, "failed": [], "unknown": []}}       # host_lid missing
+
+
+@pytest.mark.parametrize("function, returns, check, invalid", [
+    ("clock_check", {"passed": None}, "clock", {"timing"}),
+    ("identity_check", {"passed": None}, "code_identity", {"correctness", "timing"}),
+    ("host_conditions", HOST_POWER_ONLY, "host_lid", {"timing"}),
+])
+def test_a_required_check_that_is_unknown_or_missing_fails_its_verdicts_and_exits_1(
+        batch, tmp_path, monkeypatch, capsys, function, returns, check, invalid):
+    monkeypatch.setattr(crm, function, lambda *args, **kwargs: returns)
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert {claim for claim, v in result["verdicts"].items() if not v["valid"]} == invalid
+    assert all(result["verdicts"][claim]["failed"] == [check] for claim in invalid)
+    assert result["validity_failed"] == [check]
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+    assert f"{check} (unknown)" in capsys.readouterr().out

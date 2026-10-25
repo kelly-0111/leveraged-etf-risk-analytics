@@ -34,8 +34,9 @@ It writes into the batch folder:
   stand on the checks that do not involve time; its recovery times need those, the clock check,
   and AC power with the lid open at every reading.
   A preflight's results are never formal results (8.6), whatever its checks found.
-It prints a summary and exits with 1 if a validity check fails. A failed outcome check is a
-finding: it is reported and never changes the exit code. Nothing is dropped: a missed or
+It prints a summary and exits with 1 unless both verdicts are valid: any required check that
+failed, has no result or is missing gives 1, and the summary marks the unknown ones. A failed
+outcome check is a finding: it is reported and never changes the exit code. Nothing is dropped: a missed or
 unrun job keeps its row.
 
 Durations are differences of mono values, from one host's monotonic clock (4.1), and so are
@@ -75,7 +76,7 @@ Q3B_VERDICTS = ("matches", "other store", "no such attempt", "wrong worker", "at
 NOT_RUN = ("not run", "not submitted")
 UNRECORDED = ("no record", "no injection record")     # the harness's records lack the job's deadline or injection
 CORRECTNESS_CHECKS = ("code_identity", "fingerprints_agree", "inputs_unchanged", "records_complete")
-TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid")
+TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid")   # every required check
 LIVENESS = ("serve_restarted", "retry", "rewound", "gave_up", "failed_after_ack", "consumer_error", "pass_failed")
 FIELDS = ["position", "case", "job_id", "status", "missed", "injection", "worker", "t_inj", "reference", "deadline_s",
           "detection_s", "rerun_s", "finish_s", "overhead_s", "claims", "accepted", "executions", "complete_executions",
@@ -404,10 +405,26 @@ def host_conditions(b: BatchFolder, host: dict, ran: list[int]) -> dict:
             "host_lid": condition("lid_closed", lambda value: value is not False)}
 
 
+def check_state(validity: dict, name: str) -> str:
+    """passed, failed or unknown; only an explicit pass passes. A check that is missing or has no
+    result is unknown, and so is a host condition whose only problem is the readings it lacks."""
+    check = validity.get(name) or {}
+    if check.get("passed") is True:
+        return "passed"
+    if check.get("passed") is False and (check.get("failed") or not check.get("unknown")):
+        return "failed"
+    return "unknown"
+
+
 def verdict(validity: dict, checks: tuple[str, ...]) -> dict:
-    """Valid only if every one of checks passed; the ones that did not."""
-    failed = [name for name in checks if validity[name].get("passed") is not True]
+    """Valid only if every one of checks passed; the ones that did not, failed or unknown."""
+    failed = [name for name in checks if check_state(validity, name) != "passed"]
     return {"valid": not failed, "failed": failed}
+
+
+def listed(validity: dict, names: list[str]) -> str:
+    """The checks named, each unknown one marked as such."""
+    return ", ".join(name if check_state(validity, name) == "failed" else f"{name} (unknown)" for name in names)
 
 
 def host_summary(b: BatchFolder, host: dict) -> dict:
@@ -493,9 +510,8 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
                              "setup_errors": [e.get("error") for e in named(b.harness, "setup_error")],
                              "final_errors": [e.get("error") for e in named(b.harness, "final_error")]},
     }
-    validity_failed = [name for name, check in validity.items()
-                       if isinstance(check, dict) and check.get("passed") is False]
     verdicts = {"correctness": verdict(validity, CORRECTNESS_CHECKS), "timing": verdict(validity, TIMING_CHECKS)}
+    validity_failed = verdicts["timing"]["failed"]          # every required check that failed or is unknown
     outcomes = {
         "q1_not_ok": [r["job_id"] for r in rows if r.get("q1_verdict") not in (None, "ok")],
         "status_check_exit": final.get("status_check_exit"),
@@ -574,13 +590,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{v['planned']} jobs planned, {v['made']} made, {len(v['missed'])} missed, {len(v['not_run'])} not run,"
           f" {len(v['unrecorded'])} without a complete harness record")
     print("validity: " + ("all checks passed" if not result["validity_failed"]
-                          else "FAILED: " + ", ".join(result["validity_failed"])))
+                          else "FAILED: " + listed(result["validity"], result["validity_failed"])))
     for claim, label in (("correctness", "correctness observations"), ("timing", "recovery times")):
         check = result["verdicts"][claim]
-        print(f"{label}: " + ("valid" if check["valid"] else "INVALID: " + ", ".join(check["failed"])))
+        print(f"{label}: " + ("valid" if check["valid"] else "INVALID: " + listed(result["validity"], check["failed"])))
     print(f"overlap: {result['outcomes']['overlap']['verdict']}; jobs whose Q1 verdict is not ok:"
           f" {result['outcomes']['q1_not_ok'] or 'none'}")
-    return 1 if result["validity_failed"] else 0
+    return 0 if all(check["valid"] for check in result["verdicts"].values()) else 1
 
 
 if __name__ == "__main__":
