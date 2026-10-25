@@ -437,3 +437,31 @@ def test_plan_creates_the_folder_it_writes_into(tmp_path):
     out = tmp_path / "data" / "outputs-recovery" / "formal" / "plan-7.json"
     assert harness.main(["plan", "--purpose", "formal", "--seed", "7", "--out", str(out)]) == 0
     assert json.loads(out.read_text())["purpose"] == "formal"
+
+
+def test_a_relative_batch_folder_reaches_the_reference_launcher_as_absolute_paths(tmp_path, monkeypatch):
+    """G9: the reference run's launcher runs in its .work folder, so a relative path handed to it
+    resolved there and the step could not start (preflight-1, 2026-10-24)."""
+    calls = []
+
+    class Launcher:                                              # the launcher's process, as the harness sees it
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+            self.stdin = SimpleNamespace(write=lambda data: None, flush=lambda: None, close=lambda: None)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.chdir(tmp_path)
+    batch = harness.Batch(harness.make_plan(DEFAULTS, seed=1, purpose="preflight", jobs=["C0"]), Path("preflight/b"))
+    batch.store_id = "s" * 32
+    monkeypatch.setattr(harness.subprocess, "Popen", Launcher)
+    batch.reference_run()
+    assert batch.out == (tmp_path / "preflight" / "b").resolve() and len(calls) == 2
+    for command, kwargs in calls:
+        assert Path(kwargs["cwd"]).is_absolute()
+        assert all(Path(command[command.index(flag) + 1]).is_absolute()
+                   for flag in ("--cwd", "--step-log", "--result", "--lock", "--registry"))
+        step = command[command.index("--") + 1:]
+        assert all(Path(value).is_absolute() for flag, value in zip(step, step[1:])
+                   if flag.startswith("--") and "/" in value)        # the step's own folders too

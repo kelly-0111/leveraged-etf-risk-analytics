@@ -397,6 +397,7 @@ class Tracker(threading.Thread):
 class Batch:
     def __init__(self, plan: dict, out: Path):
         from etf_risk import services
+        out = Path(out).resolve()           # G9: every path handed to a process is absolute, whatever its cwd
         self.plan, self.out, self.services = plan, out, services
         self.purpose = plan.get("purpose")
         self.settings = Settings.from_dict(plan["settings"])

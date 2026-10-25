@@ -303,7 +303,7 @@ MUTATIONS = (
     # Focused: the synthetic batch, end to end (tests/test_recovery_synthetic.py).
     Mutation("no-restart", HARNESS, "        restarted = [w for w in WORKERS if self.procs[w].poll() is not None]",
              "        restarted = []", "a killed worker is never started again", tests=SYNTHETIC_TESTS),
-    # Focused: the gaps G1-G7 of docs/recovery-part-a.md, fixed on 2026-10-24.
+    # Focused: the gaps G1-G7 and G9 of docs/recovery-part-a.md, fixed on 2026-10-24.
     Mutation("setup-error-unrecorded", HARNESS,
              '                self.log.log("setup_error", error=f"{type(error).__name__}: {error}"[:1000])\n', "",
              "a failure in the setup leaves no record", tests=HARNESS_TESTS),
@@ -332,6 +332,10 @@ MUTATIONS = (
              '        "records_complete": {"passed": not named(b.harness, "setup_error") and not named(b.harness, "final_error"),',
              '        "records_complete": {"passed": True,', "a recorded setup or final error passes validity",
              tests=COLLECTOR_TESTS),
+    Mutation("batch-folder-relative", HARNESS,
+             "        out = Path(out).resolve()           # G9: every path handed to a process is absolute, whatever its cwd\n",
+             "        out = Path(out)\n", "a relative batch folder reaches the reference launcher as relative paths (G9)",
+             tests=HARNESS_TESTS),
     Mutation("host-memory-column-dropped", COLLECTOR,
              '        if position in host:\n            row["host_available_bytes"] = host[position].get("available_bytes")\n',
              "", "the per-job host memory is left out of injections.csv", tests=COLLECTOR_TESTS),
