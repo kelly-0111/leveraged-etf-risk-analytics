@@ -418,13 +418,17 @@ def test_a_bad_stored_value_is_a_miss_and_is_replaced(stored):
     assert rc.get_or_compute(ident(), compute)[1] == "cache"
 
 
+class ComputeFailed(Exception):
+    """Not a RuntimeError: NotImplementedError is one, and would satisfy pytest.raises."""
+
+
 @step(5)
 def test_a_failing_compute_propagates_and_nothing_is_written():
     rc, redis = new_cache()
 
     def compute():
-        raise RuntimeError("the folder changed during the query")
-    with pytest.raises(RuntimeError):
+        raise ComputeFailed("the folder changed during the query")
+    with pytest.raises(ComputeFailed):
         rc.get_or_compute(ident(), compute)
     assert redis.data == {} and redis.count("SET") == 0
 
