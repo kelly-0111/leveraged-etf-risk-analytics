@@ -249,7 +249,7 @@ def test_with_the_real_cache_a_cross_store_hit_stores_no_provenance(tmp_path):
 
 @step(8, raises=ValueError)
 def test_a_non_finite_result_is_answered_as_it_is_without_the_cache(registered):
-    """The non-finite policy (docs/result-cache.md §4a): caching adds no failure."""
+    """The non-finite policy (docs/result-cache.md §5): caching adds no failure."""
     folder, registry = registered
     result = {"columns": [["x", "double"]], "rows": [[math.nan], [math.inf]]}
     request = {"query": "overview", "run": str(folder)}

@@ -1,7 +1,7 @@
 """The contract of etf_risk.cache (spec §11), one group per tutoring step. Offline: Redis is the
 fake in tests/cache_fakes.py, where WRITTEN lists the steps whose code exists (see step()).
 
-The conditional calculation of a request's Redis waiting time (docs/result-cache.md §5; not an
+The conditional calculation of a request's Redis waiting time (docs/result-cache.md §6; not an
 end-to-end bound) is composed from two parts: the calls per request pinned here (at most one
 GET and one SET, none while the breaker is open, no SET after a failed GET) and the cost of one
 call against redis-py as locked, pinned in tests/test_redis_client.py.
