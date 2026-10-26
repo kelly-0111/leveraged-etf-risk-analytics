@@ -69,9 +69,88 @@ class Query:
 # STEP 7 (the author): move each query's SQL here from its source script, adding the
 # :tickers marker, for example WHERE array_contains(:tickers, ticker).
 QUERIES = {
-    "overview": Query("analysis/sql_overview.py", {"tickers": TICKER_SET}),
-    "comparison": Query("analysis/sql_comparison.py", {"tickers": TICKER_SET}),
-    "sensitivity": Query("analysis/sql_sensitivity.py", {"tickers": TICKER_SET}),
+    "overview": Query(
+        "analysis/sql_overview.py",
+        {"tickers": TICKER_SET},
+        sql="""
+            SELECT
+                ticker,
+                COUNT(*) AS n_windows,
+                COUNT(return_2x) AS n_return_2x,
+                SUM(CASE WHEN breached_2x THEN 1 ELSE 0 END) AS n_breached_2x,
+                SUM(CASE WHEN contains_unverified_day THEN 1 ELSE 0 END) AS n_flagged,
+                percentile(return_1x, 0.5) AS median_return_1x,
+                percentile(return_2x, 0.5) AS median_return_2x
+            FROM paired
+            WHERE array_contains(:tickers, ticker)
+            GROUP BY ticker
+            ORDER BY CASE WHEN ticker = 'QQQ' THEN 1 ELSE 0 END, ticker
+        """,
+    ),
+    "comparison": Query(
+        "analysis/sql_comparison.py",
+        {"tickers": TICKER_SET},
+        sql="""
+            WITH comparisons AS (
+                SELECT
+                    ticker,
+                    return_2x > 2 * return_1x AS is_above
+                FROM paired
+                WHERE array_contains(:tickers, ticker)
+            ),
+            counts AS (
+                SELECT
+                    ticker,
+                    COUNT(*) AS n_windows,
+                    COUNT(is_above) AS n_compared,
+                    SUM(CASE WHEN is_above IS NULL
+                             THEN 1 ELSE 0 END) AS n_not_compared,
+                    SUM(CASE WHEN is_above
+                             THEN 1 ELSE 0 END) AS n_2x_above
+                FROM comparisons
+                GROUP BY ticker
+            )
+            SELECT
+                ticker,
+                n_windows,
+                n_compared,
+                n_not_compared,
+                n_2x_above,
+                CASE WHEN n_compared > 0
+                     THEN CAST(n_2x_above AS DOUBLE) / n_compared
+                     ELSE NULL
+                END AS share_2x_above
+            FROM counts
+            ORDER BY CASE WHEN ticker = 'QQQ' THEN 1 ELSE 0 END, ticker
+        """,
+    ),
+    "sensitivity": Query(
+        "analysis/sql_sensitivity.py",
+        {"tickers": TICKER_SET},
+        sql="""
+            SELECT
+                ticker,
+                COUNT(*) AS n_windows,
+                COUNT(return_2x) AS n_return_2x,
+                percentile(return_2x, 0.5) AS median_return_2x,
+
+                COUNT(*) FILTER (
+                    WHERE contains_unverified_day = false
+                ) AS n_unflagged,
+
+                COUNT(return_2x) FILTER (
+                    WHERE contains_unverified_day = false
+                ) AS n_return_2x_unflagged,
+
+                percentile(return_2x, 0.5) FILTER (
+                    WHERE contains_unverified_day = false
+                ) AS median_return_2x_unflagged
+            FROM paired
+            WHERE array_contains(:tickers, ticker)
+            GROUP BY ticker
+            ORDER BY CASE WHEN ticker = 'QQQ' THEN 1 ELSE 0 END, ticker
+        """,
+    ),
 }
 
 

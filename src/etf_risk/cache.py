@@ -34,6 +34,7 @@ with Claude Code (Opus 5.5); the function bodies are the author's.
 from __future__ import annotations
 
 import copy
+import math
 import hashlib
 import json
 import time
@@ -133,7 +134,13 @@ def encode(ident: Mapping[str, Any], result: Mapping[str, Any]) -> bytes:
 
     result is {"columns": [[name, Spark type], ...], "rows": [[value, ...], ...]}; values
     are str, int, float, bool or None."""
-    raise NotImplementedError("tutoring step 3")
+    payload = {"identity": dict(ident), "result": dict(result)}
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def decode(raw: bytes, ident: Mapping[str, Any]) -> dict | None:
@@ -142,7 +149,51 @@ def decode(raw: bytes, ident: Mapping[str, Any]) -> dict | None:
     "identity" and "result", holds another identity, or has a result of another shape. The
     shape (the author's decisions, 2026-10-25): an object whose "columns" and "rows" are
     lists; each column a list of two strings; each row a list as long as "columns"."""
-    raise NotImplementedError("tutoring step 3")
+    def reject_constant(value):
+        raise ValueError(f"Invalid JSON constant: {value}")
+
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("identity") != dict(ident):
+        return None
+
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return None
+
+    columns = result.get("columns")
+    rows = result.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        return None
+
+    for column in columns:
+        if (
+            not isinstance(column, list)
+            or len(column) != 2
+            or not all(isinstance(item, str) for item in column)
+        ):
+            return None
+
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(columns):
+            return None
+        for value in row:
+            if value is not None and type(value) not in (
+                str, int, float, bool
+            ):
+                return None
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+
+    return result
 
 
 # STEP 4
@@ -157,17 +208,38 @@ class Breaker:
     failure() opens it again for another cooldown.
     A success in the closed state resets the count of consecutive failures."""
 
-    def __init__(self, *, threshold: int, cooldown: float, clock: Callable[[], float]):
-        raise NotImplementedError("tutoring step 4")
+    def __init__(self, *, threshold: int, cooldown: float,
+                 clock: Callable[[], float]):
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self.clock = clock
+        self.failures = 0
+        self.state = "closed"
+        self.opened_at = None
 
     def allow(self) -> bool:
-        raise NotImplementedError("tutoring step 4")
+        if self.state == "closed":
+            return True
+
+        if self.state == "half-open":
+            return False
+
+        if self.clock() - self.opened_at >= self.cooldown:
+            self.state = "half-open"
+            return True
+
+        return False
 
     def success(self) -> None:
-        raise NotImplementedError("tutoring step 4")
+        self.failures = 0
+        self.state = "closed"
+        self.opened_at = None
 
     def failure(self) -> None:
-        raise NotImplementedError("tutoring step 4")
+        self.failures += 1
+        if self.state == "half-open" or self.failures >= self.threshold:
+            self.state = "open"
+            self.opened_at = self.clock()
 
 
 # STEPS 5 and 6
@@ -222,4 +294,44 @@ class ResultCache:
 
         STEP 5: hits, misses and the write-back. STEP 6: Redis failures, the breaker and the
         counters."""
-        raise NotImplementedError("tutoring steps 5 and 6")
+        key = cache_key(ident)
+
+        if not self.breaker.allow():
+            self.counters.skipped += 1
+            result = compute()
+            self.counters.write_skips += 1
+            return result, "spark"
+
+        try:
+            raw = self.client.get(key)
+        except self.errors:
+            self.breaker.failure()
+            self.counters.get_errors += 1
+            result = compute()
+            self.counters.write_skips += 1
+            return result, "spark"
+
+        self.breaker.success()
+
+        if raw is None:
+            self.counters.misses += 1
+        else:
+            result = decode(raw, ident)
+            if result is not None:
+                self.counters.hits += 1
+                return result, "cache"
+            self.counters.decode_misses += 1
+
+        result = compute()
+        encoded = encode(ident, result)
+
+        try:
+            self.client.set(key, encoded)
+        except self.errors:
+            self.breaker.failure()
+            self.counters.set_errors += 1
+        else:
+            self.breaker.success()
+            self.counters.writes += 1
+
+        return result, "spark"
