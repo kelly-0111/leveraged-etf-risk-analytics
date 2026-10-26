@@ -39,6 +39,9 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
+import copy
+import hashlib
+import json
 
 FORMAT = 1
 KEY_PREFIX = "etf-risk:result"
@@ -103,7 +106,14 @@ def identity(*, run_digest: str, query: str, sql: str, params: Mapping[str, Any]
     and params: a deep copy of the already normalized params (the author's decision,
     2026-10-25), so that later changes to the caller's dict or to its lists cannot change
     the identity or its key."""
-    raise NotImplementedError("tutoring step 2")
+    return {
+        "format": FORMAT,
+        "engine": engine,
+        "run_digest": run_digest,
+        "query": query,
+        "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+        "params": copy.deepcopy(params),
+    }
 
 
 def cache_key(ident: Mapping[str, Any]) -> str:
@@ -111,7 +121,9 @@ def cache_key(ident: Mapping[str, Any]) -> str:
     identity>", the identity written as canonical JSON. The prefix names the identity's own
     format (the author's decision, 2026-10-25) and is for people reading keys; the hash
     decides. Equal identities give equal keys in every process."""
-    raise NotImplementedError("tutoring step 2")
+    canonical = json.dumps(ident, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"{KEY_PREFIX}:v{ident['format']}:{ident['query']}:{digest}"
 
 
 # STEP 3
