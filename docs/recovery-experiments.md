@@ -1,7 +1,7 @@
 # Recovery experiments (E1, E2): outline
 
-Author: _to be written by the author after review. Beyond spec §11, the only decisions by the
-author are those in 1.1._
+Author: The project author. _Beyond spec §11, the only decisions by the author are those in
+1.1._
 
 _Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised thirteen times from the author's
 reviews (history at the end). This is an outline, not Part A: everything not in 1.1 or cited from
