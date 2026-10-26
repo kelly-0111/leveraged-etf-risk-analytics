@@ -256,14 +256,50 @@ def test_bad_values_are_misses_never_errors():
         assert cache.decode(raw, ident()) is None, raw
 
 
+# The author's decisions (2026-10-25): the layout {"identity", "result"}; standard JSON (no NaN
+# or infinity); decode checks the result's shape; anything malformed or foreign is a miss.
+
 @step(3)
-def test_nan_is_refused_or_kept():
-    result = {"columns": [["x", "double"]], "rows": [[math.nan]]}
-    try:
-        raw = cache.encode(ident(), result)
-    except ValueError:
-        return
-    assert math.isnan(cache.decode(raw, ident())["rows"][0][0])
+def test_the_stored_value_is_the_identity_and_the_result():
+    assert json.loads(cache.encode(ident(), RESULT)) == {"identity": ident(), "result": RESULT}
+
+
+@step(3)
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_nan_and_infinity_are_refused(value):
+    with pytest.raises(ValueError):
+        cache.encode(ident(), {"columns": [["x", "double"]], "rows": [[value]]})
+
+
+@step(3)
+def test_a_result_without_rows_round_trips():
+    empty = {"columns": [["ticker", "string"]], "rows": []}
+    assert cache.decode(cache.encode(ident(), empty), ident()) == empty
+
+
+COLUMNS = [["ticker", "string"], ["n_windows", "bigint"]]
+
+
+@step(3)
+@pytest.mark.parametrize("stored", [
+    {"identity": "IDENT"},                                              # no result
+    {"result": {"columns": COLUMNS, "rows": []}},                       # no identity
+    {"identity": "IDENT", "result": [COLUMNS, []]},                     # result not an object
+    {"identity": "IDENT", "result": {"columns": "ticker", "rows": []}},
+    {"identity": "IDENT", "result": {"columns": COLUMNS, "rows": "AAPL"}},
+    {"identity": "IDENT", "result": {"rows": []}},
+    {"identity": "IDENT", "result": {"columns": ["ticker"], "rows": []}},           # a column not a list
+    {"identity": "IDENT", "result": {"columns": [["ticker"]], "rows": []}},         # one string
+    {"identity": "IDENT", "result": {"columns": [["ticker", "string", "x"]], "rows": []}},
+    {"identity": "IDENT", "result": {"columns": [["ticker", 1]], "rows": []}},      # not two strings
+    {"identity": "IDENT", "result": {"columns": COLUMNS, "rows": ["AAPL"]}},        # a row not a list
+    {"identity": "IDENT", "result": {"columns": COLUMNS, "rows": [["AAPL"]]}},      # too short
+    {"identity": "IDENT", "result": {"columns": COLUMNS, "rows": [["AAPL", 1, 2]]}},  # too long
+])
+def test_a_malformed_stored_value_is_a_miss(stored):
+    if stored.get("identity") == "IDENT":
+        stored = {**stored, "identity": ident()}
+    assert cache.decode(json.dumps(stored).encode(), ident()) is None
 
 
 # STEP 4: the breaker

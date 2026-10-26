@@ -127,7 +127,9 @@ def cache_key(ident: Mapping[str, Any]) -> str:
 # STEP 3
 
 def encode(ident: Mapping[str, Any], result: Mapping[str, Any]) -> bytes:
-    """The stored value: the identity and the result, as JSON.
+    """The stored value: {"identity": ident, "result": result} as standard JSON in UTF-8, the
+    same bytes for equal input. NaN and infinity are refused with ValueError (the author's
+    decisions, 2026-10-25).
 
     result is {"columns": [[name, Spark type], ...], "rows": [[value, ...], ...]}; values
     are str, int, float, bool or None."""
@@ -135,9 +137,11 @@ def encode(ident: Mapping[str, Any], result: Mapping[str, Any]) -> bytes:
 
 
 def decode(raw: bytes, ident: Mapping[str, Any]) -> dict | None:
-    """The result stored in raw, equal to what encode() was given, value types included;
-    or None (a miss) when raw cannot be decoded, has another shape or format, or holds
-    another identity. Never raises for bad input."""
+    """The result stored in raw, equal to what encode() was given, value types included.
+    None (a miss), never an exception, when raw is not UTF-8 JSON, is not an object with
+    "identity" and "result", holds another identity, or has a result of another shape. The
+    shape (the author's decisions, 2026-10-25): an object whose "columns" and "rows" are
+    lists; each column a list of two strings; each row a list as long as "columns"."""
     raise NotImplementedError("tutoring step 3")
 
 
