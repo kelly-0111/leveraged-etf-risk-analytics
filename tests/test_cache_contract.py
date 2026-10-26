@@ -1,13 +1,13 @@
 """The contract of etf_risk.cache (spec §11), one group per tutoring step. Offline: Redis is the
 fake in tests/cache_fakes.py, where WRITTEN lists the steps whose code exists (see step()).
 
-The Redis overhead bound for a whole request is composed from two parts: the calls per request
-pinned here (at most one GET and one SET, none while the breaker is open, no SET after a
-failed GET) and the cost of one call against redis-py as locked, pinned in
-tests/test_redis_client.py.
+The conditional calculation of a request's Redis waiting time (docs/result-cache.md §5; not an
+end-to-end bound) is composed from two parts: the calls per request pinned here (at most one
+GET and one SET, none while the breaker is open, no SET after a failed GET) and the cost of one
+call against redis-py as locked, pinned in tests/test_redis_client.py.
 
-AI contribution: written with Claude Code (Opus 5.5). The decisions left open in step 1 (case,
-an empty set, None) get their tests with the author.
+AI contribution: written with Claude Code (Opus 5.5). The step-1 decisions these tests pin
+(the canonical form, upper-casing, what is refused) are the author's, of 2026-10-25.
 """
 import hashlib
 import inspect
@@ -82,27 +82,72 @@ def test_an_undeclared_parameter_is_refused(given):
 
 
 @step(1)
-@pytest.mark.parametrize("tickers", [["SPY"], ["AAPL", "SPY"], [1], [None]])
-def test_a_value_outside_the_declaration_is_refused(tickers):
+@pytest.mark.parametrize("tickers", [["SPY"], ["AAPL", "SPY"]])
+def test_a_ticker_outside_the_declaration_is_refused(tickers):
+    with pytest.raises(ValueError):
+        cache.normalize_params(DECLARED, {"tickers": tickers})
+
+
+# The author's decisions (2026-10-25): a sorted list without duplicates; tickers upper-cased;
+# an empty list, null and a bare string refused; non-string tickers refused; the input unchanged.
+
+@step(1)
+def test_the_canonical_form_is_a_sorted_list_without_duplicates():
+    result = cache.normalize_params(DECLARED, {"tickers": ["QQQ", "AAPL", "QQQ"]})
+    assert result == {"tickers": ["AAPL", "QQQ"]} and type(result["tickers"]) is list
+
+
+@step(1)
+def test_the_default_comes_out_sorted():
+    assert cache.normalize_params(DECLARED, {}) == {"tickers": ["AAPL", "MSFT", "NVDA", "QQQ", "TSLA"]}
+
+
+@step(1)
+@pytest.mark.parametrize("tickers, expected", [(["aapl"], ["AAPL"]), (["Aapl", "AAPL", "qqq"], ["AAPL", "QQQ"])])
+def test_tickers_are_upper_cased_before_they_are_checked_and_deduplicated(tickers, expected):
+    assert cache.normalize_params(DECLARED, {"tickers": tickers}) == {"tickers": expected}
+
+
+@step(1)
+@pytest.mark.parametrize("tickers", [[" AAPL"], ["AAPL "], ["spy"]])
+def test_upper_casing_is_the_only_change_made_to_a_ticker(tickers):
     with pytest.raises(ValueError):
         cache.normalize_params(DECLARED, {"tickers": tickers})
 
 
 @step(1)
-def test_a_bare_string_is_never_split_into_characters():
-    try:
-        result = cache.normalize_params(DECLARED, {"tickers": "AAPL"})
-    except ValueError:
-        return
-    assert result == cache.normalize_params(DECLARED, {"tickers": ["AAPL"]})
+@pytest.mark.parametrize("value", [[], None, "AAPL", "aapl", ""])
+def test_an_empty_list_null_and_a_bare_string_are_refused(value):
+    with pytest.raises(ValueError):
+        cache.normalize_params(DECLARED, {"tickers": value})
 
 
 @step(1)
-def test_the_request_is_not_changed():
-    tickers = ["QQQ", "AAPL", "QQQ"]
-    given = {"tickers": tickers}
-    cache.normalize_params(DECLARED, given)
-    assert given == {"tickers": ["QQQ", "AAPL", "QQQ"]} and given["tickers"] is tickers
+@pytest.mark.parametrize("tickers", [[1], [None], [True], [1.5], [b"AAPL"], [["AAPL"]], ["AAPL", 2]])
+def test_a_ticker_that_is_not_a_string_is_refused(tickers):
+    with pytest.raises(ValueError):
+        cache.normalize_params(DECLARED, {"tickers": tickers})
+
+
+@step(1)
+@pytest.mark.parametrize("value", [42, {"AAPL": True}])
+def test_a_value_that_is_neither_a_list_nor_a_tuple_is_refused(value):
+    with pytest.raises(ValueError):
+        cache.normalize_params(DECLARED, {"tickers": value})
+
+
+@step(1)
+@pytest.mark.parametrize("given, refused", [({"tickers": ["qqq", "AAPL", "aapl"]}, False),
+                                            ({"tickers": ["aapl"], "stride": 21}, True)])
+def test_the_request_is_not_changed_even_when_it_is_refused(given, refused):
+    tickers = given["tickers"]
+    before = {k: list(v) if isinstance(v, list) else v for k, v in given.items()}
+    if refused:
+        with pytest.raises(ValueError):
+            cache.normalize_params(DECLARED, given)
+    else:
+        cache.normalize_params(DECLARED, given)
+    assert given == before and given["tickers"] is tickers
 
 
 # STEP 2: identity and cache_key
@@ -417,7 +462,7 @@ def test_every_request_lands_in_one_outcome_and_every_computed_result_in_one_wri
 
 
 @step(6)
-def test_the_redis_calls_of_one_request_stay_within_the_bound():
+def test_the_redis_calls_of_one_request_stay_within_the_conditional_calculation():
     """At most one GET and one SET; only the GET when it fails; none while the breaker is
     open. With each call costing at most `cost`, a request spends at most 2 * cost in Redis."""
     clock = FakeClock()

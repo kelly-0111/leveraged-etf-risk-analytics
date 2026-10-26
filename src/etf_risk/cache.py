@@ -59,12 +59,15 @@ class Param:
 # STEP 1
 
 def normalize_params(declared: Mapping[str, Param], given: Mapping[str, Any]) -> dict:
-    """The request's parameters in canonical form: every declared parameter, the default
-    for each one the request leaves out, each value in one canonical, JSON-serializable form.
-    Two requests that mean the same thing give equal results; two that do not, unequal ones.
-
-    Raise ValueError for a parameter that is not declared, or a value its declaration does
-    not allow."""
+    """The request's parameters in canonical form: a new dict with exactly the declared
+    names. For a "string_set" parameter (the author's decisions, 2026-10-25):
+    - left out of the request: its default, in canonical form;
+    - given: a non-empty list or tuple of strings; each string upper-cased (no other change)
+      must be in `allowed`;
+    - canonical form: a sorted list without duplicates.
+    Raise ValueError for an undeclared name, null, a bare string, an empty list, any other
+    value that is not a list or tuple, a ticker that is not a string, or one outside
+    `allowed`. `given` and its values are never changed, also when refused."""
     raise NotImplementedError("tutoring step 1")
 
 
