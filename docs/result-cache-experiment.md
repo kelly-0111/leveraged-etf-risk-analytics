@@ -363,10 +363,11 @@ The session helpers, in order:
 | `e3_cleanup` | stops and removes the redis service only |
 
 For the next prepared dry run, after quitting every other application (the editor included),
-with AC power, the lid open, and Docker running with nothing else:
+with AC power, the lid open, and Docker running with nothing else (`<repository>` is the main
+checkout):
 
 ```zsh
-cd ~/leveraged-etf-risk-analytics/.claude/worktrees/result-cache-experiment
+cd <repository>/.claude/worktrees/result-cache-experiment
 deactivate 2>/dev/null
 export E3_PURPOSE=dry-run
 export E3_SEED=2611
