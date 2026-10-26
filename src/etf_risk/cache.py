@@ -328,7 +328,11 @@ class ResultCache:
             self.counters.decode_misses += 1
 
         result = compute()
-        encoded = encode(ident, result)
+        try:
+            encoded = encode(ident, result)
+        except ValueError:
+            self.counters.write_skips += 1
+            return result, "spark"
 
         try:
             self.client.set(key, encoded)
