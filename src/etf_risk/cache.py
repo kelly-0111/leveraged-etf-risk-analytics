@@ -33,15 +33,13 @@ with Claude Code (Opus 5.5); the function bodies are the author's.
 """
 from __future__ import annotations
 
-import hashlib  # noqa: F401  (for the author's steps 2 and 3)
-import json  # noqa: F401
+import copy
+import hashlib
+import json
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
-import copy
-import hashlib
-import json
 
 FORMAT = 1
 KEY_PREFIX = "etf-risk:result"
