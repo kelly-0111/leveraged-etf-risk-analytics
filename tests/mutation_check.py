@@ -9,9 +9,9 @@ tests, and expect them to fail (docs/job-table.md, docs/job-queue.md).
 
 Each mutation replaces one exact piece of source text, which must occur exactly once. The
 work happens in a scratch copy of the repository (src/, tests/, analysis/, docs/recovery-sql.md,
-pyproject.toml, uv.lock) with its own environment (uv sync --frozen --group jobs), never in this
-checkout. Each mutation runs the tests it names: the job tests, unless it is one of the focused
-mutations below. All the tests the selected mutations name first run unmutated and must pass.
+pyproject.toml, uv.lock) with its own environment (uv sync --frozen --group jobs --group cache),
+never in this checkout. Each mutation runs the tests it names: the job tests, unless it is one
+of the focused mutations below. All the tests the selected mutations name first run unmutated and must pass.
 Then, for each mutation, its tests run in a fresh process group with a timeout:
 - caught: pytest reports failing tests (exit 1);
 - survived: they all pass (exit 0);
@@ -33,6 +33,12 @@ day), break the recovery experiments' tooling and the worker's acceptance deadli
 and each runs only the test file that should catch it: the worker's, the launcher's, the fault
 hook's, the harness's, the collector's, the frozen cross-check SQL's on SQLite, or the
 synthetic batch's. A catch therefore shows that this file notices the break.
+
+The result cache's focused mutations (M4, added 2026-10-26; docs/result-cache.md) break the
+resolver and the registry, the request flow, the cache logic (the author's cache.py) and the
+Redis client's settings, each against its own test file. Removing cache.py's parse_constant is
+left out: its isfinite check rejects the NaN that json.loads would then return, so the two are
+equivalent for NaN and infinity written as constants.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
@@ -72,6 +78,10 @@ WORKER_TESTS, LAUNCHER_TESTS = ("tests/test_jobs_worker.py",), ("tests/test_jobs
 FAULT_TESTS, HARNESS_TESTS = ("tests/test_jobs_faults.py",), ("tests/test_jobs_harness.py",)
 COLLECTOR_TESTS, SQL_TESTS = ("tests/test_recovery_collector.py",), ("tests/test_recovery_sql.py",)
 SYNTHETIC_TESTS = ("tests/test_recovery_synthetic.py",)
+RUNS, SUMMARY = "src/etf_risk/runs.py", "src/etf_risk/summary.py"
+CACHE, SERVICES = "src/etf_risk/cache.py", "src/etf_risk/services.py"
+RESOLVER_TESTS, SUMMARY_TESTS = ("tests/test_runs_resolver.py",), ("tests/test_summary.py",)
+CONTRACT_TESTS, CLIENT_TESTS = ("tests/test_cache_contract.py",), ("tests/test_redis_client.py",)
 
 
 @dataclass(frozen=True)
@@ -395,6 +405,66 @@ MUTATIONS = (
              "            return self.services.other_containers()\n        except (OSError, RuntimeError, subprocess.SubprocessError):",
              "            return self.services.other_containers()\n        except ():",
              "a failing docker ps stops the batch instead of giving an unknown reading", tests=HARNESS_TESTS),
+    # Focused: the result cache (docs/result-cache.md). The resolver and the registry.
+    Mutation("resolver-unfinished-job", RUNS, 'if job["status"] != Status.SUCCEEDED:', "if False:",
+             "a job that has not succeeded is served", tests=RESOLVER_TESTS),
+    Mutation("resolver-other-store", RUNS, "if store_id is not None and store_id != current:", "if False:",
+             "a job of another store is served", tests=RESOLVER_TESTS),
+    Mutation("registry-any-folder", RUNS, '        if (registry_root(registry) / entry["path"]).resolve() == wanted:',
+             "        if True:", "an unregistered folder resolves to a registered run", tests=RESOLVER_TESTS),
+    Mutation("wrong-digest-served", RUNS, "        if found != self.expected:", "        if False:",
+             "files with another digest are served", tests=RESOLVER_TESTS),
+    Mutation("warm-check-ignores-differences", RUNS, "        if not unchanged:\n            self.verify_full()",
+             "        if False:\n            self.verify_full()", "a changed folder passes the warm check",
+             tests=RESOLVER_TESTS),
+    Mutation("warm-check-without-mtime", RUNS, "    return st.st_size, st.st_mtime_ns", "    return st.st_size, 0",
+             "the warm check ignores modification times", tests=RESOLVER_TESTS),
+    Mutation("hash-during-change", RUNS, "        if _stat(path) != before:", "        if False:",
+             "a file that changes while it is hashed is accepted", tests=RESOLVER_TESTS),
+    Mutation("registration-foreign-verify", RUNS,
+             "    if verified_run is not None and Path(verified_run).name != folder.name:", "    if False:",
+             "a verify.json written for another run is accepted at registration", tests=RESOLVER_TESTS),
+    Mutation("registration-unclean-verify", RUNS,
+             '    elif verified.get("mismatch_count") or not verified.get("breached_windows", {}).get("same"):',
+             "    elif False:", "a verify.json with mismatches is accepted", tests=RESOLVER_TESTS),
+    # Focused: the request flow (summary.py).
+    Mutation("no-check-after-query", SUMMARY,
+             "                check.check()                    # the files Spark read must still be the accepted ones",
+             "                pass", "a folder changed during the query is answered and cached", tests=SUMMARY_TESTS),
+    Mutation("provenance-dropped", SUMMARY, 'run={**run.provenance, "digest": run.digest},',
+             'run={"digest": run.digest},', "the response does not say what made its run servable",
+             tests=SUMMARY_TESTS),
+    # Focused: the cache logic (cache.py, the author's).
+    Mutation("key-ignores-digest", CACHE, 'canonical = json.dumps(ident, sort_keys=True, separators=(",", ":"))',
+             'canonical = json.dumps({k: v for k, v in ident.items() if k != "run_digest"}, sort_keys=True,'
+             ' separators=(",", ":"))', "runs with other files share a key", tests=CONTRACT_TESTS),
+    Mutation("sql-not-hashed", CACHE, '"sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),',
+             '"sql_sha256": "",', "a changed query keeps its key", tests=CONTRACT_TESTS),
+    Mutation("params-shallow-copy", CACHE, '"params": copy.deepcopy(params),', '"params": dict(params),',
+             "changing the caller's ticker list changes a stored identity", tests=CONTRACT_TESTS),
+    Mutation("no-upper-case", CACHE, "            ticker = value.upper()", "            ticker = value",
+             "a lower-case ticker is refused", tests=CONTRACT_TESTS),
+    Mutation("decode-ignores-identity", CACHE, 'if payload.get("identity") != dict(ident):', "if False:",
+             "a value stored for another identity is served", tests=CONTRACT_TESTS),
+    Mutation("decode-accepts-overflow", CACHE, "            if isinstance(value, float) and not math.isfinite(value):",
+             "            if False:", "a stored 1e999 decodes to infinity", tests=CONTRACT_TESTS),
+    Mutation("breaker-ignored", CACHE, "if not self.breaker.allow():", "if False:",
+             "Redis is called while the breaker is open", tests=CONTRACT_TESTS),
+    Mutation("cooldown-exclusive", CACHE, "if self.clock() - self.opened_at >= self.cooldown:",
+             "if self.clock() - self.opened_at > self.cooldown:", "no probe at exactly the cooldown",
+             tests=CONTRACT_TESTS),
+    Mutation("get-catches-everything", CACHE, "            raw = self.client.get(key)\n        except self.errors:",
+             "            raw = self.client.get(key)\n        except Exception:", "a bug in the client becomes a miss",
+             tests=CONTRACT_TESTS),
+    # Focused: the Redis client's settings (services.py), against redis-py as locked.
+    Mutation("client-retries", SERVICES, "retry=Retry(NoBackoff(), 0)", "retry=Retry(NoBackoff(), 2)",
+             "a failing command is retried", tests=CLIENT_TESTS),
+    Mutation("client-resp3", SERVICES, "db=0, protocol=2,", "db=0, protocol=3,",
+             "every connection sends HELLO", tests=CLIENT_TESTS),
+    Mutation("client-setinfo", SERVICES, "driver_info=None, ", "",
+             "every connection sends CLIENT SETINFO", tests=CLIENT_TESTS),
+    Mutation("client-host-name", SERVICES, '        ipaddress.ip_address(parts.hostname or "")', "        pass",
+             "a host name, with its DNS lookup, is accepted", tests=CLIENT_TESTS),
 )
 
 
@@ -409,8 +479,8 @@ def make_scratch() -> Path:
             (scratch / item).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, scratch / item)
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    subprocess.run(["uv", "sync", "--frozen", "--group", "jobs"], cwd=scratch, env=env, check=True,
-                   capture_output=True, text=True)
+    subprocess.run(["uv", "sync", "--frozen", "--group", "jobs", "--group", "cache"], cwd=scratch, env=env,
+                   check=True, capture_output=True, text=True)
     return scratch
 
 

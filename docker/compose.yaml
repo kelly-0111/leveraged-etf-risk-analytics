@@ -7,6 +7,9 @@
 #   in a 640 MiB container without swap. Clients on this machine use 127.0.0.1:9094;
 #   containers on this Compose network will use kafka:9092. Topics are not created on
 #   first use: create them with etf_risk.jobs.kafka.create_topic().
+# - redis: the summary-query result cache. maxmemory 32 MiB with allkeys-lru eviction and
+#   persistence off (a restart starts empty), in a 128 MiB container without swap. Clients
+#   on this machine use 127.0.0.1:6380.
 #
 #   docker compose -f docker/compose.yaml up -d --wait mysql kafka
 #   ETF_RISK_MYSQL_URL=mysql://root:jobs-test@127.0.0.1:3307 ETF_RISK_KAFKA_BOOTSTRAP=127.0.0.1:9094 \
@@ -15,9 +18,14 @@
 #
 # The tests create and drop a database and a topic of their own for each test. The root
 # password is a fixed test value for a server listening on 127.0.0.1 only;
-# ETF_RISK_MYSQL_ROOT_PASSWORD overrides it. Both images are pinned by digest, as pulled on
-# 2026-10-22 (docker image inspect --format '{{index .RepoDigests 0}}' <image>): MySQL 8.4.13
-# from the 8.4 LTS line, and Kafka 4.3.1, the newest release that was at least two weeks old.
+# ETF_RISK_MYSQL_ROOT_PASSWORD overrides it. The images are pinned by digest, as pulled
+# (docker image inspect --format '{{index .RepoDigests 0}}' <image>): on 2026-10-22 MySQL 8.4.13
+# from the 8.4 LTS line and Kafka 4.3.1, the newest release that was at least two weeks old;
+# on 2026-10-25 Redis 8.10.2, by the same rule (released 2026-09-17).
+#
+# Every worktree shares the project name below. Name the service in each command
+# (docker compose ... stop redis); `down -v` also removes the other services' containers and
+# volumes, whichever worktree started them.
 #
 # AI contribution: written with Claude Code (Opus 5.5).
 name: etf-risk-jobs
@@ -62,6 +70,20 @@ services:
     healthcheck:
       # A port check (BusyBox nc), so no second JVM starts inside the memory limit.
       test: ["CMD", "nc", "-z", "localhost", "9094"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  redis:
+    image: redis:8.10.2@sha256:97ec88159e6d7cfb5ddef9015386087d58a912de80112f06ebdfa78fa5989901
+    command: ["redis-server", "--maxmemory", "32mb", "--maxmemory-policy", "allkeys-lru",
+              "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    mem_limit: 128m
+    memswap_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 5s
       retries: 60

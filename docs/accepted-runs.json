@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "about": "The historical runs the result cache may serve (spec \u00a711). Each entry was computed and checked by python -m etf_risk.runs register, written with Claude Code (Opus 5.5), and approved by the project author on the date it gives. The digest is checked again before every use.",
+  "runs": [
+    {
+      "path": "data/outputs/windows/full-2026-10-12/rolling-252-s21-r2/run-20261013T043848Z-4",
+      "digest": "dab5188eed8be1533843b7a42e73c27920677c4ae5ce14a1324cca92b6148b95",
+      "manifest_format": 1,
+      "run_id": "run-20261013T043848Z-4",
+      "basis": {
+        "run_json_status": "ok",
+        "check_violations": 0,
+        "verify_mismatch_count": 0,
+        "verify_breached_windows_same": true,
+        "tables_complete": [
+          "window_stats",
+          "path_days",
+          "path_summary",
+          "paired"
+        ],
+        "verify_run_name": "run-20261013T043848Z-4"
+      },
+      "approved_by": "the project author",
+      "approved_on": "2026-10-25",
+      "note": "One of the four runs of the rolling-252-s21-r2 protocol. The documented run of record is run-20261013T043848Z-2; plots.py states that the four runs have identical tables. This run is the only one of the four with a verify.json."
+    }
+  ]
+}

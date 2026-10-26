@@ -21,7 +21,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
-| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress. The job queue runs the real pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is documented ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding. The Redis result cache and its experiment are planned ([spec](docs/spec.md), §11) |
+| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress. The job queue runs the real pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is documented ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding. The Redis result cache serves the three summary queries for accepted and registered runs only, and falls back to Spark when Redis fails ([docs/result-cache.md](docs/result-cache.md)); its experiment (E3) is planned |
 
 ## Reading guide
 
@@ -277,12 +277,12 @@ configuration, not comparable with native measurements.
 
 ### Systems extension services (runbook)
 
-These are for the optional job queue ([spec §11](docs/spec.md)).
-- **Compose services.** MySQL and Kafka run in Docker Compose
+These are for the optional job queue and result cache ([spec §11](docs/spec.md)).
+- **Compose services.** MySQL, Kafka and Redis run in Docker Compose
   ([docker/compose.yaml](docker/compose.yaml)), each with a memory limit and reachable from
   this machine only.
 - **Clients.** The job package's clients, PyMySQL and confluent-kafka, are pinned in the
-  `jobs` dependency group.
+  `jobs` dependency group; the result cache's, redis-py, in the `cache` group.
 - **Git worktrees.** In a worktree, `data/` is a symlink to the main checkout's (ignored by
   Git): `ln -s <main checkout>/data data`.
 
@@ -328,7 +328,36 @@ docker compose -f docker/compose.yaml down -v
 - **Acceptance runs.** The milestone's acceptance runs take minutes each:
   `ETF_RISK_LIVE_PIPELINE=1` together with the two service variables runs
   `tests/test_jobs_live_pipeline.py`.
-- **Still to come.** The Redis result cache.
+
+The result cache ([docs/result-cache.md](docs/result-cache.md)) needs Redis only. Its client,
+redis-py, is pinned in the `cache` dependency group. It serves a run only if the job table
+accepted it or the reviewed registry `docs/accepted-runs.json` lists it; the run of record is
+registered. Every Compose project here shares one name, so the last line stops and removes
+the redis service alone (`down -v` would remove MySQL and Kafka too).
+
+```bash
+docker compose -f docker/compose.yaml up -d --wait redis
+uv run --group cache python -m etf_risk.services ready redis      # a PING through the cache's client
+RUN=data/outputs/windows/full-2026-10-12/rolling-252-s21-r2/run-20261013T043848Z-4
+# One request in a new process: a miss runs Spark and stores the result, a repeat is a hit
+uv run --group cache python -m etf_risk.summary query overview --run $RUN
+uv run --group cache python -m etf_risk.summary query overview --run $RUN --tickers QQQ TSLA
+# A warm process: one JSON request per line on stdin, one answer per line on stdout
+printf '{"query": "comparison", "run": "%s"}\n' $RUN $RUN | uv run --group cache python -m etf_risk.summary serve
+# Spark only, without Redis
+uv run --group cache python -m etf_risk.summary --no-cache query sensitivity --run $RUN
+# A job run instead: --job <id> with ETF_RISK_JOBS_DB set, and --group jobs as well
+# Check a historical run and print its registry entry (--write adds it; the author approves it)
+uv run python -m etf_risk.runs register $RUN --approved-on 2026-10-25
+# The cache's tests offline, then against this Redis; then its focused mutations
+uv run --group cache --group jobs python -m pytest tests/test_cache_contract.py tests/test_summary.py \
+    tests/test_runs_resolver.py tests/test_redis_client.py
+ETF_RISK_REDIS_URL=redis://127.0.0.1:6380/0 uv run --group cache python -m pytest tests/test_redis_live.py
+uv run --group jobs python tests/mutation_check.py --out data/outputs-mutations --only key-ignores-digest \
+    params-shallow-copy decode-ignores-identity breaker-ignored client-retries
+uv run python -m etf_risk.services peaks redis
+docker compose -f docker/compose.yaml rm --stop --force redis
+```
 
 ## Data
 
@@ -413,4 +442,5 @@ together with how it was checked.
    documented ([docs/recovery-part-a.md](docs/recovery-part-a.md),
    [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting
    correctness observations, and valid formal E2 recovery-time evidence remains
-   outstanding. The result cache and its experiment are planned.
+   outstanding. The result cache is implemented
+   ([docs/result-cache.md](docs/result-cache.md)); its experiment, E3, is planned.
