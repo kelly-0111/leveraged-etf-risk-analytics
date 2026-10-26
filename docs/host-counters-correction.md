@@ -97,14 +97,22 @@ vm.swapusage`), available memory, and macOS's memory-pressure level.
   - section 6: "1.35 GiB swapped out, 47.9 GiB swapped in".
 
   All of these are page-outs and page-ins.
-- **Two statements may rest on these figures:** "heavy swapping" (Part B, section 5.2) and
-  "swapping heavily" (section 7.3, an approved answer). Swap in use, which is correctly
-  recorded, grew by 2.67 GiB over batch-2, so swap was used. Whether "heavy" stands is the
-  author's judgement; this note does not change the approved text.
+- **Two statements characterized swap traffic** that the recorded counters do not measure:
+  "heavy swapping" (Part B, section 5.2) and "swapping heavily" (section 7.3, an approved
+  answer).
 - **No M3 verdict depended on the counters:** M3 recorded them and never gated on them (Part A,
   section 12, condition 5).
 
-Both M3 documents now open with a dated pointer to this note. Their text is otherwise unchanged.
+**Reworded on 2026-10-26, at the author's instruction.** Every passage listed above for the two
+M3 documents now says "paged in" and "paged out", with its figures unchanged. The two statements
+about heavy swapping give the swap in use from the records instead:
+- 3.86–8.25 GiB at the 17 readings of batch-2's positions 1–17;
+- 3.16–8.25 GiB at all readings of both formal batches: batch-1 4.64–5.33 GiB, batch-2
+  3.16–8.25 GiB, ending 2.67 GiB above its start.
+
+Swap-in-use figures are kept as they were. Each M3 document opens with a dated note, and M3 Part A
+lists the changes in its section 13. M3's code keeps its names, to match its records. A code
+correction, if the author wants one, is kept separate from E3.
 
 ## 4. What this correction does not do
 
@@ -114,7 +122,8 @@ Both M3 documents now open with a dated pointer to this note. Their text is othe
   they stay on those counters, now correctly named: page-outs ≤ 64 MiB per block, and page-ins
   ≤ 256 MiB per W or R block. Swap-ins and swap-outs have no limit until the author sets one
   from vm_stat evidence.
-- **It changes no record,** and no approved text beyond the pointers.
+- **It changes no record.** The approved M3 text changes only as section 3 lists: the names of
+  the page figures, and the two statements about heavy swapping.
 
 ## 5. From now on (E3)
 

@@ -9,11 +9,12 @@
 > **After approval:** the formal batches ran on 2026-10-25. Their results and the author's decision
 > are in [recovery-part-b.md](recovery-part-b.md); section 13 lists what changed since.
 
-> **Correction, 2026-10-26.** The bytes this document calls "swapped in" and "swapped out" are
+> **Correction, 2026-10-26.** The bytes this document called "swapped in" and "swapped out" are
 > psutil's `sin` and `sout`, which `harness.host_state()` records as `swap_in_bytes` and
-> `swap_out_bytes`. On macOS they are page-ins and page-outs, not swap traffic. Swap in use is
-> recorded correctly. See [host-counters-correction.md](host-counters-correction.md); the text
-> below is unchanged.
+> `swap_out_bytes`. On macOS they are page-ins and page-outs, not swap traffic. At the author's
+> instruction, sections 11 and 12 now say "paged in" and "paged out", with the figures unchanged
+> (section 13 lists the changes). Swap in use is recorded correctly, and its figures are kept.
+> See [host-counters-correction.md](host-counters-correction.md).
 
 _This document condenses [recovery-experiments.md](recovery-experiments.md) for the preferred
 draft. Every command, event and record in it was checked against the tooling at `fcaa645`. M2's
@@ -298,7 +299,7 @@ _Preflight-1 and preflight-2 ran on code `7bd4d20`, preflight-3 on `a94eefe` (th
 preflight-4 on `8c5331d`, each in an exclusive window that M2 handed over; each test run in the
 table names the commit it ran on. All four preflights ran under memory pressure: 1.2–1.7 GiB of
 8 GiB available before each job, as recorded, and 4–10 GiB of swap in use at the checks before each
-batch; swap and macOS's pressure level entered the batch records with preflight-4. The times and
+batch; swap in use, the page counters and macOS's pressure level entered the batch records with preflight-4. The times and
 memory below show that the paths work; they are not performance or budget evidence. Every record
 stays under `data/outputs-recovery/preflight/`, apart from formal results._
 
@@ -413,7 +414,7 @@ their own.
   starts on one clock), Q1 `ok`, all 3 accepted results equal to the reference, no overlap, nothing
   left. The power log shows no sleep.
 
-  | Case | Claims | Detection | Finish | D | Before the job | Swapped out during it |
+  | Case | Claims | Detection | Finish | D | Before the job | Paged out during it |
   |---|---|---|---|---|---|---|
   | C0 | 1 | — | 45.1 s | 75 s | AC, lid open, pressure 2, 1.71 GiB available | 5.0 MiB |
   | W3 | 2 | `requeued`, 59.1 s | 117.1 s | 140 s | AC, lid open, pressure 2, 1.74 GiB | 26.5 MiB |
@@ -425,7 +426,7 @@ their own.
     42.8 and 48.4 s.
   - **Over the batch:** AC power and the lid open throughout. Memory pressure was 2 (warning)
     before every job and 1 at the end, with 1.36–1.93 GiB available. Swap in use grew from 4.21 to
-    5.03 GiB; 4.4 GiB was swapped in and 67 MiB swapped out.
+    5.03 GiB; 4.4 GiB was paged in and 67 MiB paged out.
 
   These are recovery times observed on this host in that recorded state, next to controls measured
   in the same batch. They are not performance claims (section 12).
@@ -463,9 +464,10 @@ preflight-4, the first batch to record macOS's pressure level, had it at warning
    preflight-3.
 4. **No competing tests.** The exclusive window; no other containers (counted at the start); no
    other pytest, Spark or job processes (`pgrep` before the start, section 7).
-5. **Memory pressure and swap recorded, never gated.** Available memory, swap in use, the bytes
-   swapped in and out, and macOS's pressure level, at the start, before each job and at the end
-   (`8c5331d`). Each job gets the swap activity of its window, and the batch its totals.
+5. **Memory pressure, swap in use and paging recorded, never gated.** Available memory, swap in
+   use, the bytes paged in and out (psutil's `sin` and `sout`, recorded as `swap_in_bytes` and
+   `swap_out_bytes`), and macOS's pressure level, at the start, before each job and at the end
+   (`8c5331d`). Each job gets the bytes paged out in its window, and the batch its totals.
 6. **Controls in the same batch.** C0 jobs measured in the same batch, under the same recorded host
    state: the two shuffled C0s, plus one C0 at the start and one at the end (approved on 2026-10-24;
    30 jobs, about 2 minutes more). Each case's times are reported next to these controls, for
@@ -478,7 +480,7 @@ preflight-4, the first batch to record macOS's pressure level, had it at warning
 | Claim | Made from | Example |
 |---|---|---|
 | **Correctness** (E1): one accepted result per job, no overlapping steps, fencing, Q1 and Q3, accepted results equal to the reference, invariants | any batch whose checks that do not involve time pass: code identity, unchanged inputs, equal fingerprints, complete records. From a batch invalid for timing, they are kept as that batch's correctness observations, labelled as such (preflight-3) | "W3 kept one accepted result and no overlap across a 22-min host sleep" |
-| **Recovery times observed on this host** (E2) | only batches that meet conditions 1–4 and whose recovery-times verdict is valid (the clock check, power and lid included); reported with the batch's host record and its controls | "W3: requeued 59.1 s after the kill, finished in 117.1 s; the controls took 45.1 and 50.9 s; pressure 2, 26.5 MiB swapped out during the job" (preflight-4) |
+| **Recovery times observed on this host** (E2) | only batches that meet conditions 1–4 and whose recovery-times verdict is valid (the clock check, power and lid included); reported with the batch's host record and its controls | "W3: requeued 59.1 s after the kill, finished in 117.1 s; the controls took 45.1 and 50.9 s; pressure 2, 26.5 MiB paged out during the job" (preflight-4) |
 | **Performance claims**: recovery time as a property of the job system, comparable across machines or usable as a prediction | not made from this host | — |
 
 - **Why the line falls there.**
@@ -506,11 +508,13 @@ preflight-4, the first batch to record macOS's pressure level, had it at warning
     - a missing reading, or one without the value, is unknown, and unknown fails.
   - The exit status is 0 only when both verdicts are valid, so a required check that failed, has no
     result or is missing exits 1, and the summary marks the unknown ones (`fcaa645`).
-  - `injections.csv` gives each job its power, lid, pressure and swap activity.
+  - `injections.csv` gives each job its power, lid, pressure and the bytes paged out during it
+    (the column `swap_out_during_bytes`, named before the correction of 2026-10-26).
 
 ## 13. After approval (2026-10-25)
 
-_Added after the formal batches. Sections 1–12 are unchanged as approved._
+_Added after the formal batches. Sections 1–12 are unchanged as approved, except the wording
+corrected on 2026-10-26 (the last item)._
 
 - **The formal batches.** batch-1 stopped when the host restarted. batch-2, the one rerun of
   row 11, completed. The author kept batch-2's correctness observations valid and ruled its
@@ -525,3 +529,15 @@ _Added after the formal batches. Sections 1–12 are unchanged as approved._
   come out invalid, preflight-4's for that reason alone; their correctness verdicts are unchanged.
   An unknown count is insufficient evidence for condition 4, not evidence of a violation. The
   verdicts in section 11 are those of the collector at `5a81bc5`, as labelled there.
+- **The page counters (2026-10-26).** psutil's `sin` and `sout` are page-ins and page-outs on
+  macOS, not swap traffic ([host-counters-correction.md](host-counters-correction.md)). At the
+  author's instruction, these passages were reworded with their figures unchanged:
+  - section 11: the line on what entered the batch records, preflight-4's column "Swapped out
+    during it" (now "Paged out during it"), and "4.4 GiB was swapped in and 67 MiB swapped out"
+    (now paged);
+  - section 12: condition 5, the example "26.5 MiB swapped out during the job" (now paged out),
+    and what `injections.csv` gives each job.
+
+  Swap in use and its figures are unchanged. No condition gated on these counters, so no verdict
+  changes. The harness and the collector keep the names `swap_in_bytes`, `swap_out_bytes` and
+  `swap_out_during_bytes`, so that they match the records.
