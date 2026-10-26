@@ -100,13 +100,16 @@ def normalize_params(declared: Mapping[str, Param], given: Mapping[str, Any]) ->
 def identity(*, run_digest: str, query: str, sql: str, params: Mapping[str, Any], engine: str) -> dict:
     """The cached result's identity, as a dict with exactly these fields:
     format (FORMAT), engine, run_digest, query, sql_sha256 (SHA-256 of sql as UTF-8, hex),
-    and params (already normalized)."""
+    and params: a deep copy of the already normalized params (the author's decision,
+    2026-10-25), so that later changes to the caller's dict or to its lists cannot change
+    the identity or its key."""
     raise NotImplementedError("tutoring step 2")
 
 
 def cache_key(ident: Mapping[str, Any]) -> str:
-    """The Redis key: f"{KEY_PREFIX}:v{FORMAT}:{query}:<hex SHA-256 of the identity>", the
-    identity written as canonical JSON. The prefix is for people reading keys; the hash
+    """The Redis key: f"{KEY_PREFIX}:v{ident['format']}:{ident['query']}:<hex SHA-256 of the
+    identity>", the identity written as canonical JSON. The prefix names the identity's own
+    format (the author's decision, 2026-10-25) and is for people reading keys; the hash
     decides. Equal identities give equal keys in every process."""
     raise NotImplementedError("tutoring step 2")
 

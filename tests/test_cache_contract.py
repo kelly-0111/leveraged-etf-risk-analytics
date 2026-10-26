@@ -208,6 +208,25 @@ def test_equal_requests_give_equal_keys_across_processes():
     assert keys[0] == keys[1] == cache.cache_key(ident())
 
 
+# The author's decisions (2026-10-25): the prefix names the identity's own format, and
+# identity() keeps a deep copy of params.
+
+@step(2)
+def test_the_prefix_names_the_identitys_own_format():
+    assert cache.cache_key({**ident(), "format": 7}).startswith(f"{KEY_PREFIX}:v7:overview:")
+
+
+@step(2)
+def test_changing_the_callers_params_afterwards_changes_neither_the_identity_nor_its_key():
+    params = {"tickers": ["AAPL", "MSFT"]}
+    i = cache.identity(**{**IDENT_ARGS, "params": params})
+    key = cache.cache_key(i)
+    params["tickers"].append("QQQ")          # inside a nested list: a shallow copy would follow this
+    params["tickers"][0] = "TSLA"
+    params["extra"] = ["x"]                   # the dict itself
+    assert i["params"] == {"tickers": ["AAPL", "MSFT"]} and cache.cache_key(i) == key
+
+
 # STEP 3: encode and decode
 
 @step(3)
