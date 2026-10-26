@@ -97,3 +97,9 @@ def test_ready_gives_up_after_the_timeout_with_the_last_error():
 
     with pytest.raises(TimeoutError, match=r"kafka not ready after 5 s: ConnectionRefusedError: refused at 5 s"):
         services.wait_until_ready("kafka", check, timeout=5, clock=fake.clock, sleep=fake.sleep)
+
+
+def test_the_job_services_stay_mysql_and_kafka_and_redis_is_apart():
+    """tests/memory_check.py starts, measures and removes exactly SERVICES; the cache's Redis is
+    not part of that check."""
+    assert services.SERVICES == ("mysql", "kafka") and services.CACHE_SERVICES == ("redis",)

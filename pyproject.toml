@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+cache = [
+    "redis==8.1.0",  # exact: the result cache's client settings and its Redis overhead bound depend on it
+]
 dev = ["pytest>=8"]
 download = [
     "yfinance==1.7.0",
