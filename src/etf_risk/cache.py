@@ -292,6 +292,11 @@ class ResultCache:
         errors (a decode miss is neither). compute's exceptions propagate and nothing is
         written.
 
+        STEP 8 (the author's decision, 2026-10-26): a result that encode() refuses (NaN or
+        infinity) is returned exactly as compute() gave it, as without the cache, and not
+        written: no SET, a write skip, nothing reported to the breaker. Caching never turns a
+        query that would succeed uncached into a failure.
+
         STEP 5: hits, misses and the write-back. STEP 6: Redis failures, the breaker and the
         counters."""
         key = cache_key(ident)

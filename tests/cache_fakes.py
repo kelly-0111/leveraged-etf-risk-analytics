@@ -14,10 +14,12 @@ import pytest
 WRITTEN: set[int] = {1, 2, 3, 4, 5, 6, 7}
 
 
-def step(n: int):
+def step(n: int, raises: type[BaseException] = NotImplementedError):
+    """raises: what the code does until the step exists. NotImplementedError for a missing
+    function; for a change to existing code (step 8), the error the current code raises."""
     if n in WRITTEN:
         return lambda test: test
-    return pytest.mark.xfail(raises=NotImplementedError, strict=True, reason=f"tutoring step {n} is not written yet")
+    return pytest.mark.xfail(raises=raises, strict=True, reason=f"tutoring step {n} is not written yet")
 
 
 class FakeClock:

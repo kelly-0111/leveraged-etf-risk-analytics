@@ -302,6 +302,17 @@ def test_a_malformed_stored_value_is_a_miss(stored):
     assert cache.decode(json.dumps(stored).encode(), ident()) is None
 
 
+# The author's further checks on read (step 3): a stored row holding NaN or infinity (also as a
+# number too large for a float, which json.loads reads as inf), or a value that is not a JSON
+# scalar, is a miss.
+
+@step(3)
+@pytest.mark.parametrize("cell", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999", "[1]", '{"a": 1}'])
+def test_a_stored_row_with_a_non_finite_or_non_scalar_value_is_a_miss(cell):
+    stored = json.dumps({"identity": ident(), "result": {"columns": [["x", "double"]], "rows": [["CELL"]]}})
+    assert cache.decode(stored.replace('"CELL"', cell).encode(), ident()) is None
+
+
 # STEP 4: the breaker
 
 @pytest.fixture
@@ -368,6 +379,31 @@ def test_a_failed_probe_opens_it_for_a_whole_cooldown(clock):
     assert not b.allow()
     clock.advance(0.02)
     assert b.allow()
+
+
+# The author's behaviour while open, outside a probe (step 4): failure() restarts the cooldown;
+# success() closes the breaker.
+
+@step(4)
+def test_a_failure_reported_while_open_restarts_the_cooldown(clock):
+    b = breaker(clock)
+    for _ in range(3):
+        b.failure()
+    clock.advance(4.0)
+    b.failure()                           # open, no probe out
+    clock.advance(4.0)                    # 8 s after it opened, 4 s after the restart
+    assert not b.allow()
+    clock.advance(1.0)
+    assert b.allow()
+
+
+@step(4)
+def test_a_success_reported_while_open_closes_the_breaker(clock):
+    b = breaker(clock)
+    for _ in range(3):
+        b.failure()
+    b.success()
+    assert b.allow() and b.allow()
 
 
 # STEP 5: hits, misses and the write-back
@@ -547,3 +583,32 @@ def test_an_outage_reaches_redis_at_most_threshold_plus_one_probe_per_cooldown()
         rc.get_or_compute(ident(), compute)
         clock.advance(0.25)
     assert redis.count("GET") <= 3 + math.ceil(window / 5.0) and redis.count("SET") == 0
+
+
+# STEP 8 (the author's decision, 2026-10-26): a result that encode() refuses (NaN or infinity) is
+# returned as the query gave it, as without the cache, and is not written; caching adds no
+# failure. It counts as a write skip and is not a Redis failure. Until the step is written,
+# encode's ValueError escapes, which is what these strict xfails expect.
+
+NON_FINITE = [math.nan, math.inf, -math.inf]
+
+
+@step(8, raises=ValueError)
+@pytest.mark.parametrize("value", NON_FINITE)
+def test_a_non_finite_result_is_returned_as_computed_and_not_written(value):
+    rc, redis = new_cache()
+    result = {"columns": [["x", "double"]], "rows": [[value]]}
+    out, source = rc.get_or_compute(ident(), lambda: result)
+    assert out is result and source == "spark"
+    assert redis.count("SET") == 0 and redis.data == {}
+    c = rc.counters
+    assert (c.misses, c.write_skips, c.writes, c.set_errors) == (1, 1, 0, 0)
+
+
+@step(8, raises=ValueError)
+def test_a_non_finite_result_is_not_a_redis_failure():
+    rc, redis = new_cache(failure_threshold=1)
+    result = {"columns": [["x", "double"]], "rows": [[math.nan]]}
+    for _ in range(3):
+        assert rc.get_or_compute(ident(), lambda: result)[1] == "spark"
+    assert redis.count("GET") == 3 and rc.counters.skipped == 0       # the breaker stayed closed

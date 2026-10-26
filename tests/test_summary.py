@@ -10,6 +10,7 @@ AI contribution: written with Claude Code (Opus 5.5).
 """
 import io
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -244,3 +245,17 @@ def test_with_the_real_cache_a_cross_store_hit_stores_no_provenance(tmp_path):
     assert b["run"]["store_id"] == store_b.store_id()
     raw = b"".join(redis.data.values())
     assert store_a.store_id().encode() not in raw and str(tmp_path).encode() not in raw
+
+
+@step(8, raises=ValueError)
+def test_a_non_finite_result_is_answered_as_it_is_without_the_cache(registered):
+    """The non-finite policy (docs/result-cache.md §4a): caching adds no failure."""
+    folder, registry = registered
+    result = {"columns": [["x", "double"]], "rows": [[math.nan], [math.inf]]}
+    request = {"query": "overview", "run": str(folder)}
+    plain = service(registry, execute=Executor(result)).handle(request)
+    rc = cache.ResultCache(FakeRedis(), errors=(FakeRedisError,))
+    cached = service(registry, result_cache=rc, execute=Executor(result)).handle(request)
+    assert plain["status"] == cached["status"] == "ok" and cached["source"] == "spark"
+    rows = cached["result"]["rows"]
+    assert math.isnan(rows[0][0]) and rows[1][0] == math.inf and rc.client.data == {}
