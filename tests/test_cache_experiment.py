@@ -194,17 +194,87 @@ def test_pmset_therm_is_parsed(text, expected):
     assert e3.parse_therm(text) == expected
 
 
-def test_the_host_window_gives_extremes_and_swap_traffic():
+VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                4589.
+Pages stored in compressor:             1172538.
+Decompressions:                      1515682285.
+Compressions:                        1585740227.
+Pageins:                               49262910.
+Pageouts:                               1562003.
+Swapins:                               80132854.
+Swapouts:                              84015127.
+"""
+
+
+def test_vm_stat_gives_the_page_size_and_its_four_counters_by_their_own_names():
+    assert e3.parse_vm_stat(VM_STAT) == {"page_size": 16384, "pageins": 49262910, "pageouts": 1562003,
+                                         "swapins": 80132854, "swapouts": 84015127}
+
+
+def test_a_counter_vm_stat_does_not_print_is_none():
+    assert e3.parse_vm_stat("") == {"page_size": None, "pageins": None, "pageouts": None, "swapins": None,
+                                    "swapouts": None}
+    assert e3.parse_vm_stat(VM_STAT.replace("Swapouts", "Swap outs"))["swapouts"] is None
+
+
+def _sample(mono, pressure, pageins, swapins, busy, idle, load, thermal=None):
+    return {"mono": mono, "pressure_level": pressure, "page_size": 16384, "pageins": pageins, "pageouts": 7,
+            "swapins": swapins, "swapouts": 3, "cpu_busy_s": busy, "cpu_idle_s": idle, "load_1m": load,
+            "thermal_warning": thermal, "performance_warning": None}
+
+
+def test_the_host_window_gives_extremes_paging_swap_and_load():
     sampler = e3.HostSampler(0.01)
-    sampler.samples = [{"mono": 1.0, "pressure_level": 1, "swap_out_bytes": 100, "swap_in_bytes": 10,
-                        "thermal_warning": None, "performance_warning": None},
-                       {"mono": 2.0, "pressure_level": 4, "swap_out_bytes": 150, "swap_in_bytes": 90,
-                        "thermal_warning": None, "performance_warning": None},
-                       {"mono": 9.0, "pressure_level": 1, "swap_out_bytes": 999, "swap_in_bytes": 999,
-                        "thermal_warning": 3, "performance_warning": None}]
-    assert sampler.window(0.5, 2.5) == {"samples": 2, "max_pressure_level": 4, "thermal_warning": None,
-                                         "performance_warning": None, "swap_out_bytes": 50, "swap_in_bytes": 80}
+    sampler.samples = [_sample(1.0, 1, 100, 10, busy=50.0, idle=150.0, load=2.0),
+                       _sample(2.0, 4, 160, 10, busy=80.0, idle=220.0, load=3.0),
+                       _sample(9.0, 1, 999, 999, busy=999.0, idle=999.0, load=9.0, thermal=3)]
+    assert sampler.window(0.5, 2.5) == {
+        "samples": 2, "max_pressure_level": 4, "thermal_warning": None, "performance_warning": None,
+        "page_size": 16384, "pageins": 60, "pageouts": 0, "swapins": 0, "swapouts": 0,
+        "load_1m_mean": 2.5, "load_1m_max": 3.0, "cpu_busy_share": 0.3}
     assert sampler.window(20, 30) == {"samples": 0}
+
+
+def test_a_counter_missing_from_one_sample_is_taken_from_the_samples_that_have_it():
+    sampler = e3.HostSampler(0.01)
+    sampler.samples = [_sample(1.0, 1, 100, 10, 50.0, 150.0, 2.0), _sample(2.0, 1, 130, 12, 60.0, 160.0, 2.0),
+                       {**_sample(3.0, 1, None, None, 70.0, 170.0, 2.0), "page_size": None}]
+    window = sampler.window(0, 5)
+    assert (window["pageins"], window["swapins"], window["page_size"]) == (30, 2, 16384)
+    sampler.samples = [{**s, "swapins": None} for s in sampler.samples]
+    assert sampler.window(0, 5)["swapins"] is None
+
+
+def test_a_host_sample_names_vm_stats_counters_and_never_psutils_sin_and_sout(monkeypatch):
+    outputs = {"sysctl": "1\n", "vm_stat": VM_STAT, "pmset": "Note: No thermal warning level has been recorded\n"}
+    monkeypatch.setattr(e3, "_run", lambda *argv: outputs[argv[0]])
+    sample = e3.read_host_sample()
+    assert sample["pressure_level"] == 1 and sample["swapins"] == 80132854 and sample["pageins"] == 49262910
+    assert sample["cpu_busy_s"] > 0 and sample["cpu_idle_s"] > 0 and sample["load_1m"] >= 0
+    assert not set(e3.PSUTIL_PAGING) & set(sample)
+
+
+def test_the_block_readings_leave_out_psutils_mislabelled_counters(monkeypatch):
+    from etf_risk.jobs import harness
+    monkeypatch.setattr(harness, "host_state", lambda: {"available_bytes": 5, "swap_used_bytes": 6,
+                                                        "swap_in_bytes": 7, "swap_out_bytes": 8,
+                                                        "power_source": "AC Power"})
+    assert e3.host_reading() == {"available_bytes": 5, "swap_used_bytes": 6, "power_source": "AC Power"}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the mapping is macOS's")
+def test_psutils_sin_and_sout_are_vm_stats_pageins_and_pageouts_on_macos():
+    """The reason for the correction of 2026-10-26: each psutil counter lies between two vm_stat
+    readings of Pageins (Pageouts) taken around it. Fails if psutil changes its mapping."""
+    import subprocess
+    import psutil
+
+    def vm():
+        return e3.parse_vm_stat(subprocess.run(["vm_stat"], capture_output=True, text=True, check=True).stdout)
+    before, swap, after = vm(), psutil.swap_memory(), vm()
+    page = before["page_size"]
+    assert before["pageins"] * page <= swap.sin <= after["pageins"] * page
+    assert before["pageouts"] * page <= swap.sout <= after["pageouts"] * page
 
 
 READY = dict(formal=True, host={"power_source": "AC Power", "lid_closed": False, "memory_pressure": 2},

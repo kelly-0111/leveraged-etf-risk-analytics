@@ -9,6 +9,12 @@
 > **After approval:** the formal batches ran on 2026-10-25. Their results and the author's decision
 > are in [recovery-part-b.md](recovery-part-b.md); section 13 lists what changed since.
 
+> **Correction, 2026-10-26.** The bytes this document calls "swapped in" and "swapped out" are
+> psutil's `sin` and `sout`, which `harness.host_state()` records as `swap_in_bytes` and
+> `swap_out_bytes`. On macOS they are page-ins and page-outs, not swap traffic. Swap in use is
+> recorded correctly. See [host-counters-correction.md](host-counters-correction.md); the text
+> below is unchanged.
+
 _This document condenses [recovery-experiments.md](recovery-experiments.md) for the preferred
 draft. Every command, event and record in it was checked against the tooling at `fcaa645`. M2's
 isolated check has since validated the container limits, under host memory pressure and with

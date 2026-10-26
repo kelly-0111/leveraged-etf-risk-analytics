@@ -20,8 +20,13 @@ SPEC.loader.exec_module(collector)
 
 SETTINGS = e3.Settings(rounds=2, block_size=30, n_size=6, f_phase=6, warmups=3)
 GOOD_HOST = {"power_source": "AC Power", "lid_closed": False, "available_bytes": 2**31}
+PAGE = 16384
 GOOD_WINDOW = {"samples": 20, "max_pressure_level": 2, "thermal_warning": None, "performance_warning": None,
-               "swap_out_bytes": 2**20, "swap_in_bytes": 2**24}
+               "page_size": PAGE, "pageins": 2**24 // PAGE, "pageouts": 2**20 // PAGE, "swapins": 0, "swapouts": 0,
+               "load_1m_mean": 2.0, "load_1m_max": 2.5, "cpu_busy_share": 0.3}
+# what batches up to dry-run/20261026T193201Z-lead-in-round recorded: psutil's sin and sout, page-ins and page-outs
+LEGACY_WINDOW = {"samples": 20, "max_pressure_level": 2, "thermal_warning": None, "performance_warning": None,
+                 "swap_out_bytes": 2**20, "swap_in_bytes": 2**24}
 
 
 def answer_for(r):
@@ -134,10 +139,17 @@ PLANTS = {
                                  "host"),
     "a thermal warning": ("blocks.jsonl", lambda bs: _set(first(bs, config="N"),
                                                           host_window={**GOOD_WINDOW, "thermal_warning": 2}), "host"),
-    "too much swapped out": ("blocks.jsonl", lambda bs: _set(first(bs, config="W"),
-                                                             host_window={**GOOD_WINDOW, "swap_out_bytes": 2**30}), "host"),
-    "W or R swapping in": ("blocks.jsonl", lambda bs: _set(first(bs, config="R"),
-                                                           host_window={**GOOD_WINDOW, "swap_in_bytes": 2**30}), "host"),
+    "too much paged out": ("blocks.jsonl", lambda bs: _set(first(bs, config="W"),
+                                                           host_window={**GOOD_WINDOW, "pageouts": 2**30 // PAGE}), "host"),
+    "W or R paging in": ("blocks.jsonl", lambda bs: _set(first(bs, config="R"),
+                                                         host_window={**GOOD_WINDOW, "pageins": 2**30 // PAGE}), "host"),
+    "page-ins not recorded in a W block": ("blocks.jsonl", lambda bs: _set(first(bs, config="W"),
+                                                                           host_window={**GOOD_WINDOW, "pageins": None}),
+                                           "host"),
+    "page-outs not recorded": ("blocks.jsonl", lambda bs: _set(first(bs, config="N"),
+                                                               host_window={**GOOD_WINDOW, "page_size": None}), "host"),
+    "a legacy W block paging in (psutil sin)": ("blocks.jsonl", lambda bs: _set(
+        first(bs, config="W"), host_window={**LEGACY_WINDOW, "swap_in_bytes": 2**30}), "host"),
     "a W control that ran other requests": ("requests.jsonl", lambda rs: _set(
         first(rs, config="W", pair=0.5, warmup=False), tickers=["NOT-PLANNED"]), "pairs"),
     "a survivor after the settle": ("blocks.jsonl", lambda bs: first(bs, config="F")["settle"].update(
@@ -171,7 +183,7 @@ def test_each_planted_problem_fails_its_check(tmp_path, plant):
 def test_the_lead_in_rounds_host_readings_are_reported_not_gated(tmp_path):
     folder = build(tmp_path / "batch")
     edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**GOOD_WINDOW, "max_pressure_level": 4,
-                                                                 "swap_in_bytes": 2**31})
+                                                                 "pageins": 2**31 // PAGE})
                                              for b in bs if b["round"] == -1])
     code, validity = run(folder)
     assert code == 0 and validity["valid"]
@@ -200,3 +212,42 @@ def test_the_diagnostics_are_descriptive_columns_beside_the_end_to_end_result(tm
     assert by_rate["0.0"]["estimate_hit_imbalance_s"] == ""                 # no hits, no estimate
     assert by_rate["0.5"]["estimate_hit_imbalance_s"] != "" and by_rate["0.9"]["estimate_hit_imbalance_s"] != ""
     assert by_rate["0.5"]["median_difference_s"] == "" and by_rate["0.5"]["total_difference_s"] != ""
+
+
+def test_swap_traffic_is_recorded_and_never_gated(tmp_path, capsys):
+    folder = build(tmp_path / "batch")
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**GOOD_WINDOW, "swapins": 2**31 // PAGE,
+                                                                 "swapouts": 2**30 // PAGE}) for b in bs])
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    hosts = list(csv.DictReader((folder / "host.csv").open()))
+    assert {h["counters"] for h in hosts} == {"vm_stat"} and float(hosts[0]["swapins_mib"]) == 2048.0
+    assert "up to 2048.0 MiB swapped in and 1024.0 MiB swapped out" in capsys.readouterr().out
+
+
+def test_a_legacy_batch_is_gated_on_page_ins_and_never_read_as_swap(tmp_path, capsys):
+    """psutil's sin and sout, recorded as swap_in_bytes and swap_out_bytes, are page-ins and page-outs:
+    the same limits apply to them as before the correction, and no swap traffic is inferred."""
+    folder = build(tmp_path / "batch")
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window=LEGACY_WINDOW) for b in bs])
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    hosts = list(csv.DictReader((folder / "host.csv").open()))
+    assert {h["counters"] for h in hosts} == {"psutil sin/sout"}
+    assert {(h["pageins_mib"], h["swapins_mib"], h["swapouts_mib"]) for h in hosts} == {("16.0", "", "")}
+    assert "swap: not recorded" in capsys.readouterr().out
+    edit(folder, "blocks.jsonl", lambda bs: _set(first(bs, config="R"),
+                                                 host_window={**LEGACY_WINDOW, "swap_in_bytes": 300 * 2**20}))
+    code, validity = run(folder)
+    r0 = first(json.loads((folder / "plan.json").read_text())["blocks"], config="R")["id"]
+    assert code == 1 and validity["problems"]["host"] == [f"{r0}: 300 MiB paged in, over the limit for W and R"]
+
+
+def test_host_csv_has_one_row_per_block_with_the_load_diagnostics(tmp_path):
+    folder = build(tmp_path / "batch")
+    run(folder)
+    hosts = list(csv.DictReader((folder / "host.csv").open()))
+    plan = json.loads((folder / "plan.json").read_text())
+    assert [h["block"] for h in hosts] == [b["id"] for b in plan["blocks"]]
+    assert {(h["load_1m_mean"], h["load_1m_max"], h["cpu_busy_share"]) for h in hosts} == {("2.0", "2.5", "0.3")}
+    assert {h["lead_in"] for h in hosts if h["round"] == "-1"} == {"True"} and float(hosts[0]["available_gib_before"]) == 2.0

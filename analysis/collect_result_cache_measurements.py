@@ -7,9 +7,10 @@ Writes measurements.csv (one row per measured request), summary.csv (by configur
 paired.csv (each R request beside the identical request of its W control, and each N request
 beside the same request in its round's W0), paired_summary.csv (the paired end-to-end differences
 and ratios by hit rate, hit or miss and query, the primary result; each R block's total against
-its control's; and descriptive diagnostics, which attribute nothing: see paired()) and
-validity.json (every check with its outcome) into the batch folder. Prints the
-verdict and exits 0 only when every check holds; 1 otherwise.
+its control's; and descriptive diagnostics, which attribute nothing: see paired()), host.csv
+(one row per block: paging, swap and load, descriptive; see host_rows()) and validity.json
+(every check with its outcome) into the batch folder. Prints the verdict and exits 0 only when
+every check holds; 1 otherwise.
 
 Checks (Part A, section 6):
 - complete: every planned request has exactly one record, warm-ups included;
@@ -25,8 +26,9 @@ Checks (Part A, section 6):
 - keys: an R or F block starts with none of its keys in Redis;
 - host, per block: AC power and lid open before and after; no other running container at either
   reading and no other project's container event in between; the container monitor ran; memory
-  pressure never critical (4); no thermal or performance warning; swap-out traffic within its
-  limit, and for W and R swap-in traffic too (N's new JVMs and F's restarts page by design);
+  pressure never critical (4); no thermal or performance warning; page-outs within their limit,
+  and for W and R page-ins too (N's new JVMs and F's restarts page by design); swap-ins and
+  swap-outs recorded, never gated (see paging());
   no marked process alive once the settle's grace has passed, and any survivor confirmed ended;
   the serve process exited 0;
 - the batch: not aborted, and no other project's container event at any time of the batch, between
@@ -50,7 +52,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from etf_risk.cache_experiment import QUERIES, _rk, designed_sources  # noqa: E402
+from etf_risk.cache_experiment import QUERIES, VM_COUNTERS, _rk, designed_sources  # noqa: E402
 
 REDIS_LIMIT = 128 * 2**20
 THRESHOLD = 3                    # CacheConfig.failure_threshold
@@ -79,7 +81,7 @@ def designed(block: dict) -> list[tuple[int | None, str]]:
             + [(2, s) for s in designed_sources(p2)])
 
 
-def check(batch: Path, *, swap_out_limit: int, swap_in_limit: int, drift_limit: float) -> tuple[dict, list[dict]]:
+def check(batch: Path, *, page_out_limit: int, page_in_limit: int, drift_limit: float) -> tuple[dict, list[dict]]:
     plan = json.loads((batch / "plan.json").read_text())
     rows = read_jsonl(batch / "requests.jsonl")
     blocks = {b["block"]: b for b in read_jsonl(batch / "blocks.jsonl")}
@@ -118,8 +120,8 @@ def check(batch: Path, *, swap_out_limit: int, swap_in_limit: int, drift_limit: 
         if block["config"] in ("R", "F") and info.get("keys_present_after_delete"):
             problems["keys"].append(f"{bid}: {info['keys_present_after_delete']} of its keys in Redis at its start")
         if block["config"] != "L" and not block.get("lead_in"):     # the lead-in's host readings are reported, not gated
-            problems["host"] += check_host(bid, info, swap_out_limit,
-                                           swap_in_limit if block["config"] in ("W", "R") else None)
+            problems["host"] += check_host(bid, info, page_out_limit,
+                                           page_in_limit if block["config"] in ("W", "R") else None)
         peak = (info.get("redis_peak_before_stop") or info.get("redis_peak") or {}).get("peak_bytes")
         if peak is not None and peak > REDIS_LIMIT:
             problems["redis"].append(f"{bid}: Redis memory.peak {peak / 2**20:.0f} MiB over 128 MiB")
@@ -273,7 +275,21 @@ def check_breaker(bid: str, measured: list[dict]) -> list[str]:
     return out
 
 
-def check_host(bid: str, info: dict, swap_out_limit: int, swap_in_limit: int | None) -> list[str]:
+def paging(window: dict) -> dict:
+    """A block's page and swap traffic in bytes, and the counters they came from: vm_stat's
+    Pageins, Pageouts, Swapins and Swapouts. Batches up to dry-run/20261026T193201Z-lead-in-round
+    recorded psutil's sin and sout as swap_in_bytes and swap_out_bytes; on macOS those are
+    Pageins and Pageouts (docs/host-counters-correction.md), so they are read as page-ins and
+    page-outs, and those batches' swap traffic is not recorded: it is never inferred from them."""
+    if any(name in window for name in VM_COUNTERS):
+        size = window.get("page_size")
+        return {"counters": "vm_stat", **{f"{name}_bytes": None if size is None or window.get(name) is None
+                                          else window[name] * size for name in VM_COUNTERS}}
+    return {"counters": "psutil sin/sout", "pageins_bytes": window.get("swap_in_bytes"),
+            "pageouts_bytes": window.get("swap_out_bytes"), "swapins_bytes": None, "swapouts_bytes": None}
+
+
+def check_host(bid: str, info: dict, page_out_limit: int, page_in_limit: int | None) -> list[str]:
     out = []
     for when in ("before", "after"):
         reading = info.get(when) or {}
@@ -294,10 +310,15 @@ def check_host(bid: str, info: dict, swap_out_limit: int, swap_in_limit: int | N
             out.append(f"{bid}: memory pressure critical")
         if window.get("thermal_warning") is not None or window.get("performance_warning") is not None:
             out.append(f"{bid}: thermal or performance warning recorded")
-        if window.get("swap_out_bytes", 0) > swap_out_limit:
-            out.append(f"{bid}: {window['swap_out_bytes'] / 2**20:.0f} MiB swapped out, over the limit")
-        if swap_in_limit is not None and window.get("swap_in_bytes", 0) > swap_in_limit:
-            out.append(f"{bid}: {window['swap_in_bytes'] / 2**20:.0f} MiB swapped in, over the limit for W and R")
+        p = paging(window)
+        if p["pageouts_bytes"] is None:
+            out.append(f"{bid}: page-outs not recorded")
+        elif p["pageouts_bytes"] > page_out_limit:
+            out.append(f"{bid}: {p['pageouts_bytes'] / 2**20:.0f} MiB paged out, over the limit")
+        if page_in_limit is not None and p["pageins_bytes"] is None:
+            out.append(f"{bid}: page-ins not recorded")
+        elif page_in_limit is not None and p["pageins_bytes"] > page_in_limit:
+            out.append(f"{bid}: {p['pageins_bytes'] / 2**20:.0f} MiB paged in, over the limit for W and R")
     settle = info.get("settle")
     if settle is None:                          # batches before the settle (20261026) kept only a count
         if "stragglers" not in info:
@@ -359,6 +380,47 @@ def summarize(rows: list[dict]) -> list[dict]:
     return out
 
 
+def host_rows(plan: dict, blocks: dict) -> list[dict]:
+    """One row per recorded block: its page and swap traffic in MiB and the counters they came
+    from (swap empty where not recorded), the load diagnostics, pressure and memory. Descriptive:
+    only check_host's rules gate. The load includes the experiment's own processes, so no column
+    says by itself why a block's latencies differ."""
+    def mib(value):
+        return None if value is None else value / 2**20
+    def gib(reading, name):
+        value = ((reading or {}).get("host") or {}).get(name)
+        return None if value is None else value / 2**30
+    out = []
+    for block in plan["blocks"]:
+        info = blocks.get(block["id"])
+        if info is None:
+            continue
+        window = info.get("host_window") or {}
+        p = paging(window)
+        out.append({"block": block["id"], "config": block["config"], "round": block["round"], "pair": block.get("pair"),
+                    "lead_in": bool(block.get("lead_in")) or block["config"] == "L", "seconds": info.get("seconds"),
+                    "samples": window.get("samples"), "counters": p["counters"],
+                    **{f"{name}_mib": mib(p[f"{name}_bytes"]) for name in VM_COUNTERS},
+                    "max_pressure_level": window.get("max_pressure_level"), "load_1m_mean": window.get("load_1m_mean"),
+                    "load_1m_max": window.get("load_1m_max"), "cpu_busy_share": window.get("cpu_busy_share"),
+                    "available_gib_before": gib(info.get("before"), "available_bytes"),
+                    "available_gib_after": gib(info.get("after"), "available_bytes"),
+                    "swap_used_gib_before": gib(info.get("before"), "swap_used_bytes"),
+                    "swap_used_gib_after": gib(info.get("after"), "swap_used_bytes")})
+    return out
+
+
+def swap_line(hosts: list[dict]) -> str:
+    """The measured blocks' swap traffic in one line, recorded and not gated."""
+    measured = [h for h in hosts if not h["lead_in"]]
+    recorded = [h for h in measured if h["swapins_mib"] is not None and h["swapouts_mib"] is not None]
+    if not recorded:
+        return "not recorded"
+    line = (f"up to {max(h['swapins_mib'] for h in recorded):.1f} MiB swapped in and "
+            f"{max(h['swapouts_mib'] for h in recorded):.1f} MiB swapped out in a measured block (vm_stat; not gated)")
+    return line + (f"; not recorded in {len(measured) - len(recorded)} block(s)" if len(recorded) < len(measured) else "")
+
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         path.write_text("")
@@ -372,12 +434,12 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("batch", type=Path)
-    parser.add_argument("--swap-out-limit-mib", type=float, default=64.0, help="per block (Part A, a proposal)")
-    parser.add_argument("--swap-in-limit-mib", type=float, default=256.0, help="per W or R block (Part A, a proposal)")
+    parser.add_argument("--page-out-limit-mib", type=float, default=64.0, help="per block (Part A, a proposal)")
+    parser.add_argument("--page-in-limit-mib", type=float, default=256.0, help="per W or R block (Part A, a proposal)")
     parser.add_argument("--drift-limit", type=float, default=0.20, help="W's last round against its first (Part A)")
     args = parser.parse_args(argv)
-    problems, rows = check(args.batch, swap_out_limit=int(args.swap_out_limit_mib * 2**20),
-                           swap_in_limit=int(args.swap_in_limit_mib * 2**20), drift_limit=args.drift_limit)
+    problems, rows = check(args.batch, page_out_limit=int(args.page_out_limit_mib * 2**20),
+                           page_in_limit=int(args.page_in_limit_mib * 2**20), drift_limit=args.drift_limit)
     write_csv(args.batch / "measurements.csv",
               [{k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in r.items() if k != "result"}
                for r in rows if not r["warmup"]])
@@ -386,10 +448,13 @@ def main(argv: list[str] | None = None) -> int:
     pairs = paired(plan, rows)
     write_csv(args.batch / "paired.csv", pairs)
     write_csv(args.batch / "paired_summary.csv", paired_summary(pairs))
+    hosts = host_rows(plan, {b["block"]: b for b in read_jsonl(args.batch / "blocks.jsonl")})
+    write_csv(args.batch / "host.csv", hosts)
     valid = not any(problems.values())
     (args.batch / "validity.json").write_text(json.dumps({"valid": valid, "problems": problems}, indent=2) + "\n")
     for name, found in problems.items():
         print(f"{'ok  ' if not found else 'FAIL'} {name}" + ("" if not found else f": {len(found)} problem(s); first: {found[0]}"))
+    print(f"swap: {swap_line(hosts)}")
     print("valid" if valid else "NOT valid")
     return 0 if valid else 1
 

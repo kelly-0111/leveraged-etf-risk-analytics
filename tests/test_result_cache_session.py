@@ -26,9 +26,9 @@ def test_the_helper_file_parses():
 
 
 def test_loading_sets_the_defaults_and_changes_into_the_repository():
-    out = zsh('print -r -- $PWD; print -r -- $E3_PURPOSE $E3_SEED $E3_SWAP_OUT_MIB $E3_DRIFT; print -r -- $E3_DIR')
+    out = zsh('print -r -- $PWD; print -r -- $E3_PURPOSE $E3_SEED $E3_PAGE_OUT_MIB $E3_PAGE_IN_MIB $E3_DRIFT; print -r -- $E3_DIR')
     assert out.returncode == 0, out.stderr
-    assert out.stdout.splitlines() == [str(REPO), "dry-run 1 64 0.20", "data/outputs-result-cache/dry-run/t-batch"]
+    assert out.stdout.splitlines() == [str(REPO), "dry-run 1 64 256 0.20", "data/outputs-result-cache/dry-run/t-batch"]
 
 
 def test_the_checklist_names_every_step():
@@ -49,3 +49,8 @@ def test_run_refuses_without_a_plan():
 def test_cleanup_names_the_redis_service_alone():
     body = HELPER.read_text().split("e3_cleanup() {", 1)[1].split("}", 1)[0]
     assert "rm --stop --force redis" in body and "down" not in body
+
+
+def test_collect_passes_the_page_limits_by_their_names():
+    body = HELPER.read_text().split("e3_collect() {", 1)[1].split("}", 1)[0]
+    assert "--page-out-limit-mib $E3_PAGE_OUT_MIB --page-in-limit-mib $E3_PAGE_IN_MIB" in body and "swap" not in body

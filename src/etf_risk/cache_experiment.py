@@ -11,7 +11,8 @@ writes the records the collector (analysis/collect_result_cache_measurements.py)
 requests.jsonl (one line per request, warm-ups included), blocks.jsonl (one per block: host
 readings before and after, the pressure sampler's extremes, container events, memory peaks),
 reference.json (each request's answer from a no-cache process, computed first), containers.jsonl
-(every container event of the batch, never a name), and batch.json.
+(every container event of the batch, never a name), host_samples.jsonl (every host sample) and
+batch.json.
 
 Configurations (Part A, section 2):
 - N: one new process per request (`summary --no-cache query`): process start, imports, a full
@@ -32,7 +33,14 @@ key that is not the experiment's.
 Monitoring, never shown by name: `docker events` for the whole batch (other projects' container
 events counted, including any between readings), the number of other running containers at every
 block boundary, and a sampler (every --pressure-interval s) of macOS's memory-pressure level,
-swap activity and `pmset -g therm` warnings.
+vm_stat's page-in, page-out, swap-in and swap-out counters, the 1-minute load average, the CPUs'
+busy and idle time, and `pmset -g therm` warnings.
+
+Paging and swap (docs/host-counters-correction.md). psutil's swap_memory().sin and .sout are, on
+macOS, vm_stat's Pageins and Pageouts: page traffic, file reads included, not swap. Batches up to
+dry-run/20261026T193201Z-lead-in-round recorded them as swap_in_bytes and swap_out_bytes; from
+the correction of 2026-10-26 the sampler reads vm_stat's four counters by their own names, and
+the block readings leave psutil's two out.
 
 The settle. After a block's last process exits, and after its requests are timed, settle() waits
 up to settle_grace seconds (15) for every process carrying the block's marker to exit, and
@@ -278,9 +286,27 @@ def parse_therm(text: str) -> dict:
             "cpu_speed_limit": level("CPU_Speed_Limit")}
 
 
+VM_COUNTERS = ("pageins", "pageouts", "swapins", "swapouts")
+# psutil's sin and sout as harness.host_state() names them: on macOS, Pageins and Pageouts
+PSUTIL_PAGING = ("swap_in_bytes", "swap_out_bytes")
+
+
+def parse_vm_stat(text: str) -> dict:
+    """`vm_stat`: the page size, and the cumulative Pageins, Pageouts, Swapins and Swapouts in
+    pages; None for any it does not print. Pageins counts requests for pages from a pager, file
+    reads included; Swapins and Swapouts count pages moved between the compressor and the swap
+    files (mach/vm_statistics.h)."""
+    size = re.search(r"page size of (\d+) bytes", text)
+    def count(name: str) -> int | None:
+        match = re.search(rf"^{name.capitalize()}:\s+(\d+)\.", text, re.MULTILINE)
+        return int(match.group(1)) if match else None
+    return {"page_size": int(size.group(1)) if size else None, **{name: count(name) for name in VM_COUNTERS}}
+
+
 class HostSampler(threading.Thread):
-    """Every interval: macOS's memory-pressure level, swap in and out, and pmset's warnings.
-    window() gives the extremes and the swap traffic between two monotonic times."""
+    """Every interval: macOS's memory-pressure level, vm_stat's counters, the load average, the
+    CPUs' busy and idle seconds, and pmset's warnings. window() gives the extremes, the paging
+    and swap traffic, and the load between two monotonic times."""
 
     def __init__(self, interval: float, read: Callable[[], dict] | None = None):
         super().__init__(daemon=True)
@@ -300,24 +326,45 @@ class HostSampler(threading.Thread):
         self.join(timeout=10)
 
     def window(self, start: float, end: float) -> dict:
+        """The counters' changes (vm_stat's in pages, with page_size) from the first sample in the
+        window that has each to the last; load_1m_mean and _max over the samples; cpu_busy_share,
+        the share of all CPUs' time spent busy. Descriptive, except what the collector gates."""
         inside = [s for s in self.samples if start <= s["mono"] <= end]
         if not inside:
             return {"samples": 0}
+        def values(name):
+            return [s[name] for s in inside if s.get(name) is not None]
         def most(name):
-            values = [s[name] for s in inside if s.get(name) is not None]
-            return max(values) if values else None
+            return max(values(name), default=None)
+        def change(name):
+            v = values(name)
+            return v[-1] - v[0] if v else None
+        loads, busy, idle = values("load_1m"), change("cpu_busy_s"), change("cpu_idle_s")
         return {"samples": len(inside), "max_pressure_level": most("pressure_level"),
                 "thermal_warning": most("thermal_warning"), "performance_warning": most("performance_warning"),
-                "swap_out_bytes": inside[-1]["swap_out_bytes"] - inside[0]["swap_out_bytes"],
-                "swap_in_bytes": inside[-1]["swap_in_bytes"] - inside[0]["swap_in_bytes"]}
+                "page_size": most("page_size"), **{name: change(name) for name in VM_COUNTERS},
+                "load_1m_mean": sum(loads) / len(loads) if loads else None, "load_1m_max": most("load_1m"),
+                "cpu_busy_share": busy / (busy + idle) if busy is not None and idle is not None and busy + idle > 0
+                else None}
 
 
 def read_host_sample() -> dict:
+    """One sample: the pressure level, vm_stat's counters, the 1-minute load average, the CPUs'
+    cumulative busy (user, nice, system) and idle seconds, all CPUs summed, and pmset's warnings."""
     import psutil
     pressure = _run("sysctl", "-n", "kern.memorystatus_vm_pressure_level").strip()
-    swap = psutil.swap_memory()
-    return {"pressure_level": int(pressure) if pressure.isdigit() else None,
-            "swap_out_bytes": swap.sout, "swap_in_bytes": swap.sin, **parse_therm(_run("pmset", "-g", "therm"))}
+    cpu = psutil.cpu_times()
+    return {"pressure_level": int(pressure) if pressure.isdigit() else None, **parse_vm_stat(_run("vm_stat")),
+            "load_1m": os.getloadavg()[0], "cpu_busy_s": cpu.user + cpu.nice + cpu.system, "cpu_idle_s": cpu.idle,
+            **parse_therm(_run("pmset", "-g", "therm"))}
+
+
+def host_reading() -> dict:
+    """A block's reading before and after: harness.host_state() without psutil's sin and sout,
+    which it names swap_in_bytes and swap_out_bytes and which on macOS are page-ins and page-outs.
+    The host sampler reads those from vm_stat by their own names."""
+    from etf_risk.jobs.harness import host_state
+    return {k: v for k, v in host_state().items() if k not in PSUTIL_PAGING}
 
 
 def _run(*argv: str) -> str:
@@ -396,11 +443,10 @@ def _row(block: dict, i: int, phase: int | None, req: dict, answer: dict, client
 
 def run_block(batch: Batch, block: dict) -> dict:
     """One block, with its host readings, its container events and its memory peaks."""
-    from etf_risk.jobs.harness import host_state
     from etf_risk.jobs.processes import MARKER_ENV
     from etf_risk.services import memory_peak, other_containers
     ours = batch.plan["keys_by_request"]
-    before = {"host": host_state(), "other_containers": other_containers(), "mono": time.monotonic()}
+    before = {"host": host_reading(), "other_containers": other_containers(), "mono": time.monotonic()}
     marker = f"e3:{batch.folder.name}:{block['id']}"
     env = {**os.environ, MARKER_ENV: marker}
     env.pop("VIRTUAL_ENV", None)
@@ -439,7 +485,7 @@ def run_block(batch: Batch, block: dict) -> dict:
     last = info["processes"][-1] if block["config"] == "N" else info["serve"]
     info["settle"] = settle(marker, exited_mono=last["exited_mono"], root_pid=last["pid"],
                             grace=batch.settings.settle_grace)            # after timing: no request is affected
-    after = {"host": host_state(), "other_containers": other_containers(), "mono": time.monotonic()}
+    after = {"host": host_reading(), "other_containers": other_containers(), "mono": time.monotonic()}
     info["redis_peak"] = asdict(memory_peak("redis"))
     info["redis_used_memory_peak"] = batch.client.info("memory").get("used_memory_peak")
     info.update(before=before, after=after, seconds=after["mono"] - before["mono"],
@@ -622,6 +668,7 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
     status = 0
     started = {"started_at_utc": datetime.now(timezone.utc).isoformat(), "code": code, "formal": formal,
                "python": sys.version.split()[0], "redis_info": {k: client.info("server").get(k) for k in ("redis_version",)},
+               "logical_cpus": os.cpu_count(),
                "other_containers_at_start": other_containers(), "keys_deleted_at_start": delete_keys(client, plan["keys"])}
     try:
         reference = reference_answers(batch, [r for b in plan["blocks"] for r in b["requests"] + b["warmups"]])
@@ -638,6 +685,7 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
         started["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
         started["container_monitor_error"] = batch.containers.error
         (folder / "containers.jsonl").write_text("".join(json.dumps(e) + "\n" for e in batch.containers.events))
+        (folder / "host_samples.jsonl").write_text("".join(json.dumps(s) + "\n" for s in batch.host.samples))
         (folder / "batch.json").write_text(json.dumps(started, indent=2, default=str) + "\n")
         client.close()
     return status

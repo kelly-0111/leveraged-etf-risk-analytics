@@ -8,6 +8,12 @@ drafted with Claude Code and approved by the author, unchanged, on 2026-10-25. P
 outside Git and have not been changed since the collector wrote them; later notes sit beside them
 as separate files. Times are local (UTC−5) on 2026-10-25._
 
+> **Correction, 2026-10-26.** The bytes this document calls "swapped in" and "swapped out"
+> (sections 5.2 and 6) are psutil's `sin` and `sout`. On macOS they are page-ins and page-outs,
+> not swap traffic. Swap in use is recorded correctly. Sections 5.2 and 7.3 describe the host as
+> swapping heavily; [host-counters-correction.md](host-counters-correction.md) explains what the
+> records support. The text below is unchanged.
+
 ## 1. The author's decisions (2026-10-25)
 
 - Part A was approved with all 13 decisions of its section 10, seed 544 included. Its row 11: a
