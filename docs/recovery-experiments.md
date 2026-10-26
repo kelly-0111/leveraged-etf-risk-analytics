@@ -3,7 +3,7 @@
 Author: _to be written by the author after review. Beyond spec §11, the only decisions by the
 author are those in 1.1._
 
-_Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised twelve times from the author's
+_Drafted with Claude Code (Opus 5.5) on 2026-10-23 and revised thirteen times from the author's
 reviews (history at the end). This is an outline, not Part A: everything not in 1.1 or cited from
 spec §11 or M2 is Claude Code's proposal. The decisions of section 8 were approved on 2026-10-25 as
 [recovery-part-a.md](recovery-part-a.md) states them in its section 10, which prevails where they
@@ -681,9 +681,12 @@ documents, on `docs/recovery-outline`, stay as they were at revision 3.
   starts and stops between two readings.
 - **Authorship.** Spec §11: the job code is written with Claude Code. At the author's decision of
   2026-10-24, Claude Code also writes the recovery experiments' tooling listed above, and each new
-  module says so. The items in 1.1, and the experiments' decisions, runs and answers, are the
-  author's; everything else here is Claude Code's proposal. The queries of
-  [recovery-sql.md](recovery-sql.md) stay marked as drafted with Claude Code.
+  module says so. The items in 1.1 are the author's decisions; everything else here is Claude
+  Code's proposal. The experiments are contributed by both the author and Claude Code: Claude
+  Code ran the batches at the author's instruction and drafted the answers, and the author made
+  every decision and approval, the answers included ([recovery-part-b.md](recovery-part-b.md),
+  section 7). The queries of [recovery-sql.md](recovery-sql.md) stay marked as drafted with
+  Claude Code.
 
 ## 10. Not claimed
 
@@ -805,3 +808,7 @@ recorded before `5ecde71`, which have no count, condition 4 is unconfirmed, not 
     spec status lines were brought up to date.
 
   Part B gives the results ([recovery-part-b.md](recovery-part-b.md)).
+- **Revision 13, 2026-10-25.** Authorship, as the author stated: the recovery experiments are
+  contributed by both the author and Claude Code (section 9; spec §11). Claude Code proposed the
+  design, ran the batches at the author's instruction and drafted the answers; the author made
+  every decision and approval.
