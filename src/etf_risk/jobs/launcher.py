@@ -45,8 +45,11 @@ step ends by itself, the launcher first gives the rest of its tree --drain secon
 
 The result goes to --result as JSON: the outcome, the step's exit code, the processes ended,
 the time waited for the lock, the tree's peak summed RSS, and the lines accepted and
-ignored. The exit code says the outcome: the step's own code (0-63) when it ran to its end,
-otherwise one of EXIT_CODES.
+ignored. A step that started also has its interval, from just after the step's process
+started to when no member of the tree was left: step_started_mono and tree_ended_mono, on
+the host's monotonic clock, which the handshake checked and which same-host overlap checks
+compare, and the same moments in UTC (*_at_utc), for reading only. The exit code says the
+outcome: the step's own code (0-63) when it ran to its end, otherwise one of EXIT_CODES.
 
 AI contribution: written with Claude Code (Opus 5.5). Tested with tests/test_jobs_launcher.py.
 """
@@ -233,6 +236,7 @@ class Launcher:
                 with open(self.args.step_log, "ab") as log:
                     child = subprocess.Popen(command, cwd=self.args.cwd, stdin=subprocess.DEVNULL, stdout=log,
                                              stderr=subprocess.STDOUT, pass_fds=(self.lock_fd,))
+                self.result["step_started_mono"] = time.monotonic()
                 self.result["step_started_at_utc"] = datetime.now(timezone.utc).isoformat()
             except OSError as error:
                 self.result["error"] = f"{type(error).__name__}: {error}"
@@ -255,7 +259,8 @@ class Launcher:
                 self.end_tree(outcome)
             child.wait()
             self.result["returncode"] = child.returncode
-            self.result["tree_ended_at_utc"] = datetime.now(timezone.utc).isoformat()   # no member left
+            self.result["tree_ended_mono"] = time.monotonic()                          # no member left
+            self.result["tree_ended_at_utc"] = datetime.now(timezone.utc).isoformat()
             if outcome == "exited" and child.returncode < 0:
                 outcome = "signaled"
         self.registry.unregister()

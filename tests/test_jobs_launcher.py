@@ -296,3 +296,22 @@ def test_a_lock_held_outside_any_launcher_keeps_the_step_from_starting(tmp_path)
         code, result = Run(tmp_path, "held", command, lock_wait=1.5).wait()
         assert (code, result["outcome"]) == (EXIT_CODES["lock_busy"], "lock_busy") and not started.exists()
     assert Run(tmp_path, "released", command).wait()[1]["outcome"] == "exited" and started.exists()
+
+
+def test_a_steps_interval_is_on_the_monotonic_clock_that_the_handshake_checked(tmp_path):
+    """step_started_mono and tree_ended_mono read the host's monotonic clock, as this process
+    does, so intervals of different launchers compare directly: the host lock puts the later
+    step after the earlier tree has ended. A launcher that starts no step records neither."""
+    before = time.monotonic()
+    sleeper = Run(tmp_path, "sleeper", [sys.executable, "-c", "import time; time.sleep(0.3)"])
+    quick = Run(tmp_path, "quick", [sys.executable, "-c", "pass"])
+    one, two = sleeper.wait()[1], quick.wait()[1]
+    after = time.monotonic()
+    for result in (one, two):
+        assert before < result["step_started_mono"] < result["tree_ended_mono"] < after
+    assert one["tree_ended_mono"] - one["step_started_mono"] >= 0.3
+    earlier, later = sorted((one, two), key=lambda r: r["step_started_mono"])
+    assert later["step_started_mono"] > earlier["tree_ended_mono"]
+    code, result = Run(tmp_path, "late", [sys.executable, "-c", "pass"], deadline_in=-1.0).wait()
+    assert (code, result["outcome"]) == (EXIT_CODES["deadline_passed"], "deadline_passed")
+    assert "step_started_mono" not in result and "tree_ended_mono" not in result

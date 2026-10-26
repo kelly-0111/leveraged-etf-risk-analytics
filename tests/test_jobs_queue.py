@@ -321,7 +321,7 @@ def test_every_job_ends_with_at_most_one_result_under_lost_publications_and_cras
 
     def fault(point):
         if rng.random() < 0.1:
-            if point == "after_accept":
+            if point in ("after_accept_commit", "after_accept"):
                 lost[current["job"]] += 1                                              # accepted, never told
             raise SimulatedCrash(point)
 

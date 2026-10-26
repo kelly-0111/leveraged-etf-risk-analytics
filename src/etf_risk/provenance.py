@@ -12,11 +12,18 @@ The Docker image has no .git: there the commit and the clean flag come from what
 docker/build.sh recorded at build time (code_source = "build"), and docker/run.sh
 passes the image ID.
 
+A process that starts records code_identity(), and each pipeline step its launch records
+source_identity() (docs/recovery-experiments.md, 2.3): source_digest, one SHA-256 over the
+whole source_sha256 map, and uv_lock_sha256 say whether two processes ran the same code;
+the commit is only reported.
+
 AI contribution: written with Claude Code (Opus 5.5). Verified with
 tests/test_spark_equivalence.py (run.json carries these fields) and tests/test_provenance.py.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -73,3 +80,24 @@ def code_state() -> dict:
         "source_sha256": {key: sha256_file(path) for key, path in source_files().items()},
         "uv_lock_sha256": sha256_file(lock) if lock.is_file() else None,
     }
+
+
+def source_digest(source_sha256: dict[str, str]) -> str:
+    """One SHA-256 for a source_sha256 map: that of its canonical JSON (keys sorted, no spaces)."""
+    return hashlib.sha256(json.dumps(source_sha256, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def source_identity() -> dict:
+    """The code as files, without asking git: source_digest() of every source file's SHA-256,
+    and uv.lock's SHA-256. Cheap enough to record at every step launch."""
+    lock = REPO_ROOT / "uv.lock"
+    return {"source_digest": source_digest({key: sha256_file(path) for key, path in source_files().items()}),
+            "uv_lock_sha256": sha256_file(lock) if lock.is_file() else None}
+
+
+def code_identity() -> dict:
+    """What a starting process records: source_identity()'s two hashes, which decide whether
+    two processes ran the same code, with the commit and the clean flag, reported only."""
+    state = code_state()
+    return {"git_commit": state["git_commit"], "git_worktree_clean": state["git_worktree_clean"],
+            "source_digest": source_digest(state["source_sha256"]), "uv_lock_sha256": state["uv_lock_sha256"]}

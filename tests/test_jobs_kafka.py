@@ -1,7 +1,8 @@
 """The Kafka adapters, offline and against a broker.
 
 Offline, always: the producer's and the consumer's settings (acks=all, idempotence, the
-message timeout equal to the confirmation timeout; no auto-commit, earliest).
+message timeout equal to the confirmation timeout; no auto-commit, earliest), and the
+assignment events a rebalance writes (partitions and member id).
 Against Kafka (skipped unless ETF_RISK_KAFKA_BOOTSTRAP is set), each test on a topic of
 its own (KafkaTopic, tests/jobs_backends.py):
 - jobs published before a fresh consumer group starts are all delivered, and with latest,
@@ -9,6 +10,7 @@ its own (KafkaTopic, tests/jobs_backends.py):
 - publish() returns True once the broker confirmed, and False for an unreachable broker;
 - an uncommitted message reaches the group's next consumer, a committed one does not;
 - a rewind delivers the same message again;
+- a consumer that joins its group writes an assigned event naming the topic's partition;
 - end to end, submit_job(), Worker.serve() and the reconciler, with the job table on SQLite
   and, with ETF_RISK_MYSQL_URL set, on MySQL; an oversized payload ahead of a job is
   committed and skipped; after a persistent error before the acknowledgement, serve()
@@ -26,7 +28,8 @@ from datetime import timedelta
 
 import pytest
 
-from etf_risk.jobs.kafka import consumer_config, producer_config
+from etf_risk.jobs.events import EventLog, read_events
+from etf_risk.jobs.kafka import consumer_config, log_assignment, producer_config
 from etf_risk.jobs.queue import CONFIRMATION_TIMEOUT, submit_job
 from etf_risk.jobs.reconciler import Pass, Reconciler
 from etf_risk.jobs.simulated import SimulatedCrash
@@ -63,6 +66,29 @@ def test_the_group_timing_fits_the_lease_and_the_longest_run():
     assert config["max.poll.interval.ms"] > (t.attempt_limit + t.kill_grace) * 1000
 
 
+def test_assignment_events_name_the_partitions_and_the_member(tmp_path):
+    """The recovery harness reads the partition's owner from these events (docs/recovery-experiments.md, 2.4)."""
+    class Partition:
+        def __init__(self, topic, partition):
+            self.topic, self.partition = topic, partition
+
+    class Member:
+        def memberid(self):
+            return "rdkafka-0001"
+
+    class Joining:
+        def memberid(self):
+            raise RuntimeError("no member id yet")
+
+    log = EventLog(tmp_path / "A.jsonl", "worker", worker_id="A")
+    log_assignment(log, "assigned", Member(), [Partition("jobs", 0)])
+    log_assignment(log, "revoked", Joining(), [Partition("jobs", 0)])
+    log_assignment(log, "lost", Member(), [])
+    assert [(e["event"], e["partitions"], e["member"], e["worker_id"]) for e in read_events(tmp_path / "A.jsonl")] == [
+        ("assigned", [["jobs", 0]], "rdkafka-0001", "A"), ("revoked", [["jobs", 0]], None, "A"),
+        ("lost", [], "rdkafka-0001", "A")]
+
+
 def test_an_unreachable_broker_gives_false():
     pytest.importorskip("confluent_kafka")
     from etf_risk.jobs.kafka import KafkaPublisher
@@ -87,6 +113,15 @@ def test_jobs_published_before_a_fresh_group_starts_are_all_delivered(topic):
     assert all(publisher.publish(job) for job in (1, 2, 3))
     consumer = topic.consumer(topic.group())                        # a group that never existed
     assert [d.job_id() for d in poll_deliveries(consumer, 3)] == [1, 2, 3]
+
+
+@needs_kafka
+def test_a_consumer_that_joins_its_group_logs_the_partition_it_was_given(topic, tmp_path):
+    log = tmp_path / "A.jsonl"
+    consumer = topic.consumer(topic.group(), events=EventLog(log, "worker", worker_id="A"))
+    poll_after_assignment(consumer)
+    assigned = [e for e in read_events(log) if e["event"] == "assigned"]
+    assert assigned and assigned[-1]["partitions"] == [[topic.name, 0]] and assigned[-1]["member"]
 
 
 @needs_kafka

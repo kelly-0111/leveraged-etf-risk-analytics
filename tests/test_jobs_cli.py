@@ -11,7 +11,9 @@ import pytest
 from conftest import nyse_sessions, write_snapshot
 
 from etf_risk.jobs import cli
+from etf_risk.jobs.events import read_events
 from etf_risk.jobs.store import SQLITE, JobStore, open_sqlite
+from etf_risk.provenance import code_identity
 
 
 class FakePublisher:
@@ -62,8 +64,9 @@ def test_submit_records_the_parameters_and_the_input_checksums(setup, capsys):
                              "anchor": "2024-01-02", "sample_ticker": "AAA"}
     assert sorted(job["input_checksums"]) == ["daily_returns/AAA.parquet", "quality_report.json"]
     assert FakePublisher.published == [("etf-risk-jobs", 1)]
-    events = (tmp_path / "out" / "events" / "submit.jsonl").read_text()
-    assert '"event": "submitted"' in events
+    events = read_events(tmp_path / "out" / "events" / "submit.jsonl")
+    assert [e["event"] for e in events] == ["started", "submitted"]
+    assert events[0]["code"] == code_identity()                    # the code identity, recorded at launch
 
 
 def test_unusable_parameters_are_refused_before_anything_is_written(setup, capsys):

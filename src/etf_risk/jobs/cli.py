@@ -34,6 +34,11 @@ submit inserts the job, publishes it, and records the confirmation. When the ins
 reply was lost, the job may or may not exist, so it exits 75 (outcome unknown) and is never
 repeated on its own.
 
+For the recovery experiments (docs/recovery-experiments.md, 2.3 and 8.4): the worker, the
+reconciler and every submit write a started event first, with the code identity
+(provenance.code_identity()); a worker started with ETF_RISK_FAULT_FILE gets the fault hook of
+etf_risk.jobs.faults, and its started event names that file.
+
 AI contribution: written with Claude Code (Opus 5.5). Tested with tests/test_jobs_cli.py.
 """
 from __future__ import annotations
@@ -52,11 +57,12 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from etf_risk.jobs.events import EventLog
+from etf_risk.jobs.faults import FAULT_FILE_ENV, fault_from_environment
 from etf_risk.jobs.params import InvalidParams, JobParams, input_checksums
 from etf_risk.jobs.pipeline import DEFAULT_LOCK, SubprocessPipeline, startup_sweep
 from etf_risk.jobs.store import SQLITE, ClaimRace, JobStore, Outcome, Status, open_sqlite
 from etf_risk.jobs.timing import DEFAULT_TIMING, Timing
-from etf_risk.provenance import resolve
+from etf_risk.provenance import code_identity, resolve
 
 DEFAULT_TOPIC, DEFAULT_GROUP = "etf-risk-jobs", "etf-risk-workers"
 OUTCOME_UNKNOWN = 75
@@ -178,6 +184,7 @@ def cmd_submit(args) -> int:
         raise SystemExit(f"submit: {error}") from None
     store = open_store(args.db, timing)
     events = EventLog(Path(events_root(args)) / "submit.jsonl", "submit", store_id=store.store_id())
+    events.log("started", code=code_identity())
     try:
         job_id = store.submit(params.to_dict(), checksums, max_attempts=args.max_attempts)
     except Exception as error:
@@ -211,11 +218,12 @@ def cmd_worker(args) -> int:
     worker_id = args.worker_id or f"worker-{socket.gethostname().split('.')[0]}-{os.getpid()}"
     events = EventLog(Path(events_root(args)) / f"{worker_id}.jsonl", "worker", store_id=store_id, worker_id=worker_id)
     events.log("started", db=safe_url(args.db), topic=args.topic, group=args.group, timing=asdict(timing),
-               standby=args.standby)
+               standby=args.standby, code=code_identity(), fault_file=os.environ.get(FAULT_FILE_ENV))
     startup_sweep(store, output_root, timing=timing, events=events)
     pipeline = SubprocessPipeline(store_id=store_id, processed_root=resolve(args.processed_root), worker_id=worker_id,
                                   lock_path=args.lock, timing=timing, events=events, stop=stop)
-    worker = Worker(store, pipeline, output_root, worker_id=worker_id, events=events)
+    worker = Worker(store, pipeline, output_root, worker_id=worker_id, events=events,
+                    fault=fault_from_environment(events))
     backoff = 1.0
     while not stop.is_set():
         consumer = KafkaConsumer(args.bootstrap, args.topic, args.group, timing=timing, events=events)
@@ -246,7 +254,7 @@ def cmd_reconciler(args) -> int:
     events = EventLog(Path(events_root(args)) / f"reconciler-{os.getpid()}.jsonl", "reconciler",
                       store_id=store.store_id())
     publisher = KafkaPublisher(args.bootstrap, args.topic, timing=timing)
-    events.log("started", db=safe_url(args.db), topic=args.topic)
+    events.log("started", db=safe_url(args.db), topic=args.topic, code=code_identity())
     Reconciler(store, publisher, events=events).run(stop, interval=timedelta(seconds=args.interval))
     publisher.close()
     events.log("stopped")

@@ -11,10 +11,13 @@ run on SQLite and, with ETF_RISK_MYSQL_URL set, on MySQL.
 AI contribution: written with Claude Code (Opus 5.5).
 """
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from etf_risk.jobs import faults
+from etf_risk.jobs.events import EventLog, read_events
 from etf_risk.jobs.simulated import SimulatedCrash, SimulatedPipeline
 from etf_risk.jobs.store import Outcome, Refusal, Status
 from etf_risk.jobs.worker import WORKER_FAULT_POINTS, PipelineError, Result
@@ -176,6 +179,19 @@ def test_a_crash_after_acceptance_keeps_the_one_result(env):
     env.check(job, lost_acceptances=1)                              # A died before it could tell
 
 
+def test_a_crash_between_the_acceptance_commit_and_its_event_leaves_the_result_unreported(env, tmp_path):
+    """Recovery case W5a: the table holds one accepted result and the log has no accepted event."""
+    job = submit(env)
+    worker = env.worker("A", fault=crash_at("after_accept_commit"))
+    worker.events = EventLog(tmp_path / "A.jsonl", "worker", worker_id="worker-A")
+    with pytest.raises(SimulatedCrash):
+        env.deliver(worker, job)
+    assert env.admin.job(job)["status"] is Status.SUCCEEDED
+    assert [a["outcome"] for a in env.admin.attempts(job)] == [Outcome.ACCEPTED]
+    assert [e["event"] for e in read_events(tmp_path / "A.jsonl")] == ["claimed"]   # no accepted event
+    env.check(job, lost_acceptances=1)
+
+
 # Expired leases and stale workers
 
 def test_an_expired_lease_mid_run_fences_the_slow_worker(env):
@@ -240,6 +256,151 @@ def test_a_stale_worker_cannot_record_a_failure(env):
     assert [h.result for h in taken_over] == [Result.ACCEPTED] and handled.result is Result.FENCED
     assert [a["outcome"] for a in env.admin.attempts(job)] == [Outcome.EXPIRED, Outcome.ACCEPTED]
     env.check(job)
+
+
+# The deadline F at acceptance
+
+class DeadlinePipeline(SimulatedPipeline):
+    """A simulated pipeline that keeps a deadline as SubprocessPipeline does: fence_at, on
+    time.monotonic(), set `left` seconds ahead when its run returns (negative: already passed)."""
+
+    def __init__(self, left: float, **kwargs):
+        super().__init__(**kwargs)
+        self.left, self.fence_at = left, None
+
+    def run(self, claim, run_dir, heartbeat):
+        digest = super().run(claim, run_dir, heartbeat)
+        self.fence_at = time.monotonic() + self.left
+        return digest
+
+
+def test_no_acceptance_call_once_the_deadline_has_passed(env, tmp_path):
+    """docs/worker-pipeline.md: the worker never accepts after F, even while its token still holds
+    the job. The job runs again once its lease has expired."""
+    job = submit(env)
+    worker = env.worker("A", DeadlinePipeline(left=-1.0))
+    worker.events = EventLog(tmp_path / "A.jsonl", "worker", worker_id="worker-A")
+    calls = []
+    accept = worker.store.accept_result
+    worker.store.accept_result = lambda *args: calls.append(args) or accept(*args)
+    assert env.deliver(worker, job).result is Result.FENCED and calls == []          # not even one call
+    j = env.admin.job(job)
+    assert (j["status"], j["attempt_number"]) == (Status.RUNNING, 1)              # the token still holds it
+    fenced = read_events(tmp_path / "A.jsonl")[-1]
+    assert (fenced["event"], fenced["during"]) == ("fenced", "acceptance")
+    assert (env.runs / f"job-{job}-attempt-1" / "result.json").exists()           # complete, never accepted
+    env.clock.advance(LEASE.total_seconds())
+    again = env.deliver(env.worker("B"), job)
+    assert again.result is Result.ACCEPTED and again.claim.attempt_number == 2
+    assert [a["outcome"] for a in env.admin.attempts(job)] == [Outcome.EXPIRED, Outcome.ACCEPTED]
+    env.check(job)
+
+
+def test_acceptance_before_the_deadline_goes_ahead(env):
+    job = submit(env)
+    assert env.deliver(env.worker("A", DeadlinePipeline(left=60.0)), job).result is Result.ACCEPTED
+    env.check(job)
+
+
+def test_a_hold_released_after_the_deadline_ends_without_acceptance(env, tmp_path):
+    """Case D2's hook (etf_risk.jobs.faults) holds at after_pipeline until its release file
+    appears, here only once F has passed: the worker then fences itself."""
+    job = submit(env)
+    pipeline = DeadlinePipeline(left=0.05)
+    log = tmp_path / "A.jsonl"
+    events = EventLog(log, "worker", worker_id="worker-A")
+    release = tmp_path / "release"
+
+    def sleep(seconds):                                             # the harness releases only after F
+        time.sleep(0.01)
+        if time.monotonic() >= pipeline.fence_at:
+            release.touch()
+
+    hook = faults.FaultFile(tmp_path / "A.fault", events, sleep=sleep)
+    faults.arm(hook.path, "after_pipeline", "hold", release=release, timeout_s=60)
+    worker = env.worker("A", pipeline, fault=hook)
+    worker.events = events
+    assert env.deliver(worker, job).result is Result.FENCED
+    assert [e["event"] for e in read_events(log)] == ["claimed", "fault_injected", "fault_released", "fenced"]
+    assert env.admin.attempts(job)[0]["outcome"] is Outcome.RUNNING
+    env.check(job)
+
+
+class LosesConnections:
+    """A store's dialect, except that ConnectionResetError counts as a lost connection, which
+    SQLite never reports."""
+
+    def __init__(self, dialect):
+        self._dialect = dialect
+
+    def __getattr__(self, name):
+        return getattr(self._dialect, name)
+
+    def is_disconnect(self, error):
+        return isinstance(error, ConnectionResetError)
+
+
+def losing(worker, times):
+    """Make the worker's first `times` acceptance calls lose their connection; the calls' start times."""
+    worker.store.dialect = LosesConnections(worker.store.dialect)
+    calls, accept = [], worker.store.accept_result
+
+    def accept_result(*args):
+        calls.append(time.monotonic())
+        if len(calls) <= times:
+            raise ConnectionResetError("the database went away")
+        return accept(*args)
+
+    worker.store.accept_result = accept_result
+    return calls
+
+
+def test_a_lost_connection_at_acceptance_is_tried_again_while_the_deadline_is_ahead(env, tmp_path):
+    job = submit(env)
+    worker = env.worker("A", DeadlinePipeline(left=60.0))
+    worker.events = EventLog(tmp_path / "A.jsonl", "worker", worker_id="worker-A")
+    worker._sleep = lambda seconds: None
+    calls = losing(worker, times=2)
+    assert env.deliver(worker, job).result is Result.ACCEPTED and len(calls) == 3
+    assert [e["operation"] for e in read_events(tmp_path / "A.jsonl") if e["event"] == "retry"] == ["accept_result"] * 2
+    env.check(job)
+
+
+def test_no_acceptance_try_starts_once_the_deadline_passed_during_the_wait(env):
+    """A try started before F may still be under way after it; a new one never starts after F."""
+    job = submit(env)
+    pipeline = DeadlinePipeline(left=0.3)
+    worker = env.worker("A", pipeline)
+    worker._sleep = lambda seconds: time.sleep(max(0.0, pipeline.fence_at - time.monotonic()) + 0.01)
+    calls = losing(worker, times=10)
+    with pytest.raises(ConnectionResetError):                        # serve() logs failed_after_ack
+        env.deliver(worker, job)
+    assert len(calls) == 1 and calls[0] < pipeline.fence_at
+    assert env.admin.job(job)["status"] is Status.RUNNING           # left to its lease
+    env.check(job)
+
+
+def test_a_fault_armed_while_the_worker_runs_fires_without_a_restart(env, tmp_path):
+    """The harness arms a running worker (outline 8.4): the same Worker and hook handle one job
+    untouched, are armed, and die at the armed point of the next job."""
+    first, second = submit(env), submit(env)
+    log = tmp_path / "A.jsonl"
+    events = EventLog(log, "worker", worker_id="worker-A")
+
+    def kill():
+        raise SimulatedCrash("SIGKILL")
+
+    hook = faults.FaultFile(tmp_path / "A.fault", events, kill=kill)
+    worker = env.worker("A", fault=hook)
+    worker.events = events
+    assert env.deliver(worker, first).result is Result.ACCEPTED
+    faults.arm(hook.path, "after_claim")
+    with pytest.raises(SimulatedCrash):
+        env.deliver(worker, second)
+    assert [e["event"] for e in read_events(log)] == ["claimed", "accepted", "claimed", "fault_injected"]
+    assert env.acks == [first] and not hook.path.exists()          # never acknowledged; the fault fired once
+    env.check(first)
+    env.check(second)
 
 
 # Failures and retries
@@ -307,7 +468,8 @@ def test_acknowledgement_comes_after_the_claim(env):
     events = []
     worker = env.worker("A", fault=events.append)
     env.handled.append(worker.handle(job, lambda: events.append("acknowledge")))
-    assert events == ["before_claim", "after_claim", "acknowledge", "after_pipeline", "after_accept"]
+    assert events == ["before_claim", "after_claim", "acknowledge", "after_pipeline", "after_accept_commit",
+                      "after_accept"]
     events.clear()
     env.handled.append(worker.handle(job, lambda: events.append("acknowledge")))   # refused: at once
     assert events == ["before_claim", "acknowledge"]
