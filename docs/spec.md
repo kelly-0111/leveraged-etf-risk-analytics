@@ -872,6 +872,25 @@ least once, and a lease can expire while a slow worker still runs.
   - **A restart resets the cgroup counter.** `docker compose restart` gives the
     container a new `memory.peak`, so the recovery harness reads peaks before
     each restart it injects.
+- The isolated check (2026-10-24, commit 05337a6, `tests/memory_check.py`;
+  [worker-pipeline.md](worker-pipeline.md)): no other container in Docker's VM,
+  fresh MySQL and Kafka containers, the job suites and then the 10 acceptance
+  cases, all of which passed.
+  - **The MySQL and Kafka limits held,** measured under host memory pressure.
+    MySQL peaked at 439 MiB of 512 MiB (86%) and Kafka at 515 MiB of 640 MiB
+    (80%), with no oom, oom_kill or limit event in any container lifetime, and
+    Docker recorded neither container as OOM-killed. That validates both limits
+    for one such run on fresh containers on this machine. It says nothing about
+    longer sessions, which came closer for MySQL (above).
+  - **Host memory pressure:** 3.05 GiB was available with the stack idle, and the
+    compressor grew by 3.34 GiB and swap by 1.30 GiB. The container verdict is
+    taken as unaffected because the cgroup accounting inside the VM does not see
+    the host compressing or swapping the VM's memory. That is reasoning, not a
+    measured result.
+  - **The native processes are not validated.** Their figures were measured under
+    that pressure and are not representative: spark_pipeline 2.19 GiB for
+    stride 21, and the worker, reconciler and submit 119–125 MiB. The targets they
+    were compared with are proposals, not approved budgets.
 - Docker Desktop's VM has 3.83 GiB here. Timings inside containers form a
   separate configuration and are not compared with the native measurements (§8).
 
