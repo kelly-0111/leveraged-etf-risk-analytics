@@ -25,7 +25,11 @@ Checks (Part A, section 6):
 - host, per block: AC power and lid open before and after; no other running container at either
   reading and no other project's container event in between; the container monitor ran; memory
   pressure never critical (4); no thermal or performance warning; swap-out traffic within its
-  limit, and for W and R swap-in traffic too (N's new JVMs and F's restarts page by design); no marked process left after the block; the serve process exited 0;
+  limit, and for W and R swap-in traffic too (N's new JVMs and F's restarts page by design);
+  no marked process alive once the settle's grace has passed, and any survivor confirmed ended;
+  the serve process exited 0;
+- the batch: not aborted, and no other project's container event at any time of the batch, between
+  block windows included;
 - Redis: its peak within the container's limit;
 - the lead-in block L is checked for completeness, statuses, sources and answers only; its host
   readings are reported, not gated, and it is left out of every comparison;
@@ -118,6 +122,15 @@ def check(batch: Path, *, swap_out_limit: int, swap_in_limit: int, drift_limit: 
         if peak is not None and peak > REDIS_LIMIT:
             problems["redis"].append(f"{bid}: Redis memory.peak {peak / 2**20:.0f} MiB over 128 MiB")
     problems["pairs"] = check_pairs(plan, rows)
+    if meta.get("aborted"):
+        problems["host"].append(f"the batch was aborted: {meta['aborted']}")
+    events = read_jsonl(batch / "containers.jsonl")
+    others = [e for e in events if not e.get("ours")]
+    if others:
+        windows = [(b["before"]["mono"], b["after"]["mono"]) for b in blocks.values() if "mono" in b.get("before", {})]
+        between = sum(1 for e in others if not any(a <= e["mono"] <= z for a, z in windows))
+        problems["host"].append(f"{len(others)} other-project container event(s) during the batch, {between} of "
+                                f"them between block windows")
     if meta.get("container_monitor_error"):
         problems["host"].append(f"the container monitor failed: {meta['container_monitor_error']}")
     problems["drift"] = check_drift(plan, rows, drift_limit)
@@ -243,8 +256,19 @@ def check_host(bid: str, info: dict, swap_out_limit: int, swap_in_limit: int | N
             out.append(f"{bid}: {window['swap_out_bytes'] / 2**20:.0f} MiB swapped out, over the limit")
         if swap_in_limit is not None and window.get("swap_in_bytes", 0) > swap_in_limit:
             out.append(f"{bid}: {window['swap_in_bytes'] / 2**20:.0f} MiB swapped in, over the limit for W and R")
-    if info.get("stragglers"):
-        out.append(f"{bid}: {info['stragglers']} marked process(es) alive after the block")
+    settle = info.get("settle")
+    if settle is None:                          # batches before the settle (20261026) kept only a count
+        if "stragglers" not in info:
+            out.append(f"{bid}: no settle record")
+        elif info["stragglers"]:
+            out.append(f"{bid}: {info['stragglers']} marked process(es) alive after the block (counted without a settle)")
+    else:
+        if settle["survivors"]:
+            who = ", ".join(f"{x['kind']} pid {x['pid']}" for x in settle["survivors"])
+            out.append(f"{bid}: {len(settle['survivors'])} marked process(es) alive {settle['grace_s']:g} s after the "
+                       f"block: {who}")
+        if not settle["confirmed_clean"]:
+            out.append(f"{bid}: the survivors could not be confirmed ended")
     if (info.get("serve") or {}).get("exit") not in (0, None):
         out.append(f"{bid}: the serve process exited {info['serve']['exit']}")
     if any(p.get("exit") != 0 for p in info.get("processes", [])):

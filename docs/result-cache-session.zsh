@@ -5,7 +5,8 @@
 # nothing runs until a function is called. Type  e3_steps  for the checklist.
 #
 # Variables, read when the file is loaded (set them before loading to change them):
-#   E3_PURPOSE   formal, dry-run or sizing (default dry-run); only formal batches answer E3
+#   E3_PURPOSE   formal, dry-run, sizing or functional (default dry-run); only formal batches answer E3;
+#                functional checks the tooling alone
 #   E3_SEED      the workload's seed (default 1); Part A names the formal seed
 #   E3_BATCH     the batch folder's name (default: the UTC time at loading)
 #   E3_SWAP_OUT_MIB, E3_SWAP_IN_MIB, E3_DRIFT   the collector's limits (Part A, section 6)
@@ -49,7 +50,7 @@ e3_preflight() {
 }
 
 e3_plan() {
-  [[ $E3_PURPOSE == (formal|dry-run|sizing) ]] || { echo "E3_PURPOSE must be formal, dry-run or sizing"; return 2 }
+  [[ $E3_PURPOSE == (formal|dry-run|sizing|functional) ]] || { echo "E3_PURPOSE must be formal, dry-run, sizing or functional"; return 2 }
   $E3_UV python -m etf_risk.cache_experiment plan --seed $E3_SEED --out $E3_DIR
 }
 

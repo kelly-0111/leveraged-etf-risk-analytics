@@ -38,7 +38,7 @@ def test_the_checklist_names_every_step():
 
 def test_an_unknown_purpose_plans_nothing():
     out = zsh("e3_plan", E3_PURPOSE="practice")
-    assert out.returncode == 2 and "must be formal, dry-run or sizing" in out.stdout
+    assert out.returncode == 2 and "must be formal, dry-run, sizing or functional" in out.stdout
 
 
 def test_run_refuses_without_a_plan():

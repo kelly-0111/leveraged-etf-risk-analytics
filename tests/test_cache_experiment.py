@@ -236,3 +236,107 @@ def test_the_plan_command_turns_the_lead_in_off_only_when_asked(tmp_path, monkey
     assert plans.pop("s").lead_in is True
     e3.main(["plan", "--seed", "1", "--no-lead-in", "--out", str(tmp_path / "dry-run" / "b")])
     assert plans.pop("s").lead_in is False
+
+
+# The settle
+
+class FakeProcess:
+    def __init__(self, pid, created=100.0, name="java", cmdline=("java", "org.apache.spark.deploy.SparkSubmit")):
+        self.pid, self._created, self._name, self._cmdline = pid, created, name, list(cmdline)
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        return self._cmdline
+
+    def create_time(self):
+        return self._created
+
+
+class Script:
+    """scan() returns the next list of live processes; clock() advances by each poll's sleep."""
+
+    def __init__(self, scans):
+        self.scans, self.now, self.ended = list(scans), 10.0, []
+
+    def scan(self):
+        return self.scans.pop(0) if len(self.scans) > 1 else self.scans[0]
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def end(self, processes, rescan):
+        self.ended += [p.pid for p in processes]
+        return {"terminated": [p.pid for p in processes], "killed": [], "remaining": []}
+
+
+def test_processes_that_exit_within_the_grace_are_recorded_with_their_timing():
+    jvm = FakeProcess(7)
+    s = Script([[jvm], [jvm], []])
+    r = e3.settle("e3:b:x", exited_mono=10.0, root_pid=1, grace=15, poll=0.25,
+                  scan=s.scan, clock=s.clock, sleep=s.sleep, end=s.end, owned=lambda p, c: True)
+    assert r["settled_after_s"] == 0.5 and r["survivors"] == [] and r["cleanup"] is None and r["confirmed_clean"]
+    (seen,) = r["seen"]
+    assert (seen["pid"], seen["kind"], seen["first_seen_s"], seen["last_seen_s"], seen["gone_by_s"]) == (
+        7, "spark_jvm", 0.0, 0.25, 0.5)
+    assert s.ended == []
+
+
+def test_a_survivor_after_the_grace_is_recorded_and_ended_once_its_ownership_is_verified():
+    jvm = FakeProcess(7)
+    s = Script([[jvm]])
+    r = e3.settle("e3:b:x", exited_mono=10.0, root_pid=1, grace=1.0, poll=0.25,
+                  scan=s.scan, clock=s.clock, sleep=s.sleep, end=s.end, owned=lambda p, c: c == 100.0)
+    assert r["settled_after_s"] is None and [x["pid"] for x in r["survivors"]] == [7]
+    assert s.ended == [7] and r["unverified"] == [] and r["confirmed_clean"]
+
+
+def test_a_survivor_that_remains_after_cleanup_is_not_confirmed_clean():
+    jvm = FakeProcess(7)
+    s = Script([[jvm]])
+    stubborn = lambda procs, rescan: {"terminated": [7], "killed": [7], "remaining": [7]}
+    r = e3.settle("e3:b:x", exited_mono=10.0, root_pid=1, grace=0.5, poll=0.25,
+                  scan=s.scan, clock=s.clock, sleep=s.sleep, end=stubborn, owned=lambda p, c: True)
+    assert not r["confirmed_clean"] and r["cleanup"]["remaining"] == [7]
+
+
+def test_a_survivor_whose_ownership_cannot_be_verified_is_never_signalled():
+    reused = FakeProcess(7, created=999.0)
+    s = Script([[reused]])
+    r = e3.settle("e3:b:x", exited_mono=10.0, root_pid=1, grace=0.5, poll=0.25,
+                  scan=s.scan, clock=s.clock, sleep=s.sleep, end=s.end, owned=lambda p, c: False)
+    assert s.ended == [] and [x["pid"] for x in r["unverified"]] == [7] and not r["confirmed_clean"]
+
+
+def _marked_child(marker, seconds):
+    import os
+    import subprocess
+    from etf_risk.jobs.processes import MARKER_ENV
+    return subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"],
+                            env={**os.environ, MARKER_ENV: marker})
+
+
+def test_a_real_marked_process_that_exits_is_seen_and_found_gone():
+    import secrets
+    import time
+    marker = f"e3:test:{secrets.token_hex(4)}"
+    child = _marked_child(marker, 0.6)
+    r = e3.settle(marker, exited_mono=time.monotonic(), root_pid=0, grace=10, poll=0.1)
+    child.wait(timeout=10)
+    assert r["confirmed_clean"] and r["survivors"] == [] and r["settled_after_s"] is not None
+    assert [x["pid"] for x in r["seen"]] == [child.pid] and r["seen"][0]["gone_by_s"] is not None
+
+
+def test_a_real_survivor_is_ended_and_confirmed():
+    import secrets
+    import time
+    marker = f"e3:test:{secrets.token_hex(4)}"
+    child = _marked_child(marker, 60)
+    r = e3.settle(marker, exited_mono=time.monotonic(), root_pid=0, grace=0.5, poll=0.1)
+    assert [x["pid"] for x in r["survivors"]] == [child.pid] and r["cleanup"]["terminated"] == [child.pid]
+    import psutil
+    assert r["confirmed_clean"] and not psutil.pid_exists(child.pid)    # psutil reaped it: Popen.wait would say 0

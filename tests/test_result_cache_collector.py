@@ -51,9 +51,13 @@ def build(folder: Path) -> Path:
                 counters = {**counters, ("get_errors" if down < collector.THRESHOLD else "skipped"):
                             counters["get_errors" if down < collector.THRESHOLD else "skipped"] + 1}
             rows.append(row(i, r, source, False, phase, dict(counters)))
+        start = 100.0 * len(infos)
         info = {"block": b["id"], "config": b["config"], "round": b["round"], "keys_present_after_delete": 0,
-                "before": {"host": GOOD_HOST, "other_containers": 0}, "after": {"host": GOOD_HOST, "other_containers": 0},
-                "host_window": GOOD_WINDOW, "other_container_events": 0, "stragglers": 0,
+                "before": {"host": GOOD_HOST, "other_containers": 0, "mono": start},
+                "after": {"host": GOOD_HOST, "other_containers": 0, "mono": start + 90.0},
+                "host_window": GOOD_WINDOW, "other_container_events": 0,
+                "settle": {"grace_s": 15.0, "settled_after_s": 0.6, "survivors": [], "unverified": [], "cleanup": None,
+                           "confirmed_clean": True, "seen": [{"pid": 9, "kind": "spark_jvm", "gone_by_s": 0.6}]},
                 "redis_peak": {"peak_bytes": 50 * 2**20}}
         if b["config"] == "N":
             info["processes"] = [{"exit": 0}] * len(b["requests"])
@@ -63,6 +67,7 @@ def build(folder: Path) -> Path:
     (folder / "requests.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     (folder / "blocks.jsonl").write_text("".join(json.dumps(i) + "\n" for i in infos))
     (folder / "batch.json").write_text(json.dumps({"container_monitor_error": None}))
+    (folder / "containers.jsonl").write_text(json.dumps({"action": "exec_start", "ours": True, "time": 1, "mono": 95.0}) + "\n")
     return folder
 
 
@@ -132,7 +137,16 @@ PLANTS = {
                                                            host_window={**GOOD_WINDOW, "swap_in_bytes": 2**30}), "host"),
     "a W control that ran other requests": ("requests.jsonl", lambda rs: _set(
         first(rs, config="W", pair=0.5, warmup=False), tickers=["NOT-PLANNED"]), "pairs"),
-    "a straggler": ("blocks.jsonl", lambda bs: _set(first(bs, config="F"), stragglers=1), "host"),
+    "a survivor after the settle": ("blocks.jsonl", lambda bs: first(bs, config="F")["settle"].update(
+        settled_after_s=None, survivors=[{"pid": 9, "kind": "spark_jvm"}]), "host"),
+    "a cleanup that was not confirmed": ("blocks.jsonl", lambda bs: first(bs, config="W")["settle"].update(
+        confirmed_clean=False), "host"),
+    "a block without a settle record": ("blocks.jsonl", lambda bs: first(bs, config="R").pop("settle"), "host"),
+    "a count kept without a settle (before 20261026)": ("blocks.jsonl", lambda bs: (
+        first(bs, config="N").pop("settle"), first(bs, config="N").update(stragglers=1)), "host"),
+    "an aborted batch": ("batch.json", lambda m: _set(m, aborted="b03-W50: could not be confirmed ended"), "host"),
+    "another project's container between blocks": ("containers.jsonl", lambda es: es.append(
+        {"action": "start", "ours": False, "time": 2, "mono": 95.0}), "host"),
     "a serve process that failed": ("blocks.jsonl", lambda bs: _set(first(bs, config="R"), serve={"exit": 1}), "host"),
     "a container monitor that failed": ("batch.json", lambda m: _set(m, container_monitor_error="OSError: docker"), "host"),
     "Redis over its limit": ("blocks.jsonl", lambda bs: _set(first(bs, config="W"), redis_peak={"peak_bytes": 200 * 2**20}),

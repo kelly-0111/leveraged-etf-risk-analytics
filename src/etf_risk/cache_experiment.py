@@ -34,6 +34,12 @@ events counted, including any between readings), the number of other running con
 block boundary, and a sampler (every --pressure-interval s) of macOS's memory-pressure level,
 swap activity and `pmset -g therm` warnings.
 
+The settle. After a block's last process exits, and after its requests are timed, settle() waits
+up to settle_grace seconds (15) for every process carrying the block's marker to exit, and
+records each one's identity and when it disappeared. A survivor fails the block; it is ended
+only when its ownership is verified (same marker, same creation time), and the batch stops
+(batch.json "aborted") when that cannot be confirmed.
+
 AI contribution: written with Claude Code (Opus 5.5). Tested with tests/test_cache_experiment.py.
 """
 from __future__ import annotations
@@ -60,7 +66,7 @@ SUBSETS = [list(c) for n in range(1, len(summary.TICKERS) + 1)
            for c in itertools.combinations(sorted(summary.TICKERS), n)]          # 31 non-empty subsets
 KEY_SPACE = [(q, tuple(s)) for q in QUERIES for s in SUBSETS]                    # 93 requests
 COMPOSE = ["docker", "compose", "-f", str(runs.REPO_ROOT / "docker" / "compose.yaml")]
-PURPOSES = ("formal", "dry-run", "sizing")
+PURPOSES = ("formal", "dry-run", "sizing", "functional")   # functional: checks the tooling only
 
 
 @dataclass(frozen=True)
@@ -74,6 +80,7 @@ class Settings:
     warmups: int = 12                 # unmeasured requests at the start of each warm process
     cooldown_wait: float = 5.5        # s after Redis is ready again: past the breaker's 5 s
     lead_in: bool = True              # one unmeasured W-like block before round 0 (Part A, section 4)
+    settle_grace: float = 15.0        # s a block's marked processes may take to exit (as M2's memory check)
     sample_interval: float = 0.5      # the process-tree sampler
     pressure_interval: float = 1.0    # the host sampler
 
@@ -340,10 +347,12 @@ class ServeProcess:
     def close(self) -> dict:
         self.proc.stdin.close()
         self.proc.wait(timeout=120)
+        exited = time.monotonic()
         self.sampler.stop()
         self.sampler.join(timeout=10)
-        return {"exit": self.proc.returncode, "peak_total_bytes": self.sampler.peak_total,
-                "peak_by_kind": self.sampler.peak_by_kind, "samples": self.sampler.samples}
+        return {"exit": self.proc.returncode, "pid": self.proc.pid, "exited_mono": exited,
+                "peak_total_bytes": self.sampler.peak_total, "peak_by_kind": self.sampler.peak_by_kind,
+                "samples": self.sampler.samples}
 
 
 @dataclass
@@ -419,15 +428,20 @@ def run_block(batch: Batch, block: dict) -> dict:
                 info["serve"] = serve.close()
     finally:
         stderr.close()
+    last = info["processes"][-1] if block["config"] == "N" else info["serve"]
+    info["settle"] = settle(marker, exited_mono=last["exited_mono"], root_pid=last["pid"],
+                            grace=batch.settings.settle_grace)            # after timing: no request is affected
     after = {"host": host_state(), "other_containers": other_containers(), "mono": time.monotonic()}
     info["redis_peak"] = asdict(memory_peak("redis"))
     info["redis_used_memory_peak"] = batch.client.info("memory").get("used_memory_peak")
-    info["stragglers"] = _stragglers(marker)
     info.update(before=before, after=after, seconds=after["mono"] - before["mono"],
                 host_window=batch.host.window(before["mono"], after["mono"]),
                 other_container_events=batch.containers.count(before["mono"], after["mono"], ours=False),
                 own_container_events=batch.containers.count(before["mono"], after["mono"], ours=True))
     batch.record("blocks.jsonl", info)
+    if not info["settle"]["confirmed_clean"]:
+        raise CleanupFailed(f"{block['id']}: a surviving marked process could not be confirmed ended; "
+                            f"see its settle record")
     return info
 
 
@@ -443,7 +457,8 @@ def _one_shot(batch: Batch, block: dict, i: int, req: dict, env: dict, stderr) -
     sampler = TreeSampler(proc.pid, interval=batch.settings.sample_interval)
     sampler.start()
     out, _ = proc.communicate(timeout=600)
-    elapsed = time.monotonic() - start
+    exited = time.monotonic()
+    elapsed = exited - start
     sampler.stop()
     sampler.join(timeout=10)
     try:
@@ -451,7 +466,7 @@ def _one_shot(batch: Batch, block: dict, i: int, req: dict, env: dict, stderr) -
     except json.JSONDecodeError:
         answer = {"status": "error", "error": f"exit {proc.returncode}, no JSON answer"}
     batch.record("requests.jsonl", _row(block, i, None, req, answer, elapsed, warmup=False))
-    return {"exit": proc.returncode, "peak_total_bytes": sampler.peak_total}
+    return {"exit": proc.returncode, "pid": proc.pid, "exited_mono": exited, "peak_total_bytes": sampler.peak_total}
 
 
 def _run_f(batch: Batch, block: dict, serve: ServeProcess, info: dict) -> None:
@@ -474,10 +489,77 @@ def _run_f(batch: Batch, block: dict, serve: ServeProcess, info: dict) -> None:
             batch.record("requests.jsonl", _row(block, i, phase, req, answer, s, warmup=False))
 
 
-def _stragglers(marker: str) -> int:
-    """Marked processes still alive after the block (a full scan, after timing has ended)."""
-    from etf_risk.jobs.processes import alive, marked_processes
-    return len(alive(marked_processes().get(marker, [])))
+class CleanupFailed(RuntimeError):
+    """A marked process outlived its block and could not be confirmed ended: the batch stops."""
+
+
+def _identity(process: Any, root_pid: int) -> dict | None:
+    from etf_risk.measure import process_kind
+    try:
+        return {"pid": process.pid, "name": process.name(), "kind": process_kind(process, root_pid),
+                "create_time": process.create_time()}
+    except Exception:                           # gone, or unreadable, between the scan and now
+        return None
+
+
+def settle(marker: str, *, exited_mono: float, root_pid: int, grace: float = 15.0, poll: float = 0.25,
+           scan: Callable[[], list] | None = None, owned: Callable[[Any, float], bool] | None = None,
+           end: Callable[[list, Callable[[], list]], dict] | None = None,
+           clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> dict:
+    """Wait, after a block's last process has exited, until no process carries the block's marker,
+    for at most `grace` seconds, polling every `poll`. Every process seen is recorded: pid, name,
+    kind, creation time, and when it was first and last seen and found gone, in seconds after the
+    exit. A process still alive after the grace is a survivor and fails the block (collector).
+    Survivors are then ended (TERM, then KILL), but only those whose ownership is verified: they
+    still carry the marker and have the creation time first seen, so a reused pid is never
+    signalled. confirmed_clean is False when a survivor could not be verified or remains."""
+    from etf_risk.jobs.processes import alive, marked_processes, marker_of, terminate
+    scan = scan or (lambda: alive(marked_processes().get(marker, [])))
+    owned = owned or (lambda p, created: marker_of(p) == marker and p.create_time() == created)
+    end = end or (lambda procs, rescan: terminate(procs, term_grace=5.0, kill_confirm=5.0, rescan=rescan))
+    start, seen, live = clock(), {}, []
+    settled_after = None
+    while True:
+        now, live = clock(), scan()
+        current = set()
+        for process in live:
+            ident = _identity(process, root_pid)
+            if ident is None:
+                continue
+            key = (ident["pid"], ident["create_time"])
+            current.add(key)
+            entry = seen.setdefault(key, {**ident, "first_seen_s": now - exited_mono, "gone_by_s": None})
+            entry["last_seen_s"] = now - exited_mono
+        for key, entry in seen.items():
+            if key not in current and entry["gone_by_s"] is None:
+                entry["gone_by_s"] = now - exited_mono
+        if not current:
+            settled_after = now - exited_mono
+            break
+        if now - start >= grace:
+            break
+        sleep(poll)
+    record = {"grace_s": grace, "poll_s": poll, "scan_started_s": start - exited_mono,
+              "settled_after_s": settled_after, "seen": list(seen.values()), "survivors": [],
+              "unverified": [], "cleanup": None, "confirmed_clean": True}
+    if settled_after is None:
+        verified, unverified = [], []
+        for process in live:
+            ident = _identity(process, root_pid)
+            if ident is None:
+                continue
+            try:
+                ok = owned(process, ident["create_time"])
+            except Exception:
+                ok = False
+            (verified if ok else unverified).append((process, ident))
+        record["survivors"] = [ident for _, ident in verified + unverified]
+        record["unverified"] = [ident for _, ident in unverified]
+        rescan = lambda: [p for p in scan() if (i := _identity(p, root_pid)) is not None and owned(p, i["create_time"])]
+        record["cleanup"] = end([p for p, _ in verified], rescan) if verified else {"terminated": [], "killed": [],
+                                                                                    "remaining": []}
+        record["confirmed_clean"] = not unverified and not record["cleanup"]["remaining"]
+    return record
 
 
 def reference_answers(batch: Batch, requests: list[dict]) -> dict:
@@ -529,6 +611,7 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
                   host=HostSampler(settings.pressure_interval))
     batch.containers.start()
     batch.host.start()
+    status = 0
     started = {"started_at_utc": datetime.now(timezone.utc).isoformat(), "code": code, "formal": formal,
                "python": sys.version.split()[0], "redis_info": {k: client.info("server").get(k) for k in ("redis_version",)},
                "other_containers_at_start": other_containers(), "keys_deleted_at_start": delete_keys(client, plan["keys"])}
@@ -537,6 +620,9 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
         (folder / "reference.json").write_text(json.dumps(reference, indent=1) + "\n")
         for block in plan["blocks"]:
             run_block(batch, block)
+    except CleanupFailed as error:
+        started["aborted"] = str(error)
+        status = 1
     finally:
         batch.host.stop()
         batch.containers.stop()
@@ -546,7 +632,7 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
         (folder / "containers.jsonl").write_text("".join(json.dumps(e) + "\n" for e in batch.containers.events))
         (folder / "batch.json").write_text(json.dumps(started, indent=2, default=str) + "\n")
         client.close()
-    return 0
+    return status
 
 
 def all_keys(*, digest: str, engine: str) -> set[str]:
