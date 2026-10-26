@@ -17,10 +17,13 @@ Configurations (Part A, section 2):
 - N: one new process per request (`summary --no-cache query`): process start, imports, a full
   hash of the run folder, a new SparkSession and the query;
 - W: one warm process per block (`summary --no-cache serve`); a full hash on its first request,
-  the warm stat check after that;
+  the warm stat check after that. Each W block is the control of one R block: the same request
+  sequence and the same warm-ups, without the cache;
 - R: like W with Redis (`summary serve`); a block's hit rate is set by repeats, its keys deleted
-  before its measured requests;
-- F: like R; Redis is stopped after the first phase and started again before the third.
+  before its warm-ups and again before its measured requests;
+- F: like R; Redis is stopped after the first phase and started again before the third;
+- L: the lead-in, a no-cache warm process before round 0, recorded and excluded from the
+  comparisons.
 
 Keys. The driver deletes only the experiment's keys, by name (DEL), never FLUSHDB or a pattern.
 F's restart empties Redis (persistence off), so a batch refuses to start while Redis holds any
@@ -70,6 +73,7 @@ class Settings:
     f_phase: int = 6                  # F requests per phase: up, down, after the restart
     warmups: int = 12                 # unmeasured requests at the start of each warm process
     cooldown_wait: float = 5.5        # s after Redis is ready again: past the breaker's 5 s
+    lead_in: bool = True              # one unmeasured W-like block before round 0 (Part A, section 4)
     sample_interval: float = 0.5      # the process-tree sampler
     pressure_interval: float = 1.0    # the host sampler
 
@@ -121,38 +125,62 @@ def warmup_requests(rng: random.Random, n: int) -> list[dict]:
     return [request(q, s) for q in QUERIES for s in [full] + rng.sample(rest, per - 1)]
 
 
+def block_label(block: dict) -> str:
+    """W0, R0, W50, R50, W90, R90, N or F: a W control is named after the R block it pairs with."""
+    pair = block.get("pair")
+    return block["config"] + (f"{int(round(pair * 100))}" if pair is not None else "")
+
+
+def forward_order(settings: Settings) -> list[str]:
+    """One round's blocks in the forward order: each hit rate's pair (its W control, then its R
+    block), then N, then F."""
+    return [f"{c}{int(round(h * 100))}" for h in settings.hit_rates for c in ("W", "R")] + ["N", "F"]
+
+
 def plan_blocks(seed: int, settings: Settings) -> list[dict]:
-    """Every block in its order. Each round holds W, R at each hit rate, N and F; odd rounds run
-    them in the reverse order (ABBA), so drift does not fall on one configuration. W in every
-    round is the contemporaneous control: its requests are the round's R0 requests, so W and R0
-    run the same queries, and N runs the first n_size of them."""
+    """Every block in its order. Each round draws one request sequence per hit rate and runs it
+    twice, as a pair: once without the cache (the W control) and once with it (R), the two
+    identical request for request, warm-ups included. N runs the first n_size // 3 requests of
+    each query in the 0% sequence; F has its own 3 requests.
+
+    With settings.lead_in, an unmeasured lead-in block L (a no-cache warm process with a 0%
+    sequence of its own) runs first, as round -1: it takes the paging the host does at a batch's
+    start, which otherwise falls on the first pair.
+
+    Order: even-numbered rounds (0, 2, 4) run forward_order(); odd-numbered rounds (1, 3, 5) run
+    its exact reverse. Every block's position is therefore mirrored between consecutive rounds,
+    and within each pair the W control runs first in the forward rounds and second in the
+    reverse ones."""
+    if 0.0 not in settings.hit_rates:
+        raise ValueError("N draws its requests from the 0% sequence")
     rng = random.Random(seed)
     blocks = []
+    if settings.lead_in:
+        blocks.append({"config": "L", "round": -1, "requests": hit_rate_requests(rng, settings.block_size, 0.0),
+                       "warmups": warmup_requests(rng, settings.warmups)})
     for k in range(settings.rounds):
-        r_blocks = []
+        units = []
         for h in settings.hit_rates:
-            r_blocks.append({"config": "R", "hit_rate": h,
-                             "requests": hit_rate_requests(rng, settings.block_size, h)})
-        cold = next(b for b in r_blocks if b["hit_rate"] == 0.0)["requests"]
-        n_requests: list[dict] = []
+            sequence = hit_rate_requests(rng, settings.block_size, h)
+            warmups = warmup_requests(rng, settings.warmups)
+            units.append({"config": "W", "pair": h, "requests": list(sequence), "warmups": list(warmups)})
+            units.append({"config": "R", "pair": h, "hit_rate": h, "requests": list(sequence), "warmups": list(warmups)})
+            if h == 0.0:
+                cold = sequence
         per_query = settings.n_size // len(QUERIES)
-        for q in QUERIES:
-            n_requests += [r for r in cold if r["query"] == q][:per_query]
+        n_requests = [r for q in QUERIES for r in [x for x in cold if x["query"] == q][:per_query]]
         f_keys = [request(q, s) for q, s in balanced_keys(rng, len(QUERIES))]
         phase = [f_keys[i % len(f_keys)] for i in range(settings.f_phase)]
-        round_blocks = ([{"config": "W", "requests": list(cold)}] + r_blocks
-                        + [{"config": "N", "requests": n_requests},
-                           {"config": "F", "phases": [phase, phase, phase]}])
+        units.append({"config": "N", "requests": n_requests, "warmups": []})
+        units.append({"config": "F", "phases": [phase, phase, phase], "requests": phase * 3,
+                      "warmups": warmup_requests(rng, settings.warmups)})
         if k % 2:
-            round_blocks.reverse()
-        for b in round_blocks:
+            units.reverse()
+        for b in units:
             b["round"] = k
-            b["warmups"] = warmup_requests(rng, settings.warmups) if b["config"] in ("W", "R", "F") else []
-            if b["config"] == "F":
-                b["requests"] = [r for p in b["phases"] for r in p]
-        blocks += round_blocks
+        blocks += units
     for i, b in enumerate(blocks):
-        b["id"] = f"b{i:02d}-{b['config']}" + (f"{int(b['hit_rate'] * 100)}" if b["config"] == "R" else "")
+        b["id"] = f"b{i:02d}-{block_label(b)}"
     return blocks
 
 
@@ -343,7 +371,7 @@ class Batch:
 
 def _row(block: dict, i: int, phase: int | None, req: dict, answer: dict, client_s: float, warmup: bool) -> dict:
     return {"block": block["id"], "config": block["config"], "round": block["round"],
-            "hit_rate": block.get("hit_rate"), "index": i, "phase": phase, "warmup": warmup,
+            "hit_rate": block.get("hit_rate"), "pair": block.get("pair"), "index": i, "phase": phase, "warmup": warmup,
             "query": req["query"], "tickers": req["tickers"], "status": answer.get("status"),
             "source": answer.get("source"), "client_seconds": client_s, "server_seconds": answer.get("seconds"),
             "full_hashes": answer.get("full_hashes"), "counters": answer.get("counters"),
@@ -361,7 +389,7 @@ def run_block(batch: Batch, block: dict) -> dict:
     env = {**os.environ, MARKER_ENV: marker}
     env.pop("VIRTUAL_ENV", None)
     info: dict = {"block": block["id"], "config": block["config"], "round": block["round"],
-                  "hit_rate": block.get("hit_rate"), "marker": marker}
+                  "hit_rate": block.get("hit_rate"), "pair": block.get("pair"), "marker": marker}
     stderr = (batch.folder / "logs" / f"{block['id']}.log").open("w")
     try:
         if block["config"] == "N":
@@ -369,7 +397,7 @@ def run_block(batch: Batch, block: dict) -> dict:
             for i, req in enumerate(block["requests"]):
                 info["processes"].append(_one_shot(batch, block, i, req, env, stderr))
         else:
-            serve = ServeProcess(batch.summary_argv(*(["--no-cache"] if block["config"] == "W" else []), "serve"),
+            serve = ServeProcess(batch.summary_argv(*(["--no-cache"] if block["config"] in ("W", "L") else []), "serve"),
                                  env, stderr, batch.settings.sample_interval)
             try:
                 keys = sorted({ours[_rk(r)] for r in block["requests"] + block["warmups"]})
@@ -588,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, value in asdict(Settings()).items():
         if name == "hit_rates":
             p.add_argument("--hit-rates", type=float, nargs="+", default=list(value))
+        elif isinstance(value, bool):
+            p.add_argument(f"--{name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=value)
         else:
             p.add_argument(f"--{name.replace('_', '-')}", type=type(value), default=value)
     r = commands.add_parser("run", help="run a planned batch")

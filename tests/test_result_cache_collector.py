@@ -39,7 +39,7 @@ def build(folder: Path) -> Path:
     for b in blocks:
         def row(i, r, source, warmup, phase=None, counters=None):
             return {"block": b["id"], "config": b["config"], "round": b["round"], "hit_rate": b.get("hit_rate"),
-                    "index": i, "phase": phase, "warmup": warmup, "query": r["query"], "tickers": r["tickers"],
+                    "pair": b.get("pair"), "index": i, "phase": phase, "warmup": warmup, "query": r["query"], "tickers": r["tickers"],
                     "status": "ok", "source": source, "client_seconds": 0.2 if source == "spark" else 0.01,
                     "server_seconds": {"resolve": 0.007, "total": 0.19}, "full_hashes": 1, "counters": counters,
                     "reason": None, "result": answer_for(r)}
@@ -91,6 +91,10 @@ def test_a_batch_that_follows_its_plan_is_valid(tmp_path):
     code, validity = run(build(tmp_path / "batch"))
     assert code == 0 and validity["valid"] and not any(validity["problems"].values())
     assert (tmp_path / "batch" / "summary.csv").read_text().startswith("group,query,n,")
+    pairs = (tmp_path / "batch" / "paired.csv").read_text().splitlines()
+    assert len(pairs) - 1 == 2 * (30 * 3 + 6)        # every R request and every N request, both rounds
+    summary = (tmp_path / "batch" / "paired_summary.csv").read_text()
+    assert ",block," not in summary.splitlines()[0] and "block,R,0.9,all,all,1," in summary
 
 
 def _set(item, **values):
@@ -126,6 +130,8 @@ PLANTS = {
                                                              host_window={**GOOD_WINDOW, "swap_out_bytes": 2**30}), "host"),
     "W or R swapping in": ("blocks.jsonl", lambda bs: _set(first(bs, config="R"),
                                                            host_window={**GOOD_WINDOW, "swap_in_bytes": 2**30}), "host"),
+    "a W control that ran other requests": ("requests.jsonl", lambda rs: _set(
+        first(rs, config="W", pair=0.5, warmup=False), tickers=["NOT-PLANNED"]), "pairs"),
     "a straggler": ("blocks.jsonl", lambda bs: _set(first(bs, config="F"), stragglers=1), "host"),
     "a serve process that failed": ("blocks.jsonl", lambda bs: _set(first(bs, config="R"), serve={"exit": 1}), "host"),
     "a container monitor that failed": ("batch.json", lambda m: _set(m, container_monitor_error="OSError: docker"), "host"),

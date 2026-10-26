@@ -61,22 +61,41 @@ def test_the_plan_is_deterministic_by_seed():
     assert e3.plan_blocks(5, SMALL) != e3.plan_blocks(6, SMALL)
 
 
-def test_each_round_runs_every_configuration_and_odd_rounds_run_them_in_reverse():
+def test_even_rounds_run_the_forward_order_and_odd_rounds_its_exact_reverse():
+    blocks = e3.plan_blocks(1, e3.Settings())
+    forward = ["W0", "R0", "W50", "R50", "W90", "R90", "N", "F"]
+    assert e3.forward_order(e3.Settings()) == forward
+    for k in range(6):
+        labels = [e3.block_label(b) for b in blocks if b["round"] == k]
+        assert labels == (forward if k % 2 == 0 else forward[::-1])
+    assert len(blocks) == 49 and len({b["id"] for b in blocks}) == 49
+    assert blocks[0]["config"] == "L" and blocks[0]["round"] == -1 and blocks[0]["id"] == "b00-L"
+    assert e3.designed_sources(blocks[0]["requests"]) == ["spark"] * 30 and len(blocks[0]["warmups"]) == 12
+
+
+def test_the_lead_in_can_be_left_out():
+    blocks = e3.plan_blocks(1, e3.Settings(lead_in=False))
+    assert len(blocks) == 48 and blocks[0]["config"] == "W"
+
+
+def test_each_r_block_has_a_w_control_with_the_identical_requests_and_warmups():
     blocks = e3.plan_blocks(1, SMALL)
-    orders = [[b["config"] + (str(int(b["hit_rate"] * 100)) if b["config"] == "R" else "") for b in blocks
-               if b["round"] == k] for k in (0, 1)]
-    assert orders[0] == ["W", "R0", "R50", "R90", "N", "F"] and orders[1] == orders[0][::-1]
-    assert len({b["id"] for b in blocks}) == len(blocks)
+    for r in [b for b in blocks if b["config"] == "R"]:
+        (w,) = [b for b in blocks if b["config"] == "W" and b["round"] == r["round"] and b["pair"] == r["pair"]]
+        assert w["requests"] == r["requests"] and w["warmups"] == r["warmups"] and "hit_rate" not in w
 
 
-def test_w_runs_the_rounds_r0_requests_and_n_the_first_of_them_for_each_query():
+def test_n_runs_the_first_requests_of_each_query_in_the_zero_percent_sequence():
     blocks = e3.plan_blocks(1, SMALL)
     for k in (0, 1):
-        w = next(b for b in blocks if b["round"] == k and b["config"] == "W")
         r0 = next(b for b in blocks if b["round"] == k and b.get("hit_rate") == 0.0)
         n = next(b for b in blocks if b["round"] == k and b["config"] == "N")
-        assert w["requests"] == r0["requests"]
-        assert set(per_query(n["requests"]).values()) == {2} and all(r in r0["requests"] for r in n["requests"])
+        assert n["requests"] == [r for q in e3.QUERIES for r in [x for x in r0["requests"] if x["query"] == q][:2]]
+
+
+def test_a_plan_without_the_zero_rate_is_refused():
+    with pytest.raises(ValueError):
+        e3.plan_blocks(1, e3.Settings(hit_rates=(0.5, 0.9)))
 
 
 def test_f_has_three_equal_phases_over_one_key_per_query():
@@ -208,3 +227,12 @@ def test_the_preflight_names_what_blocks_a_batch(change, problem):
 
 def test_a_dirty_worktree_only_blocks_a_formal_batch():
     assert e3.preflight_problems(**{**READY, "formal": False, "clean": False}) == []
+
+
+def test_the_plan_command_turns_the_lead_in_off_only_when_asked(tmp_path, monkeypatch):
+    plans = {}
+    monkeypatch.setattr(e3, "make_plan", lambda seed, settings: plans.setdefault("s", settings) and {"blocks": [], "keys": []})
+    e3.main(["plan", "--seed", "1", "--out", str(tmp_path / "dry-run" / "a")])
+    assert plans.pop("s").lead_in is True
+    e3.main(["plan", "--seed", "1", "--no-lead-in", "--out", str(tmp_path / "dry-run" / "b")])
+    assert plans.pop("s").lead_in is False

@@ -3,8 +3,11 @@ rules, then summarize the latencies by configuration.
 
     uv run --group cache --group jobs python analysis/collect_result_cache_measurements.py <batch>
 
-Writes measurements.csv (one row per measured request), summary.csv (by configuration and query,
-and per round) and validity.json (every check with its outcome) into the batch folder. Prints the
+Writes measurements.csv (one row per measured request), summary.csv (by configuration and query),
+paired.csv (each R request beside the identical request of its W control, and each N request
+beside the same request in its round's W0), paired_summary.csv (the paired differences and ratios
+by hit rate, hit or miss and query, and each R block's total against its control's) and
+validity.json (every check with its outcome) into the batch folder. Prints the
 verdict and exits 0 only when every check holds; 1 otherwise.
 
 Checks (Part A, section 6):
@@ -13,6 +16,8 @@ Checks (Part A, section 6):
 - sources: each answer came from where the design says (W and N from Spark; R and F as
   designed_sources gives, F's second phase from Spark); every warm-up from Spark (an empty
   cache); R's realized hit rate equals its design;
+- pairs: each R block and its W control ran the same requests in the same order, warm-ups
+  included, so what differs between them is the cache alone;
 - breaker: in F, the first `threshold` requests with Redis stopped count GET errors and the rest
   are skipped; after the restart the first request misses;
 - answers: every answer equals the no-cache reference answer, value types included;
@@ -22,8 +27,10 @@ Checks (Part A, section 6):
   pressure never critical (4); no thermal or performance warning; swap-out traffic within its
   limit, and for W and R swap-in traffic too (N's new JVMs and F's restarts page by design); no marked process left after the block; the serve process exited 0;
 - Redis: its peak within the container's limit;
-- drift: for each query, W's median client latency in the last round within the drift limit of
-  the first round's.
+- the lead-in block L is checked for completeness, statuses, sources and answers only; its host
+  readings are reported, not gated, and it is left out of every comparison;
+- drift: for each query, the median client latency of the W controls (all three, pooled) in the
+  last round within the drift limit of the first round's.
 
 AI contribution: written with Claude Code (Opus 5.5). Tested with tests/test_result_cache_collector.py.
 """
@@ -57,7 +64,7 @@ def typed(v):
 
 def designed(block: dict) -> list[tuple[int | None, str]]:
     """(phase, source) for each measured request, in order."""
-    if block["config"] in ("W", "N"):
+    if block["config"] in ("W", "N", "L"):
         return [(None, "spark")] * len(block["requests"])
     if block["config"] == "R":
         return [(None, s) for s in designed_sources(block["requests"])]
@@ -73,7 +80,7 @@ def check(batch: Path, *, swap_out_limit: int, swap_in_limit: int, drift_limit: 
     reference = json.loads((batch / "reference.json").read_text()) if (batch / "reference.json").is_file() else {}
     meta = json.loads((batch / "batch.json").read_text()) if (batch / "batch.json").is_file() else {}
     problems: dict[str, list[str]] = {name: [] for name in (
-        "complete", "statuses", "sources", "breaker", "answers", "keys", "host", "redis", "drift")}
+        "complete", "statuses", "sources", "pairs", "breaker", "answers", "keys", "host", "redis", "drift")}
 
     for block in plan["blocks"]:
         bid, mine = block["id"], [r for r in rows if r["block"] == block["id"]]
@@ -104,14 +111,96 @@ def check(batch: Path, *, swap_out_limit: int, swap_in_limit: int, drift_limit: 
         info = blocks[bid]
         if block["config"] in ("R", "F") and info.get("keys_present_after_delete"):
             problems["keys"].append(f"{bid}: {info['keys_present_after_delete']} of its keys in Redis at its start")
-        problems["host"] += check_host(bid, info, swap_out_limit, swap_in_limit if block["config"] in ("W", "R") else None)
+        if block["config"] != "L":                 # the lead-in's host readings are reported, not gated
+            problems["host"] += check_host(bid, info, swap_out_limit,
+                                           swap_in_limit if block["config"] in ("W", "R") else None)
         peak = (info.get("redis_peak_before_stop") or info.get("redis_peak") or {}).get("peak_bytes")
         if peak is not None and peak > REDIS_LIMIT:
             problems["redis"].append(f"{bid}: Redis memory.peak {peak / 2**20:.0f} MiB over 128 MiB")
+    problems["pairs"] = check_pairs(plan, rows)
     if meta.get("container_monitor_error"):
         problems["host"].append(f"the container monitor failed: {meta['container_monitor_error']}")
     problems["drift"] = check_drift(plan, rows, drift_limit)
     return problems, rows
+
+
+def sequence(rows: list[dict], block_id: str) -> list[tuple[str, tuple[str, ...]]]:
+    return [(r["query"], tuple(r["tickers"])) for r in rows if r["block"] == block_id and not r["warmup"]]
+
+
+def partner(plan: dict, block: dict) -> dict | None:
+    """The W control of an R block: the same round and pair."""
+    return next((b for b in plan["blocks"] if b["config"] == "W" and b["round"] == block["round"]
+                 and b.get("pair") == block.get("pair")), None)
+
+
+def check_pairs(plan: dict, rows: list[dict]) -> list[str]:
+    """Each R block and its W control ran the same requests in the same order, warm-ups
+    included: what differs between them is the cache alone."""
+    out = []
+    for b in plan["blocks"]:
+        if b["config"] != "R":
+            continue
+        w = partner(plan, b)
+        if w is None:
+            out.append(f"{b['id']}: no W control")
+        elif w["requests"] != b["requests"] or w["warmups"] != b["warmups"]:
+            out.append(f"{b['id']}: its W control {w['id']} was planned with other requests")
+        elif sequence(rows, w["id"]) != sequence(rows, b["id"]):
+            out.append(f"{b['id']}: its W control {w['id']} ran other requests")
+    return out
+
+
+def paired(plan: dict, rows: list[dict]) -> list[dict]:
+    """One row per pair: an R request and the identical request at the same position of its W
+    control, or an N request and the same request's first run in its round's W0."""
+    out = []
+    measured = [r for r in rows if not r["warmup"] and r["status"] == "ok"]
+    for b in plan["blocks"]:
+        if b["config"] not in ("R", "N"):
+            continue
+        w = partner(plan, b) if b["config"] == "R" else next(
+            (x for x in plan["blocks"] if x["config"] == "W" and x["round"] == b["round"] and x.get("pair") == 0.0), None)
+        if w is None:
+            continue
+        ws = [r for r in measured if r["block"] == w["id"]]
+        for r in [x for x in measured if x["block"] == b["id"]]:
+            if b["config"] == "R":
+                c = next((x for x in ws if x["index"] == r["index"]), None)
+                kind = "hit" if r["source"] == "cache" else "miss"
+            else:
+                c = next((x for x in ws if (x["query"], x["tickers"]) == (r["query"], r["tickers"])), None)
+                kind = "new process"
+            if c is None or (c["query"], c["tickers"]) != (r["query"], r["tickers"]):
+                continue
+            out.append({"round": b["round"], "pair": b.get("pair"), "config": b["config"], "kind": kind,
+                        "index": r["index"], "query": r["query"], "tickers": " ".join(r["tickers"]),
+                        "seconds": r["client_seconds"], "w_seconds": c["client_seconds"],
+                        "difference_s": r["client_seconds"] - c["client_seconds"],
+                        "ratio": r["client_seconds"] / c["client_seconds"]})
+    return out
+
+
+def paired_summary(pairs: list[dict]) -> list[dict]:
+    """By configuration, hit rate, kind and query: the medians of the paired differences and
+    ratios; then, per R block and round, the block's total against its W control's."""
+    out = []
+    keys = sorted({(p["config"], p["pair"] if p["pair"] is not None else -1, p["kind"], p["query"]) for p in pairs})
+    for config, pair, kind, query in keys:
+        g = [p for p in pairs if (p["config"], p["pair"] if p["pair"] is not None else -1, p["kind"], p["query"])
+             == (config, pair, kind, query)]
+        out.append({"scope": "requests", "config": config, "pair": None if pair == -1 else pair, "kind": kind,
+                    "query": query, "round": None, "n": len(g),
+                    "median_difference_s": statistics.median(p["difference_s"] for p in g),
+                    "median_ratio": statistics.median(p["ratio"] for p in g),
+                    "min_ratio": min(p["ratio"] for p in g), "max_ratio": max(p["ratio"] for p in g)})
+    for (round_, pair) in sorted({(p["round"], p["pair"]) for p in pairs if p["config"] == "R"}):
+        g = [p for p in pairs if p["config"] == "R" and p["round"] == round_ and p["pair"] == pair]
+        total, control = sum(p["seconds"] for p in g), sum(p["w_seconds"] for p in g)
+        out.append({"scope": "block", "config": "R", "pair": pair, "kind": "all", "query": "all", "round": round_,
+                    "n": len(g), "median_difference_s": total - control, "median_ratio": total / control,
+                    "min_ratio": None, "max_ratio": None})
+    return out
 
 
 def check_breaker(bid: str, measured: list[dict]) -> list[str]:
@@ -170,7 +259,7 @@ def w_medians(plan: dict, rows: list[dict], round_: int) -> dict[str, float]:
 
 
 def check_drift(plan: dict, rows: list[dict], limit: float) -> list[str]:
-    rounds = sorted({b["round"] for b in plan["blocks"]})
+    rounds = sorted({b["round"] for b in plan["blocks"] if b["config"] == "W"})
     first, last = w_medians(plan, rows, rounds[0]), w_medians(plan, rows, rounds[-1])
     out = []
     for q in QUERIES:
@@ -181,6 +270,8 @@ def check_drift(plan: dict, rows: list[dict], limit: float) -> list[str]:
 
 
 def label(r: dict) -> str:
+    if r["config"] == "W":
+        return f"W{int(round(r['pair'] * 100))}"
     if r["config"] == "R":
         return f"R{int(r['hit_rate'] * 100)}-{'hit' if r['source'] == 'cache' else 'miss'}"
     if r["config"] == "F":
@@ -189,7 +280,7 @@ def label(r: dict) -> str:
 
 
 def summarize(rows: list[dict]) -> list[dict]:
-    measured = [r for r in rows if not r["warmup"] and r["status"] == "ok"]
+    measured = [r for r in rows if not r["warmup"] and r["status"] == "ok" and r["config"] != "L"]
     out = []
     for key in sorted({(label(r), r["query"]) for r in measured}):
         group = [r for r in measured if (label(r), r["query"]) == key]
@@ -225,6 +316,10 @@ def main(argv: list[str] | None = None) -> int:
               [{k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in r.items() if k != "result"}
                for r in rows if not r["warmup"]])
     write_csv(args.batch / "summary.csv", summarize(rows))
+    plan = json.loads((args.batch / "plan.json").read_text())
+    pairs = paired(plan, rows)
+    write_csv(args.batch / "paired.csv", pairs)
+    write_csv(args.batch / "paired_summary.csv", paired_summary(pairs))
     valid = not any(problems.values())
     (args.batch / "validity.json").write_text(json.dumps({"valid": valid, "problems": problems}, indent=2) + "\n")
     for name, found in problems.items():

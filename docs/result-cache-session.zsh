@@ -31,6 +31,7 @@ E3 session ($E3_PURPOSE), batch: $E3_DIR
   3. e3_plan         write the plan (seed $E3_SEED)
   4. e3_run          run it, the Mac kept awake (caffeinate -i); no other work until it ends
   5. e3_collect      check validity and summarize; exits 1 unless valid
+     (e3_run and e3_collect append everything they print to \$E3_DIR/session.log)
   6. e3_cleanup      stop and remove the redis service only
 EOF
 }
@@ -54,17 +55,19 @@ e3_plan() {
 
 e3_run() {
   [[ -f $E3_DIR/plan.json ]] || { echo "no plan in $E3_DIR: e3_plan first"; return 2 }
-  e3_preflight || return 1
-  if [[ $E3_PURPOSE == formal ]]; then
-    caffeinate -i $E3_UV python -m etf_risk.cache_experiment run $E3_DIR --formal
-  else
-    caffeinate -i $E3_UV python -m etf_risk.cache_experiment run $E3_DIR
-  fi
+  { e3_preflight && if [[ $E3_PURPOSE == formal ]]; then
+      caffeinate -i $E3_UV python -m etf_risk.cache_experiment run $E3_DIR --formal
+    else
+      caffeinate -i $E3_UV python -m etf_risk.cache_experiment run $E3_DIR
+    fi } 2>&1 | tee -a $E3_DIR/session.log
+  return ${pipestatus[1]}
 }
 
 e3_collect() {
   $E3_UV python analysis/collect_result_cache_measurements.py $E3_DIR \
-    --swap-out-limit-mib $E3_SWAP_OUT_MIB --swap-in-limit-mib $E3_SWAP_IN_MIB --drift-limit $E3_DRIFT
+    --swap-out-limit-mib $E3_SWAP_OUT_MIB --swap-in-limit-mib $E3_SWAP_IN_MIB --drift-limit $E3_DRIFT \
+    2>&1 | tee -a $E3_DIR/session.log
+  return ${pipestatus[1]}
 }
 
 e3_cleanup() {
