@@ -1,14 +1,14 @@
 # The result cache for summary queries (spec §11, M4)
 
-Status: implemented, apart from step 8 (section 5), which the author writes. Nothing here
-measures what the cache saves: that is the experiment E3 (M5), which has not been run.
+Status: implemented. Nothing here measures what the cache saves: that is the experiment E3
+(M5), which has not been run.
 
 Authorship: contributed by both the project author and Claude Code.
 - **Claude Code** proposed the designs and wrote the Redis service and its client, the resolver
   and the registry tool, `summary.py`'s request flow, the scaffold of `cache.py`, the tests, the
   mutation checks and this document, with the derivations in it.
-- **The project author** wrote the cache logic in `cache.py` (steps 1–6) and moved their SQL
-  into `summary.py` (step 7), with tutoring. They made every decision recorded here: the run to
+- **The project author** wrote the cache logic in `cache.py` (steps 1–6 and 8) and moved their
+  SQL into `summary.py` (step 7), with tutoring. They made every decision recorded here: the run to
   register, the ticker-set parameter, each step's rules, the configuration, the policy for
   non-finite results, and the three revisions in sections 3, 4 and 6.
 
@@ -148,10 +148,10 @@ nor any local path.
   skip and is not a Redis failure, so caching never turns a query that would succeed uncached
   into a failure. Without the cache, a response may then hold NaN or infinity, which Python's
   `json` writes as `NaN` and `Infinity`; a cached request answers the same way.
-  - **Status:** `get_or_compute` does not follow this policy yet. Until step 8 is written,
-    `encode`'s `ValueError` escapes and the request fails. Five tests pin the policy as strict
-    xfails expecting that `ValueError` (`tests/test_cache_contract.py`, `tests/test_summary.py`).
-    For the three queries here, Spark gives `null`, not NaN, for an empty median.
+  - `get_or_compute` follows it (the author's step 8): any `ValueError` from `encode` means the
+    result is not stored. Five tests pin the policy (`tests/test_cache_contract.py`,
+    `tests/test_summary.py`). For the three queries here, Spark gives `null`, not NaN, for an
+    empty median.
 
 ## 6. Redis waiting time per request: a conditional calculation
 
@@ -227,15 +227,15 @@ the calculation says nothing.
 ## 7. Checks and dry runs
 
 **Tests and mutations** (2026-10-26; full counts in the milestone report):
-- the contract (`tests/test_cache_contract.py`): 97 passed and 4 strict xfails (step 8);
-- the request flow (`tests/test_summary.py`): 23 passed and 1 strict xfail (step 8);
+- the contract (`tests/test_cache_contract.py`): 101 passed;
+- the request flow (`tests/test_summary.py`): 24 passed;
 - the spec §8 values on `-4` (`tests/test_summary_spark.py`);
 - the client against the locked redis-py (`tests/test_redis_client.py`);
 - the Compose Redis (`tests/test_redis_live.py`, with `ETF_RISK_REDIS_URL`).
 
 24 focused mutations of the resolver, the registry, the request flow, the cache logic and the
-client's settings were all caught, each by its own test file (`tests/mutation_check.py`; run
-`data/outputs-mutations/20261026T083916Z-m4`).
+client's settings were all caught, each by its own test file (`tests/mutation_check.py`; runs
+`data/outputs-mutations/20261026T083916Z-m4`, and `20261026T090443Z-m4-step8` on the final code).
 
 **The client against Redis's states** (2026-10-25, one run of each case, `t_c = t_r` = 0.1 s):
 
@@ -278,7 +278,6 @@ measurements and are not compared here.
 - Detection of content changes that keep every path, size and modification time (section 3).
 - A hard end-to-end bound on a request's latency. Section 6 is a conditional calculation of
   Redis waiting time only, and gives no bound when a reply arrives in many delayed pieces.
-- The non-finite policy, until step 8 is written (section 5).
 - Results for runs other than accepted job runs and registered historical runs.
 - Memory figures for the warm query service. The native processes' memory remains
   unvalidated (spec §11).
