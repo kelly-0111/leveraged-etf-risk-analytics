@@ -68,7 +68,31 @@ def normalize_params(declared: Mapping[str, Param], given: Mapping[str, Any]) ->
     Raise ValueError for an undeclared name, null, a bare string, an empty list, any other
     value that is not a list or tuple, a ticker that is not a string, or one outside
     `allowed`. `given` and its values are never changed, also when refused."""
-    raise NotImplementedError("tutoring step 1")
+    unknown = set(given) - set(declared)
+    if unknown:
+        raise ValueError(f"Unknown parameters: {sorted(unknown)}")
+
+    result = {}
+    for name, param in declared.items():
+        values = given[name] if name in given else param.default
+
+        if not isinstance(values, (list, tuple)) or not values:
+            raise ValueError(f"{name} must be a non-empty list or tuple")
+
+        normalized = []
+        for value in values:
+            if not isinstance(value, str):
+                raise ValueError(f"{name}: invalid value {value!r}")
+
+            ticker = value.upper()
+            if ticker not in param.allowed:
+                raise ValueError(f"{name}: invalid ticker {value!r}")
+
+            normalized.append(ticker)
+
+        result[name] = sorted(set(normalized))
+
+    return result
 
 
 # STEP 2

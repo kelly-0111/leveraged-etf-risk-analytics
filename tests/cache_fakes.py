@@ -11,7 +11,7 @@ import pytest
 # NotImplementedError (a strict xfail limited to that error): a wrong implementation fails with
 # its own error at once, and a right one shows as XPASS, which strict mode fails until the step
 # is listed here.
-WRITTEN: set[int] = set()
+WRITTEN: set[int] = {1}
 
 
 def step(n: int):
