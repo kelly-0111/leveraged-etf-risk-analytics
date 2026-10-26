@@ -58,53 +58,90 @@ process start-up and the full hash.
   the registered run.
 - **Block size.** 30 requests. A hit rate is exact only when 30 × (1 − rate) distinct requests,
   a multiple of 3 so the queries stay balanced, each repeat 30 / distinct times. With 30
-  requests the exact balanced rates are **0, 50, 80 and 90%**. Proposed: **0, 50 and 90%**
-  (blocks R0, R50, R90).
-  - R0: 30 distinct requests, 10 per query; every request misses.
-  - R50: 15 distinct requests, each twice: 15 misses, then 15 hits.
-  - R90: 3 distinct requests, one per query, each 10 times: 3 misses, then 27 hits.
-- **W** runs the round's R0 requests (the same 30), so W and R0 are matched request for request.
-- **N** runs the first 2 of them for each query: 6 requests, each its own process.
+  requests the exact balanced rates are **0, 50, 80 and 90%**. Proposed: **0, 50 and 90%**.
+  - **The 0% sequence:** 30 distinct requests, 10 per query; every request misses.
+  - **The 50% sequence:** 15 distinct requests, each twice: 15 misses, then 15 hits.
+  - **The 90% sequence:** 3 distinct requests, one per query, each 10 times: 3 misses, then 27
+    hits.
+- **Pairs.** Each round draws one sequence per hit rate and runs it twice, in two blocks of
+  their own:
+  - with the cache, the R block (R0, R50, R90);
+  - without it, the R block's **W control** (W0, W50, W90): a `--no-cache` warm process.
+
+  The two blocks of a pair run **the identical request sequence**, in the same order with the
+  same repeats, **and the identical warm-ups**. The only difference between them is the cache.
+- **N** runs the first 2 requests of each query in the round's 0% sequence: 6 requests, each its
+  own process. Each is paired with the same request in that round's W0.
 - **F**: 3 distinct requests (one per query), each twice per phase. The phases are:
   1. Redis up: 3 misses, then 3 hits.
   2. Redis stopped: 3 GET errors open the breaker, then 3 requests skip Redis.
   3. Redis started again, after its PING answers and the breaker's 5 s cooldown has passed
-     (the driver waits 5.5 s): a probe that misses (the restarted Redis is empty), 2 more misses
-     on the other requests, then 3 hits.
+     (the driver waits 5.5 s): a probe that misses (the restarted Redis is empty), 2 more misses,
+     then 3 hits.
 - **Warm-ups.** 12 unmeasured requests at the start of every warm process (W, R, F): 4 per
   query, each query's full ticker set first.
   - **Why 12.** In the sizing run, after 3 warm-ups the first measured Spark requests took
     0.3–0.7 s against a steady 0.22 s. After 12 they took 0.19–0.33 s, near the block's median.
-  - **They always reach Spark.** A block's keys are deleted before its warm-ups and again
-    before its measured requests, so neither can hit.
-- **Rounds.** 6, each with W, R0, R50, R90, N and F once.
+  - **They always reach Spark.** An R or F block's keys are deleted before its warm-ups and again
+    before its measured requests.
+- **Rounds.** 6, each with every block once: W0, R0, W50, R50, W90, R90, N and F.
 
 Measured requests per batch:
 
-| Configuration | Per round | 6 rounds | Per query |
+| Block | Per round | 6 rounds | Per query |
 |---|---|---|---|
-| W | 30 | 180 | 60 |
-| R0 (misses) | 30 | 180 | 60 |
+| W0, R0 (each) | 30 | 180 | 60 |
+| W50 | 30 | 180 | 60 |
 | R50 | 15 misses, 15 hits | 90, 90 | 30, 30 |
+| W90 | 30 | 180 | 60 |
 | R90 | 3 misses, 27 hits | 18, 162 | 6, 54 |
 | N | 6 | 36 | 12 |
 | F | 18 (3 phases of 6) | 108 | 36 |
 
-**Runtime.** The one-round dry run took 183 s of blocks (W 23, R0 20, R50 17, R90 14, N 71 and
-F 38 s), plus about 25 s for the reference answers. Six rounds come to about 20 minutes.
+**Runtime (an estimate).** The paired functional check's round took 249 s: W0 42 s (the
+start-of-batch paging), R0 25, W50 25, R50 18, W90 21, R90 15, N 63 and F 39 s. Without the
+start-up paging, a W0 block takes about as long as W50, and a round about 230 s. That gives
+about 23 minutes for six rounds, plus about 25 s for the lead-in and about 30 s for the
+reference answers: about 24 minutes in all. The full-length dry run (section 10) measures it.
 
-## 4. Order and repeats (proposals)
+## 4. Order (proposals)
 
-- **ABBA rounds.** Within a round the blocks run W, R0, R50, R90, N, F; odd rounds run them in
-  reverse, so a slow drift does not fall on one configuration.
-- **A fresh process for every block.** Each warm block starts its own process (with its
-  warm-ups) and ends it. Each block's memory peak is its own, and no block inherits another's
-  JIT or cache state, apart from the operating system's file cache, which all configurations
-  share.
-- **A seed per batch.** The workload is drawn from a seed: the same seed gives the same plan.
-  The formal seed is chosen before the batch and recorded (section 9).
-- **One formal batch.** If it is invalid, the author decides what happens next, for example a
-  new batch with the same seed.
+**The lead-in (a proposal).** An unmeasured block L runs first: a no-cache warm process with 12
+warm-ups and a 0% sequence of its own. It takes the paging the host does at a batch's start. It
+is recorded, checked for completeness, statuses, sources and answers, and left out of every
+comparison; its host readings are reported, not gated.
+
+Why: in the paired functional check (section 10), swap-in fell from 792 MiB in the first block
+to 285, 136, 71, 33 and 28 MiB in the next five W and R blocks. W0, which ran first, took 42 s
+against 21–25 s for the later W blocks. As a result R0, whose requests all miss and so should
+match their control, came out at 0.35× of W0. The full-length dry run measures whether the
+lead-in removes this.
+
+Rounds are numbered 0 to 5. The **forward order** is W0, R0, W50, R50, W90, R90, N, F. Rounds 0,
+2 and 4 run it; rounds 1, 3 and 5 run its exact reverse. After the lead-in, the full order of
+the batch's other 48 blocks is:
+
+| Round | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th |
+|---|---|---|---|---|---|---|---|---|
+| 0 | W0 | R0 | W50 | R50 | W90 | R90 | N | F |
+| 1 | F | N | R90 | W90 | R50 | W50 | R0 | W0 |
+| 2 | W0 | R0 | W50 | R50 | W90 | R90 | N | F |
+| 3 | F | N | R90 | W90 | R50 | W50 | R0 | W0 |
+| 4 | W0 | R0 | W50 | R50 | W90 | R90 | N | F |
+| 5 | F | N | R90 | W90 | R50 | W50 | R0 | W0 |
+
+What this order does and does not do:
+- **Positions are mirrored.** Every block takes position *p* in the forward rounds and position
+  9 − *p* in the reverse rounds, so its mean position is the same, 4.5, for all eight blocks.
+- **Within each pair,** the W control runs right before its R block in rounds 0, 2 and 4, and
+  right after it in rounds 1, 3 and 5. Neither member of a pair always runs first.
+- **What it does not do.** It does not randomize the order, and it does not balance carry-over
+  effects: R50, for example, always follows W50 in forward rounds and precedes it in reverse
+  ones. Because the two members of a pair are adjacent, slow drift affects both almost equally.
+  The drift rule (section 6) watches for faster changes.
+- **Repeats.** Each warm block starts its own process, with its warm-ups, and ends it. One
+  formal batch, with a seed chosen before the batch and recorded. If the batch is invalid, the
+  author decides what follows.
 
 ## 5. Host conditions and contemporaneous controls on this Mac (proposals)
 
@@ -146,11 +183,11 @@ name.
   every process's environment, which costs too much to repeat during timing.
 
 **Contemporaneous controls.**
-- **W in every round** runs the same requests as that round's R0.
-- **The drift rule** (section 6) compares W's medians in the last round with the first.
-- **Within-round ratios** (R hits / W, R misses / W, N / W) are reported for each round, with
-  their spread over the rounds. The batch's comparisons rest on these, not on absolute times
-  alone.
+- **Every R block has its own W control:** the identical requests and warm-ups without the cache,
+  run right before or right after it (section 4).
+- **Every comparison is paired** (section 7).
+- **The drift rule** (section 6) compares the W controls' medians in the last round with the
+  first.
 
 ## 6. Validity rules (proposals; checked by the collector)
 
@@ -171,12 +208,14 @@ problems (`validity.json`):
      between; the container monitor ran;
    - memory pressure never critical;
    - no thermal or performance warning;
-   - swap-out traffic at most **64 MiB**, and for W and R blocks swap-in traffic at most
-     **256 MiB**;
+   - swap-out traffic within its limit, and for W and R blocks swap-in traffic within its limit.
+     The limits are set from the full-length dry run (section 10); the tooling's provisional
+     defaults are 64 MiB and 256 MiB;
    - no marked process left after the block; every process exited 0.
 8. **Redis:** its peak within the 128 MiB container limit.
-9. **Drift:** for each query, W's median client latency in the last round within **±20%** of the
-   first round's.
+9. **Pairs:** each R block and its W control ran the identical requests and warm-ups.
+10. **Drift:** for each query, the median client latency of the W controls (all three, pooled) in
+    the last round within **±20%** of the first round's.
 
 **Swap limits.** N and F are not limited on swap-in: every N request starts a new JVM, and F
 stops and starts a container, so their paging is part of what they are.
@@ -186,11 +225,24 @@ stops and starts a container, so their paging is part of what they are.
 
 ## 7. Measures and reporting
 
+**The attribution rule.** A difference is attributed to the cache only when it is a **paired
+difference**: an R request against the identical request at the same position of its W control.
+Differences between blocks with different ticker subsets, other repeat patterns or another round
+are never attributed to caching. The same holds for N: each N request is compared with the same
+request in its round's W0.
+
 - **Per request:** the client's monotonic latency (from writing the request to reading its
   answer; for N, from starting the process to its exit), and the server's resolve, Spark and
   total seconds. Also the source, the counters and the full-hash count.
-- **Per configuration, query and round:** the median, minimum and maximum, and the per-round
-  ratios of section 5.
+- **Paired** (`paired.csv`): each R request beside its control. Kept apart:
+  - the difference and ratio for hits (what a hit saves against Spark in the same warm process
+    state);
+  - the difference and ratio for misses (what the cache costs when it misses);
+  - N against W0 (what a warm process saves).
+
+  Summaries (`paired_summary.csv`): medians and ranges of the paired differences and ratios by
+  hit rate, hit or miss, and query; and each R block's total time against its control's, per
+  round. The block totals are what a hit rate of 0, 50 or 90% saves end to end.
 - **The resolver's cost:** N's full hash against the warm check, from `seconds.resolve`.
 - **Hit rates:** realized against designed (they must be equal; section 6).
 - **F:** whether every answer is right, the breaker's sequence, and Redis's share of each
@@ -215,16 +267,19 @@ stops and starts a container, so their paging is part of what they are.
 ## 9. Decisions this draft asks for
 
 1. **Configurations and interpretation** (section 2), including that N has no Redis variant.
-2. **Workload** (section 3): block size 30; hit rates 0, 50 and 90%; W matched to R0; N with 6
-   requests per round; F with 3 phases of 6; 12 warm-ups.
-3. **Order and repeats** (section 4): 6 ABBA rounds; one formal batch; the seed (proposed: draw
-   one now and record it).
-4. **Host conditions and controls** (section 5): the preparation, the preflight, the monitoring,
+2. **Workload** (section 3): block size 30; hit rates 0, 50 and 90%; a W control for each R
+   block with the identical requests and warm-ups; N with 6 requests per round; F with 3 phases
+   of 6; 12 warm-ups.
+3. **Order and repeats** (section 4): the lead-in; the six-round order in the table, the
+   forward order in rounds 0, 2 and 4 and its exact reverse in 1, 3 and 5; one formal batch;
+   the seed.
+4. **The attribution rule** (section 7): only paired differences are attributed to the cache.
+5. **Host conditions and controls** (section 5): the preparation, the preflight, the monitoring,
    and the reason the 4.0 GiB gate is not a timing rule.
-5. **Validity rules and limits** (section 6): swap-out at most 64 MiB per block, swap-in at most
-   256 MiB per W or R block, drift ±20%, and critical pressure or any thermal warning
-   invalidating its block and so the batch.
-6. **Reporting** (section 7): F as correctness and Redis's share, not a latency comparison; memory
+6. **Validity rules and limits** (section 6): the swap-out, swap-in and drift limits, set from
+   the full-length dry run (section 10), and that critical pressure or any thermal warning
+   invalidates its block and so the batch.
+7. **Reporting** (section 7): F as correctness and Redis's share, not a latency comparison; memory
    figures as not representative.
 
 ## 10. Dry runs so far (not formal)
@@ -232,7 +287,19 @@ stops and starts a container, so their paging is part of what they are.
 | Batch | Purpose | Outcome |
 |---|---|---|
 | `sizing/20261026T113443Z` | sizing, 1 round, 3 warm-ups | every check the collector had then held except host: memory pressure was critical during R0. (It would also fail the warm-up check added afterwards.) The run found two driver bugs, both fixed: the host sampler's stop event shadowed `Thread._stop`, so finishing failed after all 6 blocks; and warm-ups ran before the block's keys were deleted, so 2 of them hit Redis and warmed nothing. The collector now checks that every warm-up reached Spark. |
-| `dry-run/20261026T114515Z` | dry run, 1 round, 12 warm-ups | **valid** on every check (drift trivially: one round). 0 other containers, 0 container events, no critical pressure, no thermal warning. |
+| `sizing/20261026T121817Z` | functional check of the paired design, 1 round, editor open, no lead-in | the W controls ran and paired: **pairs**, sources, breaker, answers, keys, Redis and drift held. Host failed: swap-in of 792 MiB in W0 and 285 MiB in R0, over the provisional 256 MiB. That start-of-batch transient is the reason for the lead-in (section 4). Not evidence for thresholds: the editor was open. |
+| `dry-run/20261026T114515Z` | dry run, 1 round, 12 warm-ups, before the pairs | **valid** on every check then defined (drift trivially: one round). 0 other containers, 0 container events, no critical pressure, no thermal warning. |
+
+**The full-length dry run, still to come.** The lead-in and six rounds of the paired design (49
+blocks), run by
+the author from Terminal under the preparation of section 5, with the editor closed. Its records
+are kept whatever its outcome. It decides the swap and drift limits, and measures the runtime.
+Claude Code cannot run it: the preparation means quitting the editor, which Claude Code runs in.
+
+**Freezing the protocol.** After that dry run, the limits are written into this document, the
+author approves it, and the protocol is frozen: the approved commit is recorded here. The
+formal batch runs on that commit only. `run --formal` refuses a dirty worktree, and the batch
+records its code identity.
 
 ## 11. Commands
 
