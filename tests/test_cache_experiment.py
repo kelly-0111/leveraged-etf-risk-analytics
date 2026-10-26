@@ -68,9 +68,17 @@ def test_even_rounds_run_the_forward_order_and_odd_rounds_its_exact_reverse():
     for k in range(6):
         labels = [e3.block_label(b) for b in blocks if b["round"] == k]
         assert labels == (forward if k % 2 == 0 else forward[::-1])
-    assert len(blocks) == 49 and len({b["id"] for b in blocks}) == 49
-    assert blocks[0]["config"] == "L" and blocks[0]["round"] == -1 and blocks[0]["id"] == "b00-L"
-    assert e3.designed_sources(blocks[0]["requests"]) == ["spark"] * 30 and len(blocks[0]["warmups"]) == 12
+    assert len(blocks) == 56 and len({b["id"] for b in blocks}) == 56
+
+
+def test_the_lead_in_is_a_full_forward_round_of_its_own_before_round_0():
+    blocks = e3.plan_blocks(1, e3.Settings())
+    lead = [b for b in blocks if b.get("lead_in")]
+    assert blocks[:8] == lead and all(b["round"] == -1 for b in lead)
+    assert [e3.block_label(b) for b in lead] == e3.forward_order(e3.Settings())
+    assert [b["id"] for b in lead[:2]] == ["b00-lead-W0", "b01-lead-R0"]
+    r0 = next(b for b in blocks if b["round"] == 0 and b.get("hit_rate") == 0.0)
+    assert lead[1]["requests"] != r0["requests"] and not any(b.get("lead_in") for b in blocks[8:])
 
 
 def test_the_lead_in_can_be_left_out():

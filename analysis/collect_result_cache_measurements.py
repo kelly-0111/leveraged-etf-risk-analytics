@@ -5,8 +5,9 @@ rules, then summarize the latencies by configuration.
 
 Writes measurements.csv (one row per measured request), summary.csv (by configuration and query),
 paired.csv (each R request beside the identical request of its W control, and each N request
-beside the same request in its round's W0), paired_summary.csv (the paired differences and ratios
-by hit rate, hit or miss and query, and each R block's total against its control's) and
+beside the same request in its round's W0), paired_summary.csv (the paired end-to-end differences
+and ratios by hit rate, hit or miss and query, the primary result; each R block's total against
+its control's; and descriptive diagnostics, which attribute nothing: see paired()) and
 validity.json (every check with its outcome) into the batch folder. Prints the
 verdict and exits 0 only when every check holds; 1 otherwise.
 
@@ -31,8 +32,9 @@ Checks (Part A, section 6):
 - the batch: not aborted, and no other project's container event at any time of the batch, between
   block windows included;
 - Redis: its peak within the container's limit;
-- the lead-in block L is checked for completeness, statuses, sources and answers only; its host
-  readings are reported, not gated, and it is left out of every comparison;
+- the lead-in round (blocks flagged lead_in; a single block L in batches before 20261026T17) is
+  checked like any block, but its host readings are reported, not gated, and it is left out of
+  every comparison: pairs' outputs, summaries and drift;
 - drift: for each query, the median client latency of the W controls (all three, pooled) in the
   last round within the drift limit of the first round's.
 
@@ -115,7 +117,7 @@ def check(batch: Path, *, swap_out_limit: int, swap_in_limit: int, drift_limit: 
         info = blocks[bid]
         if block["config"] in ("R", "F") and info.get("keys_present_after_delete"):
             problems["keys"].append(f"{bid}: {info['keys_present_after_delete']} of its keys in Redis at its start")
-        if block["config"] != "L":                 # the lead-in's host readings are reported, not gated
+        if block["config"] != "L" and not block.get("lead_in"):     # the lead-in's host readings are reported, not gated
             problems["host"] += check_host(bid, info, swap_out_limit,
                                            swap_in_limit if block["config"] in ("W", "R") else None)
         peak = (info.get("redis_peak_before_stop") or info.get("redis_peak") or {}).get("peak_bytes")
@@ -164,13 +166,31 @@ def check_pairs(plan: dict, rows: list[dict]) -> list[str]:
     return out
 
 
+def _spark(r: dict) -> float:
+    return (r["server_seconds"] or {}).get("spark") or 0.0
+
+
+def _rest(r: dict) -> float:
+    """Client time less the server's Spark and resolve seconds: the pipe, JSON, the cache's calls,
+    encoding and decoding, and whatever else the request waited on. Descriptive only."""
+    server = r["server_seconds"] or {}
+    return r["client_seconds"] - (server.get("spark") or 0.0) - (server.get("resolve") or 0.0)
+
+
 def paired(plan: dict, rows: list[dict]) -> list[dict]:
-    """One row per pair: an R request and the identical request at the same position of its W
-    control, or an N request and the same request's first run in its round's W0."""
+    """One row per pair of a measured round: an R request and the identical request at the same
+    position of its W control, or an N request and the same request's first run in its round's
+    W0. The lead-in round is left out by design.
+
+    seconds, w_seconds, difference_s and ratio are end-to-end client latencies: the primary
+    result. The diag_ columns are descriptive diagnostics, not causal attributions:
+    diag_spark_difference_s is the Spark time of the R (or N) request less its control's (empty
+    for a hit, which runs no Spark); diag_rest_difference_s is the same difference for the time
+    outside Spark and resolution. Neither says why a difference arose."""
     out = []
     measured = [r for r in rows if not r["warmup"] and r["status"] == "ok"]
     for b in plan["blocks"]:
-        if b["config"] not in ("R", "N"):
+        if b["config"] not in ("R", "N") or b.get("lead_in"):
             continue
         w = partner(plan, b) if b["config"] == "R" else next(
             (x for x in plan["blocks"] if x["config"] == "W" and x["round"] == b["round"] and x.get("pair") == 0.0), None)
@@ -186,33 +206,55 @@ def paired(plan: dict, rows: list[dict]) -> list[dict]:
                 kind = "new process"
             if c is None or (c["query"], c["tickers"]) != (r["query"], r["tickers"]):
                 continue
-            out.append({"round": b["round"], "pair": b.get("pair"), "config": b["config"], "kind": kind,
-                        "index": r["index"], "query": r["query"], "tickers": " ".join(r["tickers"]),
+            out.append({"round": b["round"], "pair": b.get("pair"), "config": b["config"], "block": b["id"],
+                        "kind": kind, "index": r["index"], "query": r["query"], "tickers": " ".join(r["tickers"]),
                         "seconds": r["client_seconds"], "w_seconds": c["client_seconds"],
                         "difference_s": r["client_seconds"] - c["client_seconds"],
-                        "ratio": r["client_seconds"] / c["client_seconds"]})
+                        "ratio": r["client_seconds"] / c["client_seconds"],
+                        "diag_spark_difference_s": None if kind == "hit" else _spark(r) - _spark(c),
+                        "diag_rest_difference_s": _rest(r) - _rest(c)})
     return out
 
 
+def _median(values) -> float | None:
+    values = [v for v in values if v is not None]
+    return statistics.median(values) if values else None
+
+
+SUMMARY_FIELDS = ("scope", "config", "pair", "kind", "query", "round", "n", "median_difference_s", "median_ratio",
+                  "min_ratio", "max_ratio", "total_difference_s", "total_ratio", "diag_median_spark_difference_s",
+                  "diag_median_rest_difference_s", "estimate_hit_imbalance_s")
+
+
 def paired_summary(pairs: list[dict]) -> list[dict]:
-    """By configuration, hit rate, kind and query: the medians of the paired differences and
-    ratios; then, per R block and round, the block's total against its W control's."""
+    """By configuration, hit rate, kind and query: the medians of the paired end-to-end
+    differences and ratios (the primary result), with the diagnostics' medians beside them.
+    Then, per R block and round: the block's total time against its control's (end to end), and
+    for blocks with hits, estimate_hit_imbalance_s: the median Spark-time difference of the
+    block's own misses against their controls. It is an estimate of how unequal the pair's
+    conditions were, offered beside the hits' end-to-end difference, never subtracted from it."""
     out = []
     keys = sorted({(p["config"], p["pair"] if p["pair"] is not None else -1, p["kind"], p["query"]) for p in pairs})
     for config, pair, kind, query in keys:
         g = [p for p in pairs if (p["config"], p["pair"] if p["pair"] is not None else -1, p["kind"], p["query"])
              == (config, pair, kind, query)]
-        out.append({"scope": "requests", "config": config, "pair": None if pair == -1 else pair, "kind": kind,
-                    "query": query, "round": None, "n": len(g),
-                    "median_difference_s": statistics.median(p["difference_s"] for p in g),
-                    "median_ratio": statistics.median(p["ratio"] for p in g),
-                    "min_ratio": min(p["ratio"] for p in g), "max_ratio": max(p["ratio"] for p in g)})
+        out.append(dict.fromkeys(SUMMARY_FIELDS) | {
+            "scope": "requests", "config": config, "pair": None if pair == -1 else pair, "kind": kind, "query": query,
+            "n": len(g), "median_difference_s": statistics.median(p["difference_s"] for p in g),
+            "median_ratio": statistics.median(p["ratio"] for p in g),
+            "min_ratio": min(p["ratio"] for p in g), "max_ratio": max(p["ratio"] for p in g),
+            "diag_median_spark_difference_s": _median(p["diag_spark_difference_s"] for p in g),
+            "diag_median_rest_difference_s": _median(p["diag_rest_difference_s"] for p in g)})
     for (round_, pair) in sorted({(p["round"], p["pair"]) for p in pairs if p["config"] == "R"}):
         g = [p for p in pairs if p["config"] == "R" and p["round"] == round_ and p["pair"] == pair]
         total, control = sum(p["seconds"] for p in g), sum(p["w_seconds"] for p in g)
-        out.append({"scope": "block", "config": "R", "pair": pair, "kind": "all", "query": "all", "round": round_,
-                    "n": len(g), "median_difference_s": total - control, "median_ratio": total / control,
-                    "min_ratio": None, "max_ratio": None})
+        misses = [p["diag_spark_difference_s"] for p in g if p["kind"] == "miss"]
+        has_hits = any(p["kind"] == "hit" for p in g)
+        out.append(dict.fromkeys(SUMMARY_FIELDS) | {
+            "scope": "block", "config": "R", "pair": pair, "kind": "all", "query": "all", "round": round_, "n": len(g),
+            "total_difference_s": total - control, "total_ratio": total / control,
+            "diag_median_spark_difference_s": _median(misses),
+            "estimate_hit_imbalance_s": _median(misses) if has_hits else None})
     return out
 
 
@@ -277,13 +319,13 @@ def check_host(bid: str, info: dict, swap_out_limit: int, swap_in_limit: int | N
 
 
 def w_medians(plan: dict, rows: list[dict], round_: int) -> dict[str, float]:
-    w = [r for r in rows if r["config"] == "W" and r["round"] == round_ and not r["warmup"]]
+    w = [r for r in rows if r["config"] == "W" and r["round"] == round_ and not r["warmup"] and not r.get("lead_in")]
     return {q: statistics.median(r["client_seconds"] for r in w if r["query"] == q)
             for q in QUERIES if any(r["query"] == q for r in w)}
 
 
 def check_drift(plan: dict, rows: list[dict], limit: float) -> list[str]:
-    rounds = sorted({b["round"] for b in plan["blocks"] if b["config"] == "W"})
+    rounds = sorted({b["round"] for b in plan["blocks"] if b["config"] == "W" and not b.get("lead_in")})
     first, last = w_medians(plan, rows, rounds[0]), w_medians(plan, rows, rounds[-1])
     out = []
     for q in QUERIES:
@@ -304,7 +346,7 @@ def label(r: dict) -> str:
 
 
 def summarize(rows: list[dict]) -> list[dict]:
-    measured = [r for r in rows if not r["warmup"] and r["status"] == "ok" and r["config"] != "L"]
+    measured = [r for r in rows if not r["warmup"] and r["status"] == "ok" and r["config"] != "L" and not r.get("lead_in")]
     out = []
     for key in sorted({(label(r), r["query"]) for r in measured}):
         group = [r for r in measured if (label(r), r["query"]) == key]

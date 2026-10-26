@@ -98,31 +98,40 @@ Measured requests per batch:
 | N | 6 | 36 | 12 |
 | F | 18 (3 phases of 6) | 108 | 36 |
 
-**Runtime (an estimate).** The paired functional check's round took 249 s: W0 42 s (the
-start-of-batch paging), R0 25, W50 25, R50 18, W90 21, R90 15, N 63 and F 39 s. Without the
-start-up paging, a W0 block takes about as long as W50, and a round about 230 s. That gives
-about 23 minutes for six rounds, plus about 25 s for the lead-in and about 30 s for the
-reference answers: about 24 minutes in all. The full-length dry run (section 10) measures it.
+**Runtime.** In the prepared full-length dry run (`dry-run/20261026T160445Z`, section 10) a
+measured round took 122–130 s (median 124 s), and the whole batch, with a single lead-in block
+and the reference answers, 13.2 minutes. With the lead-in round (section 4) and the settle after
+each block (about 0.5 s; section 6), the next batch should take about 15–16 minutes. The
+editor-open estimate of about 24 minutes overstated it.
 
 ## 4. Order (proposals)
 
-**The lead-in (a proposal).** An unmeasured block L runs first: a no-cache warm process with 12
-warm-ups and a 0% sequence of its own. It takes the paging the host does at a batch's start. It
-is recorded, checked for completeness, statuses, sources and answers, and left out of every
-comparison; its host readings are reported, not gated.
+**The lead-in round (approved by the author, 2026-10-26, for the next dry run).** A full round,
+numbered −1, runs before round 0. It has the 8 blocks in the forward order, with requests and
+warm-ups of its own, and every block is flagged `lead_in`. It is recorded, and checked for
+completeness, statuses, sources, the breaker, answers and keys like any block. By design it is
+excluded from every comparison (`paired.csv`, the summaries, drift), and its host readings are
+reported, not gated. The six measured rounds are unchanged. Every kind of process (no-cache,
+cached, one-shot, F's restart) thus runs once before measurement starts.
 
-Why: in the paired functional check (section 10), swap-in fell from 792 MiB in the first block
-to 285, 136, 71, 33 and 28 MiB in the next five W and R blocks. W0, which ran first, took 42 s
-against 21–25 s for the later W blocks. As a result R0, whose requests all miss and so should
-match their control, came out at 0.35× of W0. The full-length dry run measures whether the
-lead-in removes this.
+Why:
+- **The paired functional check** (section 10, editor open): swap-in fell from 792 MiB in the
+  first block to 28 MiB by the sixth, and the first pair compared at 0.35 where about 1 was
+  expected.
+- **The prepared full-length dry run**, with a single lead-in block L, in which the first blocks
+  paged little (swap-in 21 MiB in L, 1 MiB in W0, 94 MiB in R0): round 0's R0/W0 ratio was
+  1.25, against 0.96–1.07 in rounds 1–5. Its difference sat in the requests' Spark time (R0 0.141 s, W0 0.101 s, by median), while the time outside Spark and
+  resolution differed as in every round. Why the first pair's processes differed is not known.
+- **What the next dry run reports to judge the lead-in round:** round 0's ratio beside rounds
+  1–5, with the descriptive diagnostics of section 7. Round 0 is not excluded, and no spread
+  limit is added.
 
 Rounds are numbered 0 to 5. The **forward order** is W0, R0, W50, R50, W90, R90, N, F. Rounds 0,
-2 and 4 run it; rounds 1, 3 and 5 run its exact reverse. After the lead-in, the full order of
-the batch's other 48 blocks is:
+2 and 4 run it; rounds 1, 3 and 5 run its exact reverse. The full order of the batch's 56 blocks:
 
 | Round | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th |
 |---|---|---|---|---|---|---|---|---|
+| −1 (lead-in) | W0 | R0 | W50 | R50 | W90 | R90 | N | F |
 | 0 | W0 | R0 | W50 | R50 | W90 | R90 | N | F |
 | 1 | F | N | R90 | W90 | R50 | W50 | R0 | W0 |
 | 2 | W0 | R0 | W50 | R50 | W90 | R90 | N | F |
@@ -132,7 +141,8 @@ the batch's other 48 blocks is:
 
 What this order does and does not do:
 - **Positions are mirrored.** Every block takes position *p* in the forward rounds and position
-  9 − *p* in the reverse rounds, so its mean position is the same, 4.5, for all eight blocks.
+  9 − *p* in the reverse rounds, so over the six measured rounds its mean position is the same,
+  4.5, for all eight blocks.
 - **Within each pair,** the W control runs right before its R block in rounds 0, 2 and 4, and
   right after it in rounds 1, 3 and 5. Neither member of a pair always runs first.
 - **What it does not do.** It does not randomize the order, and it does not balance carry-over
@@ -211,8 +221,17 @@ problems (`validity.json`):
    - swap-out traffic within its limit, and for W and R blocks swap-in traffic within its limit.
      The limits are set from the full-length dry run (section 10); the tooling's provisional
      defaults are 64 MiB and 256 MiB;
-   - no marked process left after the block; every process exited 0.
+   - **the settle:** after a block's last process exits, and outside every request's timing, the
+     driver waits up to **15 s** (the settle M2's memory check uses) for the block's marked
+     processes to exit, and records each one's pid, name, kind, creation time, and when it was
+     first and last seen and found gone. A process alive after the 15 s fails the block. It is
+     ended (TERM, then KILL) only when its ownership is verified (the same marker and creation
+     time). If the cleanup cannot be confirmed, the batch stops and `batch.json` records
+     `aborted`;
+   - every process exited 0.
 8. **Redis:** its peak within the 128 MiB container limit.
+   **The batch:** not aborted, and no other project's container event at any time of the batch,
+   between block windows included (`containers.jsonl`).
 9. **Pairs:** each R block and its W control ran the identical requests and warm-ups.
 10. **Drift:** for each query, the median client latency of the W controls (all three, pooled) in
     the last round within **±20%** of the first round's.
@@ -226,10 +245,11 @@ stops and starts a container, so their paging is part of what they are.
 ## 7. Measures and reporting
 
 **The attribution rule.** A difference is attributed to the cache only when it is a **paired
-difference**: an R request against the identical request at the same position of its W control.
-Differences between blocks with different ticker subsets, other repeat patterns or another round
-are never attributed to caching. The same holds for N: each N request is compared with the same
-request in its round's W0.
+end-to-end difference**: the client latency of an R request against that of the identical request
+at the same position of its W control. Differences between blocks with different ticker subsets,
+other repeat patterns or another round are never attributed to caching. The same holds for N:
+each N request is compared with the same request in its round's W0. The lead-in round is never
+compared. **These paired end-to-end differences are the primary result.**
 
 - **Per request:** the client's monotonic latency (from writing the request to reading its
   answer; for N, from starting the process to its exit), and the server's resolve, Spark and
@@ -240,9 +260,23 @@ request in its round's W0.
   - the difference and ratio for misses (what the cache costs when it misses);
   - N against W0 (what a warm process saves).
 
-  Summaries (`paired_summary.csv`): medians and ranges of the paired differences and ratios by
-  hit rate, hit or miss, and query; and each R block's total time against its control's, per
-  round. The block totals are what a hit rate of 0, 50 or 90% saves end to end.
+  Summaries (`paired_summary.csv`):
+  - **per request group** (hit rate, hit or miss, query): `median_difference_s`,
+    `median_ratio`, `min_ratio` and `max_ratio` of the paired end-to-end values;
+  - **per R block and round:** `total_difference_s` and `total_ratio`, the block's total client
+    time against its control's. That is what a hit rate of 0, 50 or 90% saves end to end.
+- **Descriptive diagnostics** (columns named `diag_…`). They describe the time; they do not say
+  why a difference arose:
+  - `diag_spark_difference_s`: the Spark time of an R (or N) request less its control's. Empty
+    for a hit, which runs no Spark. A Spark-time difference is not assumed to be a host effect;
+  - `diag_rest_difference_s`: the same difference for the time outside Spark and resolution
+    (the pipe, JSON, the cache's calls, encoding and decoding, and anything else the request
+    waited on). It is not a causal cost of the cache;
+  - their medians per group (`diag_median_spark_difference_s`, `diag_median_rest_difference_s`).
+- **An estimate for hits** (`estimate_hit_imbalance_s`, per R block that has hits): the median
+  Spark-time difference of the block's own misses against their controls. It is an estimate of
+  how unequal the pair's conditions were, reported beside the hits' end-to-end difference and
+  never subtracted from it.
 - **The resolver's cost:** N's full hash against the warm check, from `seconds.resolve`.
 - **Hit rates:** realized against designed (they must be equal; section 6).
 - **F:** whether every answer is right, the breaker's sequence, and Redis's share of each
@@ -276,11 +310,17 @@ request in its round's W0.
 4. **The attribution rule** (section 7): only paired differences are attributed to the cache.
 5. **Host conditions and controls** (section 5): the preparation, the preflight, the monitoring,
    and the reason the 4.0 GiB gate is not a timing rule.
-6. **Validity rules and limits** (section 6): the swap-out, swap-in and drift limits, set from
-   the full-length dry run (section 10), and that critical pressure or any thermal warning
-   invalidates its block and so the batch.
-7. **Reporting** (section 7): F as correctness and Redis's share, not a latency comparison; memory
-   figures as not representative.
+6. **Validity rules and limits** (section 6): the swap-out, swap-in and drift limits, kept at
+   64 MiB, 256 MiB and ±20% for the next dry run (the author, 2026-10-26); the 15 s settle; the
+   batch-wide container check; and that critical pressure or any thermal warning invalidates its
+   block and so the batch.
+7. **Reporting** (section 7): paired end-to-end differences as the primary result; the
+   diagnostics as descriptive and the hit imbalance as an estimate; F as correctness and Redis's
+   share, not a latency comparison; memory figures as not representative.
+
+Decided by the author on 2026-10-26, for the next dry run: the lead-in round (section 4), the
+settle and the batch-wide container check (section 6), the descriptive diagnostics (section 7),
+and keeping the six measured rounds and the current limits.
 
 ## 10. Dry runs so far (not formal)
 
@@ -288,13 +328,19 @@ request in its round's W0.
 |---|---|---|
 | `sizing/20261026T113443Z` | sizing, 1 round, 3 warm-ups | every check the collector had then held except host: memory pressure was critical during R0. (It would also fail the warm-up check added afterwards.) The run found two driver bugs, both fixed: the host sampler's stop event shadowed `Thread._stop`, so finishing failed after all 6 blocks; and warm-ups ran before the block's keys were deleted, so 2 of them hit Redis and warmed nothing. The collector now checks that every warm-up reached Spark. |
 | `sizing/20261026T121817Z` | functional check of the paired design, 1 round, editor open, no lead-in | the W controls ran and paired: **pairs**, sources, breaker, answers, keys, Redis and drift held. Host failed: swap-in of 792 MiB in W0 and 285 MiB in R0, over the provisional 256 MiB. That start-of-batch transient is the reason for the lead-in (section 4). Not evidence for thresholds: the editor was open. |
+| `dry-run/20261026T160445Z` | **the prepared full-length dry run** (run by the author, editor closed): a single lead-in block L and six measured rounds | NOT valid, on host only (43 problems); every other check held. **42:** "1 marked process alive after the block" in every gated warm block (L's is not gated), none in N. The driver kept only a count, so the processes were not identified. Available memory stayed at 2.8–3.3 GiB and swap in use fell from 1.09 to 1.00 GiB, so they did not accumulate: most likely a shutdown still in progress, which led to the settle (section 6). **1:** `b18-R0` swapped in 271 MiB, over 256; its latencies matched its control's (median 0.137 vs 0.138 s). Swap-out at most 5.8 MiB; memory pressure normal throughout; 0 other-project container events, gaps included. Drift: last against first +8.5%, +11.6%, −0.5%. Round 0's R0/W0 ratio was 1.25 (section 4). Kept unchanged (62 files). |
+| `functional/20261026T172508Z` | functional check of the settle, 1 round, editor open | in every warm block the marked process was the Spark JVM, gone 0.27–0.54 s after the driver exited; no survivor, every block confirmed clean. The batch-wide check counted 3 short-lived containers of another project (15 events, 3 of them between block windows). Paging with the editor open is not threshold evidence. |
 | `dry-run/20261026T114515Z` | dry run, 1 round, 12 warm-ups, before the pairs | **valid** on every check then defined (drift trivially: one round). 0 other containers, 0 container events, no critical pressure, no thermal warning. |
 
-**The full-length dry run, still to come.** The lead-in and six rounds of the paired design (49
-blocks), run by
-the author from Terminal under the preparation of section 5, with the editor closed. Its records
-are kept whatever its outcome. It decides the swap and drift limits, and measures the runtime.
-Claude Code cannot run it: the preparation means quitting the editor, which Claude Code runs in.
+**Tests.** On the commit that adds the lead-in round and the diagnostics, the E3 suites
+(`tests/test_cache_experiment.py`, `tests/test_result_cache_collector.py`,
+`tests/test_result_cache_session.py`) passed: **84 tests**. The new collector, run on a copy of
+`dry-run/20261026T160445Z`, gives the same 43 host problems; the original was not touched.
+
+**The next prepared dry run.** The lead-in round and six measured rounds (56 blocks), run by the
+author from Terminal under the preparation of section 5, with the editor closed. Its records are
+kept whatever its outcome. Claude Code cannot run it: the preparation means quitting the editor,
+which Claude Code runs in.
 
 **Freezing the protocol.** After that dry run, the limits are written into this document, the
 author approves it, and the protocol is frozen: the approved commit is recorded here. The
@@ -303,15 +349,34 @@ records its code identity.
 
 ## 11. Commands
 
+The session helpers, in order:
+
+| Command | What it does |
+|---|---|
+| `source docs/result-cache-session.zsh` | loads the helpers; set `E3_PURPOSE`, `E3_SEED` and `E3_BATCH` before it |
+| `e3_steps` | prints the checklist |
+| `e3_redis` | starts the redis service alone and waits for PING |
+| `e3_preflight` | exits 1 with the reasons unless a batch may start |
+| `e3_plan` | writes the plan into a new batch folder |
+| `e3_run` | runs the preflight, then the batch, the Mac kept awake; appends its output to `session.log` |
+| `e3_collect` | checks validity and writes the summaries; exits 1 unless valid; appends to `session.log` |
+| `e3_cleanup` | stops and removes the redis service only |
+
+For the next prepared dry run, after quitting every other application (the editor included),
+with AC power, the lid open, and Docker running with nothing else:
+
 ```zsh
-source docs/result-cache-session.zsh     # E3_PURPOSE=formal E3_SEED=<seed> before it, for the formal batch
-e3_steps        # the checklist
-e3_redis        # start the redis service alone and wait for PING
-e3_preflight    # exits 1 with the reasons unless a batch may start
-e3_plan         # write the plan
-e3_run          # run it, the Mac kept awake
-e3_collect      # validity and the summary; exits 1 unless valid
-e3_cleanup      # stop and remove the redis service only
+cd ~/leveraged-etf-risk-analytics/.claude/worktrees/result-cache-experiment
+deactivate 2>/dev/null
+export E3_PURPOSE=dry-run
+export E3_SEED=2611
+export E3_BATCH=$(date -u +%Y%m%dT%H%M%SZ)-lead-in-round
+source docs/result-cache-session.zsh
+e3_redis
+e3_plan
+e3_run
+e3_collect
+e3_cleanup
 ```
 
 ## 12. Not claimed

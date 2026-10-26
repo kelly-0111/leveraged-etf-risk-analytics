@@ -3,6 +3,7 @@ exactly (valid), and on copies of it with one problem planted each (each must fa
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
+import csv
 import importlib.util
 import json
 from pathlib import Path
@@ -41,7 +42,8 @@ def build(folder: Path) -> Path:
             return {"block": b["id"], "config": b["config"], "round": b["round"], "hit_rate": b.get("hit_rate"),
                     "pair": b.get("pair"), "index": i, "phase": phase, "warmup": warmup, "query": r["query"], "tickers": r["tickers"],
                     "status": "ok", "source": source, "client_seconds": 0.2 if source == "spark" else 0.01,
-                    "server_seconds": {"resolve": 0.007, "total": 0.19}, "full_hashes": 1, "counters": counters,
+                    "server_seconds": {"resolve": 0.007, "spark": 0.18 if source == "spark" else 0.0, "total": 0.19},
+                    "lead_in": b.get("lead_in", False), "full_hashes": 1, "counters": counters,
                     "reason": None, "result": answer_for(r)}
         rows += [row(i, r, "spark", True) for i, r in enumerate(b["warmups"])]
         counters = {"get_errors": 0, "skipped": 0}
@@ -84,7 +86,8 @@ def edit(folder, name, change):
 
 
 def first(items, **where):
-    return next(i for i in items if all(i.get(k) == v for k, v in where.items()))
+    """The first measured item matching where: the lead-in round (round -1) is not gated by design."""
+    return next(i for i in items if i.get("round", 0) != -1 and all(i.get(k) == v for k, v in where.items()))
 
 
 def run(folder):
@@ -163,3 +166,37 @@ def test_each_planted_problem_fails_its_check(tmp_path, plant):
     edit(folder, name, change)
     code, validity = run(folder)
     assert code == 1 and not validity["valid"] and validity["problems"][check], validity["problems"]
+
+
+def test_the_lead_in_rounds_host_readings_are_reported_not_gated(tmp_path):
+    folder = build(tmp_path / "batch")
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**GOOD_WINDOW, "max_pressure_level": 4,
+                                                                 "swap_in_bytes": 2**31})
+                                             for b in bs if b["round"] == -1])
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+
+
+def test_the_lead_in_round_is_left_out_of_every_comparison(tmp_path):
+    folder = build(tmp_path / "batch")
+    edit(folder, "requests.jsonl", lambda rs: [_set(r, client_seconds=9.0) for r in rs if r["lead_in"]])
+    code, validity = run(folder)
+    assert code == 0 and not validity["problems"]["drift"]
+    pairs = list(csv.DictReader((folder / "paired.csv").open()))
+    assert {p["round"] for p in pairs} == {"0", "1"} and len(pairs) == 2 * (30 * 3 + 6)
+    assert "9.0" not in (folder / "summary.csv").read_text()
+
+
+def test_the_diagnostics_are_descriptive_columns_beside_the_end_to_end_result(tmp_path):
+    folder = build(tmp_path / "batch")
+    run(folder)
+    pairs = list(csv.DictReader((folder / "paired.csv").open()))
+    hit = next(p for p in pairs if p["kind"] == "hit")
+    miss = next(p for p in pairs if p["kind"] == "miss")
+    assert hit["diag_spark_difference_s"] == "" and float(miss["diag_spark_difference_s"]) == 0.0
+    assert float(hit["difference_s"]) == pytest.approx(0.01 - 0.2)          # end to end, unadjusted
+    blocks = [r for r in csv.DictReader((folder / "paired_summary.csv").open()) if r["scope"] == "block"]
+    by_rate = {r["pair"]: r for r in blocks if r["round"] == "0"}
+    assert by_rate["0.0"]["estimate_hit_imbalance_s"] == ""                 # no hits, no estimate
+    assert by_rate["0.5"]["estimate_hit_imbalance_s"] != "" and by_rate["0.9"]["estimate_hit_imbalance_s"] != ""
+    assert by_rate["0.5"]["median_difference_s"] == "" and by_rate["0.5"]["total_difference_s"] != ""

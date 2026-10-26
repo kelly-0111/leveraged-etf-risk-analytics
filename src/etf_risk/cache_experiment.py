@@ -22,8 +22,8 @@ Configurations (Part A, section 2):
 - R: like W with Redis (`summary serve`); a block's hit rate is set by repeats, its keys deleted
   before its warm-ups and again before its measured requests;
 - F: like R; Redis is stopped after the first phase and started again before the third;
-- L: the lead-in, a no-cache warm process before round 0, recorded and excluded from the
-  comparisons.
+- the lead-in round (round -1, blocks flagged lead_in): a full round before round 0, recorded and
+  excluded from the comparisons. Batches from before 20261026T17 had a single lead-in block L.
 
 Keys. The driver deletes only the experiment's keys, by name (DEL), never FLUSHDB or a pattern.
 F's restart empties Redis (persistence off), so a batch refuses to start while Redis holds any
@@ -79,7 +79,7 @@ class Settings:
     f_phase: int = 6                  # F requests per phase: up, down, after the restart
     warmups: int = 12                 # unmeasured requests at the start of each warm process
     cooldown_wait: float = 5.5        # s after Redis is ready again: past the breaker's 5 s
-    lead_in: bool = True              # one unmeasured W-like block before round 0 (Part A, section 4)
+    lead_in: bool = True              # a recorded lead-in round before round 0 (Part A, section 4)
     settle_grace: float = 15.0        # s a block's marked processes may take to exit (as M2's memory check)
     sample_interval: float = 0.5      # the process-tree sampler
     pressure_interval: float = 1.0    # the host sampler
@@ -144,50 +144,56 @@ def forward_order(settings: Settings) -> list[str]:
     return [f"{c}{int(round(h * 100))}" for h in settings.hit_rates for c in ("W", "R")] + ["N", "F"]
 
 
+def _round_units(rng: random.Random, settings: Settings) -> list[dict]:
+    """One round's blocks in the forward order: each hit rate's pair (its W control, then its R
+    block, the identical requests and warm-ups), N, F."""
+    units = []
+    for h in settings.hit_rates:
+        sequence = hit_rate_requests(rng, settings.block_size, h)
+        warmups = warmup_requests(rng, settings.warmups)
+        units.append({"config": "W", "pair": h, "requests": list(sequence), "warmups": list(warmups)})
+        units.append({"config": "R", "pair": h, "hit_rate": h, "requests": list(sequence), "warmups": list(warmups)})
+        if h == 0.0:
+            cold = sequence
+    per_query = settings.n_size // len(QUERIES)
+    n_requests = [r for q in QUERIES for r in [x for x in cold if x["query"] == q][:per_query]]
+    f_keys = [request(q, s) for q, s in balanced_keys(rng, len(QUERIES))]
+    phase = [f_keys[i % len(f_keys)] for i in range(settings.f_phase)]
+    units.append({"config": "N", "requests": n_requests, "warmups": []})
+    units.append({"config": "F", "phases": [phase, phase, phase], "requests": phase * 3,
+                  "warmups": warmup_requests(rng, settings.warmups)})
+    return units
+
+
 def plan_blocks(seed: int, settings: Settings) -> list[dict]:
     """Every block in its order. Each round draws one request sequence per hit rate and runs it
     twice, as a pair: once without the cache (the W control) and once with it (R), the two
     identical request for request, warm-ups included. N runs the first n_size // 3 requests of
     each query in the 0% sequence; F has its own 3 requests.
 
-    With settings.lead_in, an unmeasured lead-in block L (a no-cache warm process with a 0%
-    sequence of its own) runs first, as round -1: it takes the paging the host does at a batch's
-    start, which otherwise falls on the first pair.
+    With settings.lead_in, a lead-in round runs first as round -1: a full round in the forward
+    order, with requests of its own, every block flagged lead_in. It is recorded and checked like
+    any block, but excluded by design from every comparison and from the host gates (its host
+    readings are reported): every kind of process runs once before measurement starts.
 
-    Order: even-numbered rounds (0, 2, 4) run forward_order(); odd-numbered rounds (1, 3, 5) run
-    its exact reverse. Every block's position is therefore mirrored between consecutive rounds,
-    and within each pair the W control runs first in the forward rounds and second in the
-    reverse ones."""
+    Order of the measured rounds: even-numbered rounds (0, 2, 4) run forward_order(); odd-numbered
+    rounds (1, 3, 5) run its exact reverse. Every block's position is therefore mirrored between
+    consecutive rounds, and within each pair the W control runs first in the forward rounds and
+    second in the reverse ones."""
     if 0.0 not in settings.hit_rates:
         raise ValueError("N draws its requests from the 0% sequence")
     rng = random.Random(seed)
     blocks = []
     if settings.lead_in:
-        blocks.append({"config": "L", "round": -1, "requests": hit_rate_requests(rng, settings.block_size, 0.0),
-                       "warmups": warmup_requests(rng, settings.warmups)})
+        for b in _round_units(rng, settings):
+            blocks.append({**b, "round": -1, "lead_in": True})
     for k in range(settings.rounds):
-        units = []
-        for h in settings.hit_rates:
-            sequence = hit_rate_requests(rng, settings.block_size, h)
-            warmups = warmup_requests(rng, settings.warmups)
-            units.append({"config": "W", "pair": h, "requests": list(sequence), "warmups": list(warmups)})
-            units.append({"config": "R", "pair": h, "hit_rate": h, "requests": list(sequence), "warmups": list(warmups)})
-            if h == 0.0:
-                cold = sequence
-        per_query = settings.n_size // len(QUERIES)
-        n_requests = [r for q in QUERIES for r in [x for x in cold if x["query"] == q][:per_query]]
-        f_keys = [request(q, s) for q, s in balanced_keys(rng, len(QUERIES))]
-        phase = [f_keys[i % len(f_keys)] for i in range(settings.f_phase)]
-        units.append({"config": "N", "requests": n_requests, "warmups": []})
-        units.append({"config": "F", "phases": [phase, phase, phase], "requests": phase * 3,
-                      "warmups": warmup_requests(rng, settings.warmups)})
+        units = _round_units(rng, settings)
         if k % 2:
             units.reverse()
-        for b in units:
-            b["round"] = k
-        blocks += units
+        blocks += [{**b, "round": k} for b in units]
     for i, b in enumerate(blocks):
-        b["id"] = f"b{i:02d}-{block_label(b)}"
+        b["id"] = f"b{i:02d}-{'lead-' if b.get('lead_in') else ''}{block_label(b)}"
     return blocks
 
 
@@ -380,7 +386,8 @@ class Batch:
 
 def _row(block: dict, i: int, phase: int | None, req: dict, answer: dict, client_s: float, warmup: bool) -> dict:
     return {"block": block["id"], "config": block["config"], "round": block["round"],
-            "hit_rate": block.get("hit_rate"), "pair": block.get("pair"), "index": i, "phase": phase, "warmup": warmup,
+            "hit_rate": block.get("hit_rate"), "pair": block.get("pair"), "lead_in": block.get("lead_in", False),
+            "index": i, "phase": phase, "warmup": warmup,
             "query": req["query"], "tickers": req["tickers"], "status": answer.get("status"),
             "source": answer.get("source"), "client_seconds": client_s, "server_seconds": answer.get("seconds"),
             "full_hashes": answer.get("full_hashes"), "counters": answer.get("counters"),
@@ -398,7 +405,8 @@ def run_block(batch: Batch, block: dict) -> dict:
     env = {**os.environ, MARKER_ENV: marker}
     env.pop("VIRTUAL_ENV", None)
     info: dict = {"block": block["id"], "config": block["config"], "round": block["round"],
-                  "hit_rate": block.get("hit_rate"), "pair": block.get("pair"), "marker": marker}
+                  "hit_rate": block.get("hit_rate"), "pair": block.get("pair"), "lead_in": block.get("lead_in", False),
+                  "marker": marker}
     stderr = (batch.folder / "logs" / f"{block['id']}.log").open("w")
     try:
         if block["config"] == "N":
