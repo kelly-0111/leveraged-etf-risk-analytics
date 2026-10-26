@@ -229,7 +229,7 @@ def test_the_default_redis_url_is_the_services():
     assert summary.DEFAULT_REDIS_URL == DEFAULT_REDIS_URL
 
 
-@step(6)
+@step(5)                                     # the success path only: no Redis failure in it
 def test_with_the_real_cache_a_cross_store_hit_stores_no_provenance(tmp_path):
     store_a, store_b = job_table(tmp_path / "a.sqlite"), job_table(tmp_path / "b.sqlite")
     job_a, folder_a = accepted_job(store_a, tmp_path / "out-a")
