@@ -116,11 +116,34 @@ response names store B. `tests/test_summary.py` pins this with two job tables. I
 form with the real cache waits for step 6. That form checks that the stored bytes contain
 neither store A's id nor any local path.
 
-## 5. The Redis overhead bound for a whole request
+## 5. Redis waiting time per request: a conditional calculation
 
-Notation: `t_c` is the connect timeout and `t_r` the read timeout (`CacheConfig`; the proposals
-are 0.1 s each, and the author decides them in step 6). The client is
-`etf_risk.services.redis_client` on redis-py 8.1.0, the cache group's exact pin.
+This section calculates how long one request can wait on Redis. The result holds only under
+the conditions below. It is not a hard end-to-end bound on a request's latency, and it says
+nothing about the time a request spends elsewhere.
+
+**Conditions:**
+1. **The client.** It is `etf_risk.services.redis_client` on redis-py 8.1.0, the cache group's
+   exact pin, with the settings listed below. Another version or other settings void the
+   calculation. `tests/test_redis_client.py` checks the locked version.
+2. **The host is an IP address.** `redis_client` refuses anything else.
+3. **The socket timeouts hold.** Python applies them per blocking call: in total for
+   `sendall`, per call for `recv`. The operating system must honour them.
+4. **The calls per request.** `get_or_compute` makes at most one GET and at most one SET, no
+   SET after a failed GET, and no call while the breaker is open. This is the author's code
+   (steps 5 and 6). Until those steps are written and their tests pass, this condition is a
+   contract, not a checked fact.
+5. **The simple form needs small values and one-piece replies.** Each packed command must fit
+   redis-py's 6000-byte buffer cutoff, and each reply must arrive in one piece. Otherwise the
+   general form applies. A reply that arrives in many delayed pieces has no bound at all.
+6. **Only waits inside the client's socket calls are counted.** Left out:
+   - CPU time: the key's hash, encoding, decoding;
+   - resolution and the folder checks;
+   - Spark and process start-up;
+   - time the process is descheduled or the machine sleeps.
+
+Notation: `t_c` is the connect timeout and `t_r` the read timeout (`CacheConfig`). The
+proposals are 0.1 s each; the author decides them in step 6.
 
 **One command** (GET or SET) makes only these blocking socket calls:
 - **Connection:** at most 2 attempts, each at most `t_c`. `ConnectionPool.get_connection`
@@ -142,26 +165,23 @@ are 0.1 s each, and the author decides them in step 6). The client is
 - **Retries:** none, at the command or at the connection (`Retry(NoBackoff(), 0)`). redis-py
   8.1.0's default is 10 retries with exponential backoff (10 ms base, 1 s cap).
 
-So one command takes at most `T_cmd ≤ 2·t_c + (s + k)·t_r`.
+So under conditions 1–3, one command waits at most `T_cmd ≤ 2·t_c + (s + k)·t_r`.
 
-**One request** (`ResultCache.get_or_compute`) makes at most one GET and at most one SET. It
-makes no SET after a failed GET, and no call at all while the breaker is open. Therefore:
+**One request.** Under condition 4, `ResultCache.get_or_compute` makes at most one GET and at
+most one SET, no SET after a failed GET, and no call while the breaker is open. Under
+conditions 1–4 and 6:
 
 - `T_request ≤ T_GET + T_SET ≤ 4·t_c + (s_GET + k_GET + s_SET + k_SET)·t_r`.
-- For values within the cutoff and replies that arrive in one piece: `T_request ≤ 4·t_c +
-  4·t_r`, which is 0.8 s at the proposed values.
+- With condition 5 as well, `T_request ≤ 4·t_c + 4·t_r`, which is 0.8 s at the proposed
+  values.
 - A request whose GET fails: `T_request ≤ 2·t_c + 2·t_r`, 0.4 s.
 - A request while the breaker is open: 0.
 - During an outage of length `W`, with threshold `F` and cooldown `T`, at most `F + ⌈W/T⌉`
   requests call Redis: `F` failures open the breaker, then one probe per cooldown.
 
-**What the bound does not cover:**
-- **A reply that trickles in.** `t_r` bounds each blocking call, not a command. A server that
-  sends its reply in many delayed pieces makes `k` large, and no hard wall-clock bound against
-  such a server is claimed.
-- **CPU time** for the key's hash and for encoding and decoding. These are not network waits
-  and grow with the value's size.
-- **Time outside Redis:** resolution, the folder checks, Spark.
+`t_r` limits each blocking call, not a whole command. When condition 5 fails, the general form
+above still holds, but `k` is whatever the server makes it. When any of conditions 1–4 fails,
+the calculation says nothing.
 
 **Where each part is pinned:**
 - **The per-command parts against the locked client:** `tests/test_redis_client.py`. A fake
@@ -169,7 +189,8 @@ makes no SET after a failed GET, and no call at all while the breaker is open. T
   A silent server times out once, after `t_r`. A closed port fails at once. A command makes
   one or two connection attempts. A reply in three delayed pieces succeeds after more than
   `t_r`. A SET longer than the cutoff is packed in three pieces.
-- **The calls per request:** `tests/test_cache_contract.py`, steps 5 and 6.
+- **The calls per request (condition 4):** `tests/test_cache_contract.py`, steps 5 and 6. They
+  are not yet passing, because those steps are not written.
 
 **Dry run, 2026-10-25,** on the Compose service on this machine (Docker Desktop), one run of
 each case, with `t_c = t_r` = 0.1 s:
@@ -190,7 +211,8 @@ is not a check of the budget.
 
 - Any latency saving from the cache (E3, M5).
 - Detection of content changes that keep every path, size and modification time (section 3).
-- A wall-clock bound against a Redis that replies in many delayed pieces (section 5).
+- A hard end-to-end bound on a request's latency. Section 5 is a conditional calculation of
+  Redis waiting time only, and gives no bound when a reply arrives in many delayed pieces.
 - Results for runs other than accepted job runs and registered historical runs.
 - Memory figures for the warm query service. The native processes' memory remains
   unvalidated (spec §11).

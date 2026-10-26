@@ -1,7 +1,8 @@
 """etf_risk.services.redis_client against redis-py as locked (the cache group): what one GET or
 SET sends and how long it can block. A fake RESP server on a local socket records every
 connection and command, so no Redis is needed; it answers, stays silent, closes at once, or
-sends its reply in delayed pieces. These pin the Redis overhead bound in docs/result-cache.md:
+sends its reply in delayed pieces. These pin the per-command parts of the conditional Redis
+waiting-time calculation in docs/result-cache.md §5 (not an end-to-end bound):
 no handshake or health-check commands, no retries, at most two connection attempts per
 command, a timeout per blocking socket call rather than per command.
 

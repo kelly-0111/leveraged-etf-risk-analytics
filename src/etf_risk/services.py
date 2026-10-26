@@ -14,7 +14,9 @@ peaks, and other projects' containers sharing Docker's VM (spec §11).
   the ports in docker/compose.yaml.
 - redis_client builds the result cache's client so that a command costs at most two
   connection attempts, one send and its reply's reads, each bounded by a timeout: no retries,
-  no handshake commands, no health-check PINGs, no DNS lookup (see its docstring).
+  no handshake commands, no health-check PINGs, no DNS lookup (see its docstring). What that
+  gives a request is a conditional calculation of Redis waiting time, not an end-to-end bound
+  (docs/result-cache.md §5).
 - peaks prints each service's cgroup v2 memory.peak, the highest usage since its container
   started (page cache included), against memory.max, the Compose limit, as docker/run.sh
   does for the pipeline container. A container that restarts may start a new count, so
