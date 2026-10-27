@@ -549,7 +549,8 @@ monitoring, at the author's decision._
   ([host-counters-correction.md](host-counters-correction.md), section 7). No record changes.
 - **Condition 4 over the whole batch (2026-10-27, the author's decision).**
   - **The monitor.** The harness runs `docker events` from the batch's start to its end
-    (`containers.jsonl`: time, action and whether a container is this project's, never a name).
+    (`containers.jsonl`: time, the action's verb only, and whether a container is this project's; never a name
+    or a command).
   - **The rule.** Any event of another project's container in that time, the gaps between readings
     included, fails the recovery-times verdict for the whole batch. A monitor that is missing or
     failed gives unknown, which fails too. This closes the gap noted above: the count at the

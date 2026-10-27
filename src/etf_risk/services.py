@@ -101,7 +101,8 @@ def other_containers() -> int:
 
 class ContainerEvents(threading.Thread):
     """`docker events` for container events, from start() until stop(). Each event keeps its
-    time, its action and whether it belongs to this project; never a name or an id. error says
+    time, its action's verb (never the command Docker may append) and whether it belongs to this project;
+    never a name or an id. error says
     why the monitor saw nothing it should have: the command could not start, or its stream ended
     before stop() (the daemon went away), so that a consumer treats the session as unmonitored."""
 
@@ -148,12 +149,17 @@ class ContainerEvents(threading.Thread):
 
 
 def parse_container_event(line: str, project: str) -> dict | None:
+    """One `docker events` line as the monitors keep it: the action's verb only, whether the
+    container is this project's, and the time. Docker appends a command to some actions
+    ("exec_create: <command>"), which for another project's container could reveal its command
+    line, so everything after the verb is dropped; so are names, ids and attributes."""
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
         return None
     attributes = (data.get("Actor") or {}).get("Attributes") or {}
-    return {"action": data.get("Action") or data.get("status"),
+    action = data.get("Action") or data.get("status")
+    return {"action": action.split(":", 1)[0].strip() if isinstance(action, str) else None,
             "ours": attributes.get("com.docker.compose.project") == project,
             "time": data.get("time")}
 

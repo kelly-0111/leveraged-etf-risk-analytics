@@ -36,7 +36,7 @@ page-in, page-out, swap-in and swap-out counters, memory pressure, power source,
 running containers outside this project; the Spark scratch at the start; container_monitor, the
 whole-batch container monitor's count and error; and power_log, the sleep and wake entries of
 `pmset -g log` during the batch, or why there are none), containers.jsonl (every container event
-from the batch's start to its end: time, action and whether it is this project's, never a
+from the batch's start to its end: time, the action's verb and whether it is this project's, never a
 name), events/ (every process's log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
 status-check.txt, cleanup.txt (cleanup's dry-run listing), and plan.json. A failure in the setup
 is recorded as setup_error, with every planned job as not_run; a failure in the final steps as

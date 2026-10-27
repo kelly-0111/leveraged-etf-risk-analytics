@@ -149,3 +149,31 @@ def test_the_result_cache_experiment_and_the_harness_share_the_monitor():
     from etf_risk import cache_experiment
     assert cache_experiment.ContainerEvents is services.ContainerEvents
     assert cache_experiment.parse_container_event is services.parse_container_event
+
+
+PRIVATE = "s3cret-token-0f9a"     # a private-looking value in a command another project's container runs
+
+
+def test_an_events_command_suffix_is_never_recorded_only_its_verb():
+    line = json.dumps({"Action": f"exec_create: curl -H 'Authorization: Bearer {PRIVATE}' http://db:5432",
+                       "status": f"exec_create: curl -H 'Authorization: Bearer {PRIVATE}' http://db:5432",
+                       "Actor": {"ID": "abc123", "Attributes": {"name": "someone-else-1", "execID": "e1",
+                                                               "com.docker.compose.project": "elsewhere"}},
+                       "time": 7})
+    event = services.parse_container_event(line, services.PROJECT)
+    assert event == {"action": "exec_create", "ours": False, "time": 7}
+    assert PRIVATE not in json.dumps(event) and "curl" not in json.dumps(event)
+
+
+def test_the_monitor_keeps_no_command_suffix_in_what_it_records():
+    line = json.dumps({"Action": f"exec_start: sh -c 'echo {PRIVATE}'",
+                       "Actor": {"Attributes": {"com.docker.compose.project": "elsewhere"}}})
+    script = f"import time; print({line!r}, flush=True); time.sleep(60)"
+    monitor = services.ContainerEvents(command=[sys.executable, "-c", script])
+    monitor.start()
+    deadline = time.monotonic() + 10
+    while not monitor.events and time.monotonic() < deadline:
+        time.sleep(0.05)
+    monitor.stop()
+    assert [e["action"] for e in monitor.events] == ["exec_start"]
+    assert PRIVATE not in json.dumps(monitor.events)
