@@ -134,3 +134,13 @@ is likely but not shown.
   as `spark_jvm`; records since 2026-10-23 carry the rule in their `process_kinds` field. The pandas
   baseline's eight P runs recorded only the pipeline's process, and the pipelines' outputs never
   depended on the rule.
+
+## The optional systems extension
+
+This walk-through covers the pipeline only.
+- **Commands:** the extension's (the job queue with a worker running the real pipeline, and the
+  result cache) are in the README's
+  [runbook](../README.md#systems-extension-services-runbook). They need Docker and its services
+  and were not run for this demo.
+- **Design, results and open items:** in the documents the README's reading guide lists under
+  the extension, and in [spec §11](spec.md).

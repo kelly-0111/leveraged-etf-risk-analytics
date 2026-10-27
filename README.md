@@ -21,7 +21,12 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
-| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress. The job queue runs the real pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is documented ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding. The Redis result cache serves the three summary queries for accepted and registered runs only, and falls back to Spark when Redis fails ([docs/result-cache.md](docs/result-cache.md)). Its experiment, E3, ran one valid formal batch ([docs/result-cache-experiment.md](docs/result-cache-experiment.md), [docs/result-cache-part-b.md](docs/result-cache-part-b.md)): host-specific paired latency observations, not a general performance claim |
+| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache ([spec §11](docs/spec.md)) | **In progress, not complete**: the outstanding items in the rows below |
+| Extension: job table, Kafka delivery and reconciler, and a worker running the real pipeline ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)) | Implemented; tested on SQLite and against MySQL and Kafka. The MySQL and Kafka container limits held in one isolated check under host memory pressure; **the native processes' memory is not validated** |
+| Extension: recovery study, E1 and E2 ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)) | Documented: E1 has supporting correctness observations; **valid formal E2 recovery-time evidence is outstanding** |
+| Extension: Redis result cache for the three summary queries ([docs/result-cache.md](docs/result-cache.md)) | Implemented: accepted and registered runs only; falls back to Spark when Redis fails |
+| Extension: result-cache experiment, E3 ([docs/result-cache-experiment.md](docs/result-cache-experiment.md), [docs/result-cache-part-b.md](docs/result-cache-part-b.md)) | Complete: one valid formal batch of host-specific paired latency observations, not a general performance claim |
+| Test suite | **Open**: two intermittent failures of `tests/test_baseline_collector.py`, with the cause unresolved ([spec §10](docs/spec.md)) |
 
 ## Reading guide
 
@@ -64,20 +69,50 @@ are not forecasts, and the model ignores fees, financing and execution.
    ran its session, and the
    [collector](analysis/collect_caching_measurements.py) builds its
    measurements CSV and checks its acceptance criteria.
-9. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
-   medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
-   often 2x beats twice the 1x return) and
-   [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
-   windows that use an unverified day).
-10. **The code**, in data-flow order: in `src/etf_risk/`, `download` →
+9. **The optional systems extension** ([spec §11](docs/spec.md), in progress; its
+   architecture diagram, guarantees and open items are there):
+   - **the job queue:** [docs/job-table.md](docs/job-table.md) (the job table and its
+     guarantees), [docs/job-queue.md](docs/job-queue.md) (Kafka delivery and the
+     reconciler) and [docs/worker-pipeline.md](docs/worker-pipeline.md) (the worker
+     with the real pipeline, and the memory check);
+   - **the recovery study:** [docs/recovery-experiments.md](docs/recovery-experiments.md)
+     (the design), [docs/recovery-part-a.md](docs/recovery-part-a.md) (the approved
+     protocol), [docs/recovery-part-b.md](docs/recovery-part-b.md) (the formal batches and
+     the answers) and [docs/recovery-sql.md](docs/recovery-sql.md) (the cross-check);
+   - **the result cache:** [docs/result-cache.md](docs/result-cache.md) (identity, fallback,
+     and the reviewed registry [docs/accepted-runs.json](docs/accepted-runs.json));
+   - **its experiment E3:** [docs/result-cache-experiment.md](docs/result-cache-experiment.md)
+     (Part A, the approved protocol, with the
+     [session helpers](docs/result-cache-session.zsh)) and
+     [docs/result-cache-part-b.md](docs/result-cache-part-b.md) (the formal batch and the
+     answer);
+   - **a correction:** [docs/host-counters-correction.md](docs/host-counters-correction.md)
+     (page counters that were recorded as swap traffic).
+
+   The commands are in the [runbook](#systems-extension-services-runbook) below.
+10. **The analyses**: [`sql_overview.py`](analysis/sql_overview.py) (counts and
+    medians per ticker), [`sql_comparison.py`](analysis/sql_comparison.py) (how
+    often 2x beats twice the 1x return) and
+    [`sql_sensitivity.py`](analysis/sql_sensitivity.py) (medians without the
+    windows that use an unverified day).
+11. **The code**, in data-flow order: in `src/etf_risk/`, `download` →
     `ingest` (with `validate`) → `windows` → `spark_pipeline` (which runs
-    `model`) → `verify`; `measure` times runs, `plans` records a run's
-    execution plans, `pandas_pipeline` computes the same results in one process
-    without Spark, and `plots` draws the figures from the result files. The
-    optional job queue (job table, worker, Kafka delivery, reconciler) is in
-    `jobs/` ([docs/job-table.md](docs/job-table.md),
-    [docs/job-queue.md](docs/job-queue.md)). Module overview: spec §5.
-11. **How AI was used**: [AI assistance](#ai-assistance) below.
+    `model`) → `verify`.
+    - **Around the pipeline:** `measure` times runs, `plans` records a run's execution plans,
+      `pandas_pipeline` computes the same results in one process without Spark, and `plots`
+      draws the figures from the result files.
+    - **The extension:**
+      - `jobs/`: the job table, worker, Kafka delivery, reconciler, the recovery harness and
+        its fault hooks;
+      - `runs`: which runs the cache may serve;
+      - `services`: the Compose services' readiness, memory peaks and the Redis client;
+      - `cache`: the result cache's logic;
+      - `summary`: the three queries, one-shot or warm;
+      - `cache_experiment`: E3's driver.
+    - **Collectors:** each experiment's batch collector is in `analysis/`.
+
+    Module overview: spec §5.
+12. **How AI was used**: [AI assistance](#ai-assistance) below.
 
 ## Key results
 
@@ -396,6 +431,13 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   implementation; and a caching experiment, committed the same way, that
   compared three caching strategies and checked every cache in Spark's storage
   information and execution plans.
+- **Systems** (the optional extension):
+  - a MySQL job table with conditional state transitions and attempt tokens;
+  - at-least-once Kafka delivery with manual offset commits, and a reconciler;
+  - a cache-aside Redis cache keyed by the result's content, with a circuit breaker;
+  - Docker Compose services with memory limits;
+  - failure-injection (recovery) and paired-latency (cache) experiments, each with a protocol
+    approved before its formal batch.
 
 ## AI assistance
 
@@ -410,7 +452,14 @@ together with how it was checked.
   `src/etf_risk/model.py`, and the SQL queries in `analysis/`. The queries were
   tutored exercises: Claude Code set the tasks and acceptance criteria and
   reviewed my attempts and my reading of the execution plan, without writing
-  the queries. It later added the scripts' command-line input.
+  the queries. It later added the scripts' command-line input. Likewise
+  tutored: the result cache's logic in `src/etf_risk/cache.py`, and moving the
+  SQL into `src/etf_risk/summary.py`.
+- **Contributed by both:** the recovery experiments and the result-cache
+  experiment (E3). Claude Code proposed their designs, wrote the tooling and
+  drafted the documents and answers, and ran the recovery batches at my
+  instruction; I made every decision and approval, and ran E3's prepared dry
+  runs and formal batch.
 - **Other tools:** the transcript hook (`.claude/hooks/save_transcript.py`) was
   first drafted with Codex assistance, inspired by a `log_ai.py` script from a
   CS639 project; Claude Code later changed it to save one log per message and
@@ -434,18 +483,24 @@ together with how it was checked.
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4) are complete
    ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)).
-4. **Optional systems extension** (spec §11): Docker Compose with MySQL, Kafka
-   and Redis for a job queue and a result cache, with recovery and caching
-   experiments. The job queue runs the real pipeline
-   ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md),
-   [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is
-   documented ([docs/recovery-part-a.md](docs/recovery-part-a.md),
-   [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting
-   correctness observations, and valid formal E2 recovery-time evidence remains
-   outstanding. The result cache is implemented
-   ([docs/result-cache.md](docs/result-cache.md)). Its experiment, E3, ran one valid
-   formal batch on this Mac ([docs/result-cache-experiment.md](docs/result-cache-experiment.md),
-   [docs/result-cache-part-b.md](docs/result-cache-part-b.md)). Against the identical request in
-   a warm Spark session, a hit took a median 5.4 ms instead of 0.132 s, and blocks at 0%, 50% and
-   90% hits took a median 1.04, 0.51 and 0.14 times their controls' time. These are host-specific
-   paired observations.
+4. **Optional systems extension** (spec §11): in progress, not complete.
+   - **Done:**
+     - the job queue, which runs the real pipeline
+       ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md),
+       [docs/worker-pipeline.md](docs/worker-pipeline.md));
+     - the recovery study's documentation, with supporting correctness observations for E1
+       ([docs/recovery-part-a.md](docs/recovery-part-a.md),
+       [docs/recovery-part-b.md](docs/recovery-part-b.md));
+     - the result cache ([docs/result-cache.md](docs/result-cache.md));
+     - its experiment, E3, with one valid formal batch on this Mac
+       ([docs/result-cache-experiment.md](docs/result-cache-experiment.md),
+       [docs/result-cache-part-b.md](docs/result-cache-part-b.md)). Against the identical
+       request in a warm Spark session, a hit took a median 5.4 ms instead of 0.132 s. Blocks
+       at 0%, 50% and 90% hits took a median 1.04, 0.51 and 0.14 times their controls' time.
+       These are host-specific paired observations.
+   - **Outstanding:**
+     - valid formal E2 recovery-time evidence: both formal batches were invalid for timing;
+     - a representative validation of the native processes' memory: the container limits
+       held, but under host memory pressure;
+     - the cause of two intermittent failures of `tests/test_baseline_collector.py`
+       ([spec §10](docs/spec.md)).
