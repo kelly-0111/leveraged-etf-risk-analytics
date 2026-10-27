@@ -1,12 +1,16 @@
-# Result-cache experiment (E3): Part A, draft for approval
+# Result-cache experiment (E3): Part A (approved)
 
 Author: contributed by both the project author and Claude Code. Claude Code proposed this design,
 drafted this document and wrote the tooling (`src/etf_risk/cache_experiment.py`,
 `analysis/collect_result_cache_measurements.py`, `docs/result-cache-session.zsh` and their tests).
 The author makes every decision and approval: the decisions taken so far are in section 1, and
-the ones this draft asks for are in section 9. On 2026-10-26 the author approved section 6, the
-protocol, with its swap-out rule, and the formal seed and rerun policy (section 4). The rest
-awaits approval. The protocol is not frozen, and no formal batch has run.
+the ones this draft asked for are in section 9. The author approved all of Part A on
+2026-10-26:
+- section 6, the protocol, with its swap-out rule;
+- the formal seed and the rerun policy (section 4);
+- then sections 1–5 and 7.
+
+The executable code is frozen at `5b916a5` (section 10). No formal batch has run.
 
 > **Correction, 2026-10-26.** Until this date E3's tooling and this draft called psutil's `sin`
 > and `sout` "swap-in" and "swap-out". On macOS they are page-ins and page-outs. This draft now
@@ -48,11 +52,20 @@ Decided by the author (2026-10-26):
 | **F** | like R | the warm stat check | Redis stopped after phase 1, started again before phase 3 |
 
 **Reading N, W and R apart.** The resolution differs by configuration, so its cost is reported on
-its own: the server's `seconds.resolve`, next to the client's latency. In the dry runs:
+its own: the server's `seconds.resolve`, next to the client's latency.
+
+The original examples, from the dry runs before the pairs (editor open):
 - **N's full hash** took 75–170 ms of a 9.4–15 s request. Process start-up, imports and a new
   SparkSession are the rest.
 - **The warm stat check** took about 7.5 ms. That is most of a warm hit (8.5–17 ms): Redis's
   GET and the decoding are about 1 ms.
+
+**Revised 2026-10-26, dry-run-informed,** from the three prepared dry runs
+(`dry-run/20261026T160445Z`, `dry-run/20261026T193201Z-lead-in-round`,
+`dry-run/20261026T225409Z-vm-counters`; editor closed). Medians per batch:
+- **N's full hash:** 30–38 ms of a 6.0–7.4 s request.
+- **The warm stat check:** 4.6–6.4 ms.
+- **A warm hit:** 5.5–6.9 ms. So Redis's GET and the decoding are still about 1 ms.
 
 So the reports compare:
 - **R's hits with W:** what the cache saves over a warm session;
@@ -62,7 +75,7 @@ So the reports compare:
 A one-shot process with Redis is not a configuration here. Its hits would still pay the
 process start-up and the full hash.
 
-## 3. Workload (proposals)
+## 3. Workload (approved)
 
 - **Key space.** The 3 queries × the 31 non-empty ticker subsets give 93 distinct requests on
   the registered run.
@@ -114,7 +127,11 @@ and the reference answers, 13.2 minutes. With the lead-in round (section 4) and 
 each block (about 0.5 s; section 6), the next batch should take about 15–16 minutes. The
 editor-open estimate of about 24 minutes overstated it.
 
-## 4. Order (proposals)
+**Revised 2026-10-26, dry-run-informed.** The two prepared runs with the lead-in round took 18.0
+and 15.4 minutes, with measured rounds of 125–162 s. Expect 15–18 minutes for the formal batch,
+plus about 2 minutes for starting Redis, the preflight and the collection.
+
+## 4. Order (approved)
 
 **The lead-in round (approved by the author, 2026-10-26, for the next dry run).** A full round,
 numbered −1, runs before round 0. It has the 8 blocks in the forward order, with requests and
@@ -184,7 +201,7 @@ What this order does and does not do:
 - **Swap-out flags never cause a rerun.** They only decide what the sensitivity analysis leaves
   out (section 6).
 
-## 5. Host conditions and contemporaneous controls on this Mac (proposals)
+## 5. Host conditions and contemporaneous controls on this Mac (approved)
 
 **Why not the 4.0 GiB gate.** That gate was approved in M2 to decide whether *memory figures*
 are representative: resident sizes shrink under compression and swap. E3's main results are
@@ -399,7 +416,10 @@ labelled, with its sample counts, and never replaces it.
   GiB in the dry runs), each N process's peak (about 0.42 GiB), and Redis's cgroup peak (read
   before every stop, since a restart resets it) and `used_memory_peak`.
 
-## 8. Predictions (from the two dry runs; not results)
+## 8. Predictions (not results)
+
+**The original predictions,** from the two dry runs before the pairs (editor open), kept as
+written:
 
 - **W:** a median of 0.20–0.26 s per request.
 - **R misses:** about W, at 0.20–0.36 s.
@@ -410,7 +430,22 @@ labelled, with its sample counts, and never replaces it.
   section 7).
 - **The breaker's sequence** is exact: 3 errors, then skips.
 
-## 9. Decisions this draft asks for
+**Revised predictions (2026-10-26, dry-run-informed),** from the three prepared dry runs
+(`dry-run/20261026T160445Z`, `dry-run/20261026T193201Z-lead-in-round`,
+`dry-run/20261026T225409Z-vm-counters`; editor closed). They are made
+before any formal batch. Formal results are never used to revise them. Figures are batch
+medians unless stated.
+- **W:** 0.13–0.16 s per request (0.127, 0.131 and 0.159 s).
+- **R misses:** about W, at 0.137–0.164 s.
+- **R hits:** 5.5–6.9 ms, of which the warm stat check is 4.6–6.4 ms.
+- **Each R block's total against its W control's,** per round, in the two runs with the lead-in
+  round: R0 0.90–1.13, R50 0.46–0.64, R90 0.12–0.18.
+- **N:** 6.0–7.4 s per request.
+- **Redis down:** the time outside Spark and resolution with Redis stopped stayed within 0.4 ms
+  of W's (medians 4.9–6.0 ms against 4.7–6.4 ms), so the original "under 1 ms" holds.
+- **The breaker's sequence** is exact: 3 errors, then skips (all three runs).
+
+## 9. Decisions (all approved by the author, 2026-10-26)
 
 1. **Configurations and interpretation** (section 2), including that N has no Redis variant.
 2. **Workload** (section 3): block size 30; hit rates 0, 50 and 90%; a W control for each R
@@ -459,6 +494,9 @@ Approved by the author on 2026-10-26:
 - **N pairs** are flagged when either member swapped out, N included. A missing counter on
   either side leaves the pair out of the sensitivity analysis.
 - **The formal seed, 5309, and the rerun policy** (section 4).
+- **Sections 1–5 and 7, as summarized;** with them, all of Part A. The revised examples and
+  predictions (sections 2, 3 and 8) are dated and dry-run-informed; the originals are kept.
+- **The code frozen at `5b916a5`,** with later commits documentation only (section 10).
 
 ## 10. Dry runs so far (not formal)
 
@@ -517,20 +555,32 @@ untouched). It flagged 3 of the 4 block pairs:
 
 R90 was left unflagged. The sensitivity analysis kept 30 of 96 request pairs.
 
-**The next prepared dry run (proposed; not started).** The same design and seed (2611), under the
-protocol of section 6, so that each block can be set beside the same block of the two earlier
-prepared runs. It adds the experiment's own CPU time, the sleep check, and a second batch of swap
-counters. The author decides when it runs, from Terminal under the preparation of section 5,
-with the editor closed. Its records are kept whatever its outcome. Claude Code cannot run it: the
-preparation means quitting the editor, which Claude Code runs in.
+**The full offline suite on the final code.** On `5b916a5`, with a clean worktree and no
+live-service variable set, `uv run --all-groups python -m pytest -v -rfEsxX --durations=25` gave
+**1053 passed, 38 skipped, 0 failed**, in 6 min 22 s (2026-10-27, 04:31–04:37 UTC). The complete
+output is in `data/outputs-result-cache/checks/20261027T043107Z-full-offline-suite.log`.
+- **The 38 skips** are all live-service tests: Kafka 11, the live pipeline 10, MySQL 9, the
+  MySQL resolver 4, Redis 4.
+- **The intermittent baseline-collector failure,** an open issue from M4, did not occur.
 
-**Freezing the protocol.** Section 6 and the swap-out rule are approved. The freeze needs the
-author's approval of the rest of Part A (section 9), the formal seed and the rerun policy
-included, and the required checks passing on the final code. The frozen commit is then recorded
-here, in a documentation-only commit that leaves the code unchanged; the formal batch's recorded
-source hashes must match the frozen commit's. The formal batch
-runs on that commit only. `run --formal` refuses a dirty worktree, and the batch records its code
-identity.
+**No further prepared dry run (the author, 2026-10-26).** A prepared dry run under the final
+protocol was proposed: seed 2611, the experiment's own CPU time, the sleep check, a second batch
+of swap counters. The author decided against it. So the final protocol's sleep check and own-CPU
+sampler have run in functional checks only. Their overhead on the timings has not been separately
+quantified (section 6, limitations).
+
+**The frozen protocol (2026-10-26).**
+- **The code is frozen at `5b916a5`:** `src/`, `analysis/`, `tests/`, `pyproject.toml`, `uv.lock`
+  and the session helpers. Every later commit changes documentation (`.md` files) only.
+- **Commit identity.** The formal batch records the commit it actually runs on (`batch.json`,
+  `code.git_commit`), a later documentation commit included.
+- **Verification after the batch** (section 11) compares the batch's recorded source hashes, and
+  `uv.lock`'s, with `5b916a5`'s, and requires a clean worktree. The source hashes cover every
+  `.py` and `.sql` file of the package.
+- **Before the batch,** `git diff 5b916a5` must show no change to the frozen paths. That covers
+  the collector and the session helpers, which the source hashes do not.
+- **A mismatch** means the batch did not run on the frozen code: it is reported, and it is not a
+  formal result.
 
 ## 11. Commands
 
@@ -547,23 +597,32 @@ The session helpers, in order:
 | `e3_collect` | checks validity and writes the summaries; exits 1 unless valid; appends to `session.log` |
 | `e3_cleanup` | stops and removes the redis service only |
 
-For the next prepared dry run, after quitting every other application (the editor included),
-with AC power, the lid open, and Docker running with nothing else (`<repository>` is the main
-checkout):
+**The formal session.** After quitting every other application (the editor included), with AC
+power, the lid open, and Docker running with nothing else. `<repository>` is the main checkout.
+
+The first `git` line must print `frozen code: ok`. If it prints `frozen code: STOP`, nothing more
+is run. After the batch, the last command prints the commit the batch ran on and its seed, and
+whether its recorded source hashes and `uv.lock` match `5b916a5` and its worktree was clean. It
+exits 0 only when all of these hold (section 10, the frozen protocol).
 
 ```zsh
 cd <repository>/.claude/worktrees/result-cache-experiment
 deactivate 2>/dev/null
-export E3_PURPOSE=dry-run
-export E3_SEED=2611
-export E3_BATCH=$(date -u +%Y%m%dT%H%M%SZ)-protocol
+git diff --quiet 5b916a5 -- src analysis tests pyproject.toml uv.lock docs/result-cache-session.zsh && test -z "$(git status --porcelain)" && echo "frozen code: ok" || echo "frozen code: STOP"
+export E3_PURPOSE=formal
+export E3_SEED=5309
+export E3_BATCH=$(date -u +%Y%m%dT%H%M%SZ)-formal-1
 source docs/result-cache-session.zsh
 e3_redis
 e3_plan
 e3_run
 e3_collect
 e3_cleanup
+uv run python -c 'import hashlib, json, subprocess, sys; folder, frozen_commit = sys.argv[1], "5b916a5"; code = json.load(open(folder + "/batch.json"))["code"]; seed = json.load(open(folder + "/plan.json"))["seed"]; show = lambda path: subprocess.run(["git", "show", frozen_commit + ":" + path], capture_output=True, check=True).stdout; names = subprocess.run(["git", "ls-tree", "-r", "--name-only", frozen_commit, "src/etf_risk"], capture_output=True, text=True, check=True).stdout.split(); frozen = {n[len("src/etf_risk/"):]: hashlib.sha256(show(n)).hexdigest() for n in names if n.endswith((".py", ".sql"))}; same_source = code["source_sha256"] == frozen; same_lock = code["uv_lock_sha256"] == hashlib.sha256(show("uv.lock")).hexdigest(); print("HEAD", code["git_commit"], "| seed", seed, "| source hashes match", frozen_commit, same_source, "|", len(frozen), "files | uv.lock matches", same_lock, "| worktree clean", code["git_worktree_clean"]); sys.exit(0 if same_source and same_lock and code["git_worktree_clean"] is True and seed == 5309 else 1)' $E3_DIR
 ```
+
+A rerun, if the rerun policy (section 4) allows one, uses the same commands with the suffix
+`-formal-2`.
 
 ## 12. Not claimed
 
