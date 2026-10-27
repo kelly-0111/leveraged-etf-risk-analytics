@@ -145,6 +145,6 @@ timing validity was established.
 - This is a documented protocol correction ([result-cache-experiment.md](result-cache-experiment.md),
   section 6), not a relabelling of past batches: each keeps the verdict it was collected with,
   that dry run's "NOT valid: host 4" included.
-- Real swap traffic got its own rule, approved the same day. A pair is flagged when its W or R
-  block swapped out, and the analysis without flagged pairs is reported as a labelled
+- Real swap traffic got its own rule, approved the same day. A pair is flagged when either member
+  swapped out (N pairs included), and the analysis without flagged pairs is reported as a labelled
   sensitivity analysis. Validity is unaffected, and no size threshold is set.

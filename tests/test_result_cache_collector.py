@@ -327,15 +327,30 @@ def test_a_pair_is_flagged_when_its_w_or_r_block_swapped_out_and_kept_in_the_pri
     assert "2 of 8 block pairs flagged, 0 not recorded (60 and 0 of 192 request pairs)" in capsys.readouterr().out
 
 
-def test_an_n_pair_is_flagged_by_its_w0_block_alone(tmp_path):
+@pytest.mark.parametrize("member", ["N", "W0"])
+def test_an_n_pair_is_flagged_when_either_member_swapped_out(tmp_path, member):
     folder = build(tmp_path / "batch")
-    swap_out(folder, block_id(folder, "N", 0))
-    run(folder)
-    assert json.loads((folder / "swap_flags.json").read_text())["block_pairs"]["flagged"] == 0
-    swap_out(folder, block_id(folder, "W", 0, 0.0))
+    swap_out(folder, block_id(folder, "N", 0) if member == "N" else block_id(folder, "W", 0, 0.0))
     run(folder)
     flags = json.loads((folder / "swap_flags.json").read_text())
-    assert flags["block_pairs"]["flagged"] == 2 and len(flags["flagged"]) == 2     # R0 and N of round 0
+    n_pair = f"{block_id(folder, 'N', 0)}/{block_id(folder, 'W', 0, 0.0)}"
+    assert n_pair in flags["flagged"]
+    assert flags["block_pairs"]["flagged"] == (1 if member == "N" else 2)     # W0 is also R0's control
+
+
+@pytest.mark.parametrize("missing", ["N", "W0"])
+def test_an_n_pair_with_either_counter_missing_is_not_recorded(tmp_path, missing):
+    folder = build(tmp_path / "batch")
+    target = block_id(folder, "N", 0) if missing == "N" else block_id(folder, "W", 0, 0.0)
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**GOOD_WINDOW, "swapouts": None})
+                                             for b in bs if b["block"] == target])
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    flags = json.loads((folder / "swap_flags.json").read_text())
+    assert f"{block_id(folder, 'N', 0)}/{block_id(folder, 'W', 0, 0.0)}" in flags["not_recorded"]
+    assert flags["block_pairs"]["flagged"] == 0
+    pairs = list(csv.DictReader((folder / "paired.csv").open()))
+    assert {p["swap_flag"] for p in pairs if p["config"] == "N" and p["round"] == "0"} == {""}
 
 
 def test_pairs_without_swap_counters_stay_in_the_primary_analysis_and_leave_the_sensitivity_one(tmp_path, capsys):

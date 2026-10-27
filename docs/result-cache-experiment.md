@@ -4,8 +4,9 @@ Author: contributed by both the project author and Claude Code. Claude Code prop
 drafted this document and wrote the tooling (`src/etf_risk/cache_experiment.py`,
 `analysis/collect_result_cache_measurements.py`, `docs/result-cache-session.zsh` and their tests).
 The author makes every decision and approval: the decisions taken so far are in section 1, and
-the ones this draft asks for are in section 9. The author approved section 6, the protocol, with
-its swap-out rule, on 2026-10-26. The rest awaits approval, and no formal batch has run.
+the ones this draft asks for are in section 9. On 2026-10-26 the author approved section 6, the
+protocol, with its swap-out rule, and the formal seed and rerun policy (section 4). The rest
+awaits approval. The protocol is not frozen, and no formal batch has run.
 
 > **Correction, 2026-10-26.** Until this date E3's tooling and this draft called psutil's `sin`
 > and `sout` "swap-in" and "swap-out". On macOS they are page-ins and page-outs. This draft now
@@ -304,6 +305,14 @@ any formal measurement).
   around round 0's. So the ±20% rule can fail a formal batch on round-to-round variation alone.
   It is kept unchanged.
 - **Swap.** Only one prepared batch has recorded swap counters.
+- **Monitoring overhead.** Every timing includes the monitoring configuration:
+  - the host sampler, which every second starts `sysctl`, `vm_stat` and `pmset`;
+  - the own-CPU sampler and each warm process's tree sampler, every 0.5 s;
+  - `docker events`, for the whole batch.
+
+  Every configuration runs under the same monitoring, so both members of a pair carry it. But the
+  samplers' overhead on the latencies has not been separately quantified, so absolute latencies
+  are the latencies of this monitored setup.
 
 **The swap-out rule** (approved by the author, 2026-10-26; implemented in the collector).
 - **Why swap matters.** A swap-out means the memory compressor ran out of room and wrote memory to
@@ -311,14 +320,16 @@ any formal measurement).
   traffic indicates a memory shortage directly, and it is what the withdrawn limits were meant to
   catch.
 - **The rule:**
-  - **Flagging.** A pair is flagged when its W block or its R block swapped out (vm_stat's
-    Swapouts rose during the block). An N pair is flagged by its W0 block, the only W or R block
-    in it. `paired.csv` gives each pair's `swap_flag`.
+  - **Flagging.** A pair is flagged when either member's block swapped out (vm_stat's Swapouts
+    rose during the block): an R block or its W control, an N block or its W0. N pairs were
+    first flagged by W0 alone; the author extended the rule to both members on 2026-10-26.
+    `paired.csv` gives each pair's `swap_flag`.
   - **The primary analysis** keeps every valid pair, flagged or not, and the flagged data are
     kept.
   - **The sensitivity analysis,** labelled "sensitivity: excluding swap-out pairs" in
     `paired_summary.csv`, leaves out every pair not known to be free of swap-outs: flagged, or
-    without swap counters. Every group reports `n` and `n_excluded`, including a group left
+    with either member's swap counter not recorded, the same rule on both sides. Every group
+    reports `n` and `n_excluded`, including a group left
     empty. `swap_flags.json` gives the counts of block pairs and request pairs, and names the
     flagged ones.
   - **Effect on validity:** none. Swap-ins are reported only.
@@ -415,9 +426,9 @@ labelled, with its sample counts, and never replaces it.
 7. **Reporting** (section 7): paired end-to-end differences as the primary result; the
    diagnostics as descriptive and the hit imbalance as an estimate; F as correctness and Redis's
    share, not a latency comparison; memory figures as not representative.
-8. **The formal batch and the rerun policy** (section 4): seed 5309; at most two formal batches
-   on one frozen commit; a rerun only after a host, cleanup or drift failure; none after a
-   correctness failure until it is diagnosed.
+8. **The formal batch and the rerun policy** (section 4): approved on 2026-10-26. Seed 5309; at
+   most two formal batches on one frozen commit; a rerun only after a host, cleanup or drift
+   failure; none after a correctness failure until it is diagnosed.
 
 Decided by the author on 2026-10-26, for the next dry run: the lead-in round (section 4), the
 settle and the batch-wide container check (section 6), the descriptive diagnostics (section 7),
@@ -445,6 +456,9 @@ Approved by the author on 2026-10-26:
   - all valid pairs stay in the primary analysis, and the flagged data are kept;
   - the analysis without flagged pairs is reported as a labelled sensitivity analysis, with
     sample counts.
+- **N pairs** are flagged when either member swapped out, N included. A missing counter on
+  either side leaves the pair out of the sensitivity analysis.
+- **The formal seed, 5309, and the rerun policy** (section 4).
 
 ## 10. Dry runs so far (not formal)
 
@@ -487,17 +501,21 @@ test:
 - disabling the sleep check;
 - gating page-ins again.
 
-With the swap-out rule, the same suites pass: **111 tests**. Four deliberate faults were each
-caught by a failing test:
+With the swap-out rule, N pairs flagged by either member, the same suites pass: **114 tests**.
+Five deliberate faults were each caught by a failing test:
 - ignoring the W control's swap-out;
 - keeping unrecorded pairs in the sensitivity analysis;
 - dropping flagged pairs from the primary analysis;
-- flagging an N pair by its own block.
+- flagging N pairs by W0 alone;
+- reading a missing N counter as free of swap-outs.
 
 The collector was also run on a copy of `functional/20261026T233512Z-own-cpu` (the original
-untouched). Of its 4 block pairs it flagged 2: R0, whose R block swapped out 75 MiB, and R50,
-whose W control swapped out 50 MiB. The N pair stayed unflagged: its W0 swapped out nothing,
-though the N block swapped out 6 MiB. The sensitivity analysis kept 36 of 96 request pairs.
+untouched). It flagged 3 of the 4 block pairs:
+- R0, whose R block swapped out 75 MiB;
+- R50, whose W control swapped out 50 MiB;
+- the N pair, whose N block swapped out 6 MiB while its W0 swapped out nothing.
+
+R90 was left unflagged. The sensitivity analysis kept 30 of 96 request pairs.
 
 **The next prepared dry run (proposed; not started).** The same design and seed (2611), under the
 protocol of section 6, so that each block can be set beside the same block of the two earlier
@@ -552,6 +570,8 @@ e3_cleanup
 - Latency savings for other workloads, other runs, other hosts, or a shared or remote Redis.
 - A hard end-to-end bound on any request ([result-cache.md](result-cache.md), section 6).
 - Representative memory figures (section 5).
+- Latencies free of the monitoring's overhead, which has not been separately quantified
+  (section 6).
 - Behaviour under a paused or partially responsive Redis. The design stops Redis, which refuses
   connections at once.
 - Any change to the analysis results in spec §8.

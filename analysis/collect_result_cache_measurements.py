@@ -188,9 +188,9 @@ def _rest(r: dict) -> float:
     return r["client_seconds"] - (server.get("spark") or 0.0) - (server.get("resolve") or 0.0)
 
 
-SWAP_RULE = ("a pair is flagged when its W or R block swapped out (vm_stat's Swapouts rose); N pairs by their "
-             "W0 block. All valid pairs form the primary analysis; the sensitivity analysis leaves out every pair "
-             "not known to be free of swap-outs (flagged, or not recorded)")
+SWAP_RULE = ("a pair is flagged when either member swapped out (vm_stat's Swapouts rose): an R block or its W "
+             "control, an N block or its W0. All valid pairs form the primary analysis; the sensitivity analysis "
+             "leaves out every pair not known to be free of swap-outs (flagged, or a member's counter not recorded)")
 SENSITIVITY = "sensitivity: excluding swap-out pairs"
 
 
@@ -220,8 +220,8 @@ def paired(plan: dict, rows: list[dict], blocks: dict | None = None) -> list[dic
     for a hit, which runs no Spark); diag_rest_difference_s is the same difference for the time
     outside Spark and resolution. Neither says why a difference arose.
 
-    swap_flag is True when the pair's W or R block swapped out (an N pair: its W0 block), False
-    when both are known not to have, empty when not recorded (SWAP_RULE)."""
+    swap_flag is True when either member's block swapped out (R or its W control; N or its W0),
+    False when both are known not to have, empty when either is not recorded (SWAP_RULE)."""
     out = []
     blocks = blocks or {}
     measured = [r for r in rows if not r["warmup"] and r["status"] == "ok"]
@@ -233,8 +233,7 @@ def paired(plan: dict, rows: list[dict], blocks: dict | None = None) -> list[dic
         if w is None:
             continue
         ws = [r for r in measured if r["block"] == w["id"]]
-        flag = pair_flag(swapped_out(blocks.get(w["id"])),
-                         *([swapped_out(blocks.get(b["id"]))] if b["config"] == "R" else []))
+        flag = pair_flag(swapped_out(blocks.get(w["id"])), swapped_out(blocks.get(b["id"])))
         for r in [x for x in measured if x["block"] == b["id"]]:
             if b["config"] == "R":
                 c = next((x for x in ws if x["index"] == r["index"]), None)
