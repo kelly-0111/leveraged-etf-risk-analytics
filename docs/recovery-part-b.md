@@ -8,6 +8,17 @@ drafted with Claude Code and approved by the author, unchanged, on 2026-10-25. P
 outside Git and have not been changed since the collector wrote them; later notes sit beside them
 as separate files. Times are local (UTC−5) on 2026-10-25._
 
+> **Correction, 2026-10-26.** The bytes this document called "swapped in" and "swapped out"
+> are psutil's `sin` and `sout`. On macOS they are page-ins and page-outs, not swap traffic
+> ([host-counters-correction.md](host-counters-correction.md)). At the author's instruction:
+> - sections 5.2 and 6 now say "paged in" and "paged out", with the figures unchanged;
+> - "heavy swapping" (section 5.2) and "swapping heavily" (section 7.3, an answer approved on
+>   2026-10-25) are replaced by the swap in use the records show, because the recorded counters
+>   do not measure swap traffic.
+>
+> Swap in use is recorded correctly, and its figures are kept. No verdict changes: nothing gated
+> on these counters.
+
 ## 1. The author's decisions (2026-10-25)
 
 - Part A was approved with all 13 decisions of its section 10, seed 544 included. Its row 11: a
@@ -196,7 +207,7 @@ decision. This part therefore reports no formal recovery times.
 batch, by the time another project's container started, and the batch they belong to is invalid
 for recovery times. The other recorded conditions held for them: AC power and the lid open at their
 readings, no sleep, the clock check. They were taken under memory pressure (level 2 at 16 of their
-17 readings) with heavy swapping, on this host only. They are counts per job, with no rate and no
+17 readings), with 3.86–8.25 GiB of swap in use at those readings, on this host only. They are counts per job, with no rate and no
 performance claim. Every outcome in the range is kept, the two late jobs included.
 
 Detection, re-run and finish times are the collector's, as section 5 of the outline defines them:
@@ -206,7 +217,7 @@ submit. For D1 and K2, the injection is the service's stop, while the reference 
 return, 35.3–35.8 s after the stop. Measured from the return, the D1 jobs finished in 21.7 and
 14.9 s and the K2 job in 68.4 s.
 
-| Position | Case | Claims | Detection (s) | Re-run (s) | Finish (s) | D (s) | Deadline | Pressure | Available (GiB) | Swapped out during (MiB) |
+| Position | Case | Claims | Detection (s) | Re-run (s) | Finish (s) | D (s) | Deadline | Pressure | Available (GiB) | Paged out during (MiB) |
 |---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|
 | 1 | C0 | 1 | n/a: no failure | n/a: no failure | 84.7 | 75 | late | 2 | 1.42 | 83 |
 | 2 | W5a | 1 | n/a: after acceptance | n/a: after acceptance | n/a: after acceptance | 75 | on time | 2 | 1.48 | 9 |
@@ -227,8 +238,8 @@ return, 35.3–35.8 s after the stop. Measured from the return, the D1 jobs fini
 | 17 | W6 | 2 | 58.8 | 58.8 | 101.6 | 140 | on time | 1 | 2.04 | 98 |
 
 - **2 of the 17 jobs were late,** both before the other container started:
-  - position 1 (C0, the batch's first job), 84.7 s against 75 s, with 83 MiB swapped out during it;
-  - position 16 (W6), 182.6 s against 140 s, with 132 MiB swapped out during it.
+  - position 1 (C0, the batch's first job), 84.7 s against 75 s, with 83 MiB paged out during it;
+  - position 16 (W6), 182.6 s against 140 s, with 132 MiB paged out during it.
 - **The controls in this range** (positions 1 and 10) took 84.7 and 43.2 s.
 - **Cases missing:** W1, W4 and D2 ran only at positions 18–30, so there is no supplementary
   observation of their times.
@@ -250,7 +261,7 @@ here, because they ran while another project's container ran. Their correctness 
 | Clock check | failed: no `batch_ended` event | passed: wall minus monotonic −0.009 s, 19 of 19 processes on one clock |
 | Memory pressure | level 2 at all 21 | level 2 at 31 of 32; 1 before position 17 |
 | Available before each job | 1.45–1.83 GiB | 1.21–2.04 GiB |
-| Swap over the batch | not computable: no end reading | in use +2.67 GiB; 1.35 GiB swapped out, 47.9 GiB swapped in |
+| Swap and paging over the batch | not computable: no end reading | swap in use +2.67 GiB; 1.35 GiB paged out, 47.9 GiB paged in |
 | Container peaks | MySQL 317 of 512 MiB (62%); Kafka 506 of 640 MiB (79%) | MySQL 269 of 512 MiB (53%); Kafka 505 of 640 MiB (79%) |
 | Other containers | 0 at the start; no later count | 0 at the start; one from 06:25:08, outside the records (3.2) |
 
@@ -309,8 +320,9 @@ batch-2 was lost or accepted twice: all 30 succeeded with exactly one accepted r
 
 ### 7.3 Limits
 
-- **One host:** an 8 GiB Mac under memory pressure, swapping heavily. Two jobs per case, reported
-  as counts with no rates.
+- **One host:** an 8 GiB Mac under memory pressure, with 3.16–8.25 GiB of swap in use at the
+  formal batches' readings (reworded on 2026-10-26; see the correction above). Two jobs per
+  case, reported as counts with no rates.
 - **No valid formal recovery times;** the supplementary observations miss W1, W4 and D2.
 - **The exclusive window was counted only at the start in both batches.** Since `5ecde71` the count
   is recorded at every reading (section 8). It is still a sample: a container that starts and
