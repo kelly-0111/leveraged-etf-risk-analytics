@@ -10,7 +10,10 @@ the ones this draft asked for are in section 9. The author approved all of Part 
 - the formal seed and the rerun policy (section 4);
 - then sections 1–5 and 7.
 
-The executable code is frozen at `5b916a5` (section 10). No formal batch has run.
+The executable code is frozen at `5b916a5` (section 10).
+
+> **After approval (2026-10-27):** the formal batch `formal/20261027T062927Z-formal-1` ran on the
+> frozen code and was valid. Its results are in [result-cache-part-b.md](result-cache-part-b.md).
 
 > **Correction, 2026-10-26.** Until this date E3's tooling and this draft called psutil's `sin`
 > and `sout` "swap-in" and "swap-out". On macOS they are page-ins and page-outs. This draft now

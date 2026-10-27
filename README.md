@@ -21,7 +21,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
-| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress. The job queue runs the real pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is documented ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding. The Redis result cache serves the three summary queries for accepted and registered runs only, and falls back to Spark when Redis fails ([docs/result-cache.md](docs/result-cache.md)); its experiment (E3) is planned |
+| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache | In progress. The job queue runs the real pipeline, from the job table to Kafka delivery and the reconciler ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)). The recovery study is documented ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting correctness observations, and valid formal E2 recovery-time evidence remains outstanding. The Redis result cache serves the three summary queries for accepted and registered runs only, and falls back to Spark when Redis fails ([docs/result-cache.md](docs/result-cache.md)). Its experiment, E3, ran one valid formal batch ([docs/result-cache-experiment.md](docs/result-cache-experiment.md), [docs/result-cache-part-b.md](docs/result-cache-part-b.md)): host-specific paired latency observations, not a general performance claim |
 
 ## Reading guide
 
@@ -443,4 +443,9 @@ together with how it was checked.
    [docs/recovery-part-b.md](docs/recovery-part-b.md)): E1 has supporting
    correctness observations, and valid formal E2 recovery-time evidence remains
    outstanding. The result cache is implemented
-   ([docs/result-cache.md](docs/result-cache.md)); its experiment, E3, is planned.
+   ([docs/result-cache.md](docs/result-cache.md)). Its experiment, E3, ran one valid
+   formal batch on this Mac ([docs/result-cache-experiment.md](docs/result-cache-experiment.md),
+   [docs/result-cache-part-b.md](docs/result-cache-part-b.md)). Against the identical request in
+   a warm Spark session, a hit took a median 5.4 ms instead of 0.132 s, and blocks at 0%, 50% and
+   90% hits took a median 1.04, 0.51 and 0.14 times their controls' time. These are host-specific
+   paired observations.
