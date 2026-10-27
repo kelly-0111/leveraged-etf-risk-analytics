@@ -5,6 +5,10 @@ tests/test_spark_equivalence.py (two runs per protocol), writes positions.tsv as
 do, and marks the records' worktree clean (the tests run on uncommitted code). The collector must
 accept that batch, and each planted problem must fail the criterion that covers it.
 
+The fixture fails, naming the files, if src/etf_risk or uv.lock changed while it built the batch: the
+records would then hold two code states, and criterion 1 would fail for a reason outside the test
+(an edit made in this worktree while the suite ran did this on 2026-10-26).
+
 AI contribution: written with Claude Code (Opus 5.5).
 """
 import csv
@@ -21,6 +25,7 @@ import pytest
 from conftest import nyse_sessions, write_snapshot
 
 from etf_risk import measure
+from etf_risk.provenance import code_state
 from etf_risk.windows import build_definitions, write_definitions
 
 ANALYSIS = Path(__file__).resolve().parents[1] / "analysis"
@@ -46,8 +51,16 @@ def windows(tmp_path_factory):
     return write_definitions(*build_definitions(snap, "rolling", window_days=10, stride=3, anchor=ANCHOR), root / "w")
 
 
+def code_hashes() -> dict[str, str | None]:
+    """The hashes the records compare (criterion 1), by repository path."""
+    state = code_state()
+    return {**{f"src/etf_risk/{key}": value for key, value in state["source_sha256"].items()},
+            "uv.lock": state["uv_lock_sha256"]}
+
+
 @pytest.fixture(scope="module")
 def batch(windows, tmp_path_factory):
+    hashes_before = code_hashes()
     batch = tmp_path_factory.mktemp("batches") / "batch-1"
     lines = ["\t".join(cbm.POSITION_FIELDS)]
     for position, engine in enumerate(cbm.ORDER, start=1):
@@ -65,6 +78,11 @@ def batch(windows, tmp_path_factory):
         if "code" in record:
             record["code"]["git_worktree_clean"] = True
             path.write_text(json.dumps(record))
+    hashes_after = code_hashes()                           # checked last, so the batch on disk is complete
+    changed = sorted(p for p in hashes_before.keys() | hashes_after.keys() if hashes_before.get(p) != hashes_after.get(p))
+    if changed:
+        pytest.fail(f"code changed while the batch was built, so its records hold two code states: {changed}",
+                    pytrace=False)
     return batch
 
 
