@@ -561,3 +561,38 @@ monitoring, at the author's decision._
   DarkWake entries of `pmset -g log` during the batch: their times and kinds, never the reasons.
   It also records whether the log reaches back to the batch's start. The evidence is reported
   beside the clock and lid checks, never as a gate, and a batch without it says so.
+- **Formal batch-3 (2026-10-27, the author's decision; amends row 11 of section 10).**
+  - **What is allowed.** One more formal batch, `formal/batch-3`, beyond row 11's one rerun, which
+    batch-2 used. If batch-3 is invalid or stops early, it is kept and reported in full, and the
+    formal batches stop. No further formal batch runs without a new decision. batch-1, batch-2 and
+    batch-3 are reported side by side.
+  - **The plan:** `formal/plan-544.json`, unchanged (seed 544; SHA-256 `c74b125e…5ffa7b6`).
+    Regenerated at the frozen code, it gives the same 30 jobs in the same order with the same
+    settings.
+  - **The code is frozen at `4fc550e`** for `src`, `analysis`, `tests`, `pyproject.toml` and
+    `uv.lock`, which replaces row 13's `fcaa645` for batch-3. Later commits change only documents
+    and the session tooling below, which the batch does not run.
+  - **Its verification:**
+    - the full offline suite on `12c925d` (1078 passed, 38 skipped for live services, 0 failed);
+    - a live C0–D1–C0 preflight on `12c925d`, valid on every check
+      (`preflight/20261027T191959Z-e2-c0-d1-c0`);
+    - then `4fc550e`.
+  - **An exception to row 11's preflight-first rule, at the author's decision.** `4fc550e` changed
+    one thing after that preflight: container events keep only the action's verb, never the
+    command Docker appends, so that no command line of another project's container is recorded.
+    It got no new live preflight and no new full suite. Its verification:
+    - two regression tests with a private-looking value, absent from what is recorded;
+    - the focused suites of the shared monitor, the recovery tooling and the result-cache
+      experiment, 205 passed;
+    - 6 of 6 mutation checks caught, among them one that restores the full action text.
+  - **The session:** `docs/recovery-batch-3.zsh`, run from Terminal with the editor and other
+    applications closed. It refuses to start unless all of these hold:
+    - the code equals `4fc550e`, the worktree is clean and the plan is unchanged;
+    - the batch folder is new;
+    - no container of this project exists and no other project's container runs;
+    - no test, job or Spark process runs;
+    - AC power, and the lid open.
+
+    It runs with `pipefail`, and collects the batch even when the batch ends with an error.
+  - **After the session:** `docs/verify_frozen_code.py` confirms that every code record of the
+    batch matches `4fc550e`, with a clean worktree and seed 544.
