@@ -7,12 +7,15 @@ Writes measurements.csv (one row per measured request), summary.csv (by configur
 paired.csv (each R request beside the identical request of its W control, and each N request
 beside the same request in its round's W0), paired_summary.csv (the paired end-to-end differences
 and ratios by hit rate, hit or miss and query, the primary result; each R block's total against
-its control's; and descriptive diagnostics, which attribute nothing: see paired()), host.csv
-(one row per block: paging, swap and load, descriptive; see host_rows()) and validity.json
-(every check with its outcome) into the batch folder. Prints the verdict and exits 0 only when
-every check holds; 1 otherwise.
+its control's; and descriptive diagnostics, which attribute nothing: see paired()), first for
+every valid pair (the primary analysis) and then, labelled, without the pairs flagged for
+swap-outs (the sensitivity analysis, with its sample counts; SWAP_RULE), swap_flags.json (how
+many pairs are flagged, and which), host.csv
+(one row per block: paging, swap, load and the experiment's own CPU time, descriptive; see
+host_rows()) and validity.json (every check with its outcome) into the batch folder. Prints the
+verdict and the diagnostics' extremes, and exits 0 only when every check holds; 1 otherwise.
 
-Checks (Part A, section 6):
+Checks (Part A, section 6, the protocol):
 - complete: every planned request has exactly one record, warm-ups included;
 - statuses: every answer is ok;
 - sources: each answer came from where the design says (W and N from Spark; R and F as
@@ -26,11 +29,11 @@ Checks (Part A, section 6):
 - keys: an R or F block starts with none of its keys in Redis;
 - host, per block: AC power and lid open before and after; no other running container at either
   reading and no other project's container event in between; the container monitor ran; memory
-  pressure never critical (4); no thermal or performance warning; page-outs within their limit,
-  and for W and R page-ins too (N's new JVMs and F's restarts page by design); swap-ins and
-  swap-outs recorded, never gated (see paging());
+  pressure never critical (4); no thermal or performance warning;
   no marked process alive once the settle's grace has passed, and any survivor confirmed ended;
   the serve process exited 0;
+- sleep: over every block, and over the batch, the wall clock advanced as the monotonic clock
+  did, within the tolerance (1.0 s, M3's);
 - the batch: not aborted, and no other project's container event at any time of the batch, between
   block windows included;
 - Redis: its peak within the container's limit;
@@ -39,6 +42,11 @@ Checks (Part A, section 6):
   every comparison: pairs' outputs, summaries and drift;
 - drift: for each query, the median client latency of the W controls (all three, pooled) in the
   last round within the drift limit of the first round's.
+
+Diagnostics, never gated: page-ins and page-outs (their limits were withdrawn on 2026-10-26:
+they had been set as swap limits under a misreading, and no relation to timing validity was
+shown), swap-ins and swap-outs, the load, and the experiment's own CPU time beside the CPUs'
+busy time. What is left unaccounted is not external interference (cache_experiment.own_cpu_window).
 
 AI contribution: written with Claude Code (Opus 5.5). Tested with tests/test_result_cache_collector.py.
 """
@@ -81,14 +89,14 @@ def designed(block: dict) -> list[tuple[int | None, str]]:
             + [(2, s) for s in designed_sources(p2)])
 
 
-def check(batch: Path, *, page_out_limit: int, page_in_limit: int, drift_limit: float) -> tuple[dict, list[dict]]:
+def check(batch: Path, *, drift_limit: float, clock_tolerance: float) -> tuple[dict, list[dict]]:
     plan = json.loads((batch / "plan.json").read_text())
     rows = read_jsonl(batch / "requests.jsonl")
     blocks = {b["block"]: b for b in read_jsonl(batch / "blocks.jsonl")}
     reference = json.loads((batch / "reference.json").read_text()) if (batch / "reference.json").is_file() else {}
     meta = json.loads((batch / "batch.json").read_text()) if (batch / "batch.json").is_file() else {}
     problems: dict[str, list[str]] = {name: [] for name in (
-        "complete", "statuses", "sources", "pairs", "breaker", "answers", "keys", "host", "redis", "drift")}
+        "complete", "statuses", "sources", "pairs", "breaker", "answers", "keys", "host", "sleep", "redis", "drift")}
 
     for block in plan["blocks"]:
         bid, mine = block["id"], [r for r in rows if r["block"] == block["id"]]
@@ -120,8 +128,8 @@ def check(batch: Path, *, page_out_limit: int, page_in_limit: int, drift_limit: 
         if block["config"] in ("R", "F") and info.get("keys_present_after_delete"):
             problems["keys"].append(f"{bid}: {info['keys_present_after_delete']} of its keys in Redis at its start")
         if block["config"] != "L" and not block.get("lead_in"):     # the lead-in's host readings are reported, not gated
-            problems["host"] += check_host(bid, info, page_out_limit,
-                                           page_in_limit if block["config"] in ("W", "R") else None)
+            problems["host"] += check_host(bid, info)
+        problems["sleep"] += check_clock(bid, info.get("before"), info.get("after"), clock_tolerance)
         peak = (info.get("redis_peak_before_stop") or info.get("redis_peak") or {}).get("peak_bytes")
         if peak is not None and peak > REDIS_LIMIT:
             problems["redis"].append(f"{bid}: Redis memory.peak {peak / 2**20:.0f} MiB over 128 MiB")
@@ -137,6 +145,7 @@ def check(batch: Path, *, page_out_limit: int, page_in_limit: int, drift_limit: 
                                 f"them between block windows")
     if meta.get("container_monitor_error"):
         problems["host"].append(f"the container monitor failed: {meta['container_monitor_error']}")
+    problems["sleep"] += check_clock("the batch", meta.get("clock_start"), meta.get("clock_end"), clock_tolerance)
     problems["drift"] = check_drift(plan, rows, drift_limit)
     return problems, rows
 
@@ -179,7 +188,28 @@ def _rest(r: dict) -> float:
     return r["client_seconds"] - (server.get("spark") or 0.0) - (server.get("resolve") or 0.0)
 
 
-def paired(plan: dict, rows: list[dict]) -> list[dict]:
+SWAP_RULE = ("a pair is flagged when its W or R block swapped out (vm_stat's Swapouts rose); N pairs by their "
+             "W0 block. All valid pairs form the primary analysis; the sensitivity analysis leaves out every pair "
+             "not known to be free of swap-outs (flagged, or not recorded)")
+SENSITIVITY = "sensitivity: excluding swap-out pairs"
+
+
+def swapped_out(info: dict | None) -> bool | None:
+    """Whether the host swapped out during a block: None where not recorded (batches before
+    vm_stat's counters, or a missing reading)."""
+    window = (info or {}).get("host_window") or {}
+    p = paging(window)
+    return None if p["swapouts_bytes"] is None else p["swapouts_bytes"] > 0
+
+
+def pair_flag(*members: bool | None) -> bool | None:
+    """Flagged if any member swapped out; free if every member is known not to have; else None."""
+    if any(m is True for m in members):
+        return True
+    return False if all(m is False for m in members) else None
+
+
+def paired(plan: dict, rows: list[dict], blocks: dict | None = None) -> list[dict]:
     """One row per pair of a measured round: an R request and the identical request at the same
     position of its W control, or an N request and the same request's first run in its round's
     W0. The lead-in round is left out by design.
@@ -188,8 +218,12 @@ def paired(plan: dict, rows: list[dict]) -> list[dict]:
     result. The diag_ columns are descriptive diagnostics, not causal attributions:
     diag_spark_difference_s is the Spark time of the R (or N) request less its control's (empty
     for a hit, which runs no Spark); diag_rest_difference_s is the same difference for the time
-    outside Spark and resolution. Neither says why a difference arose."""
+    outside Spark and resolution. Neither says why a difference arose.
+
+    swap_flag is True when the pair's W or R block swapped out (an N pair: its W0 block), False
+    when both are known not to have, empty when not recorded (SWAP_RULE)."""
     out = []
+    blocks = blocks or {}
     measured = [r for r in rows if not r["warmup"] and r["status"] == "ok"]
     for b in plan["blocks"]:
         if b["config"] not in ("R", "N") or b.get("lead_in"):
@@ -199,6 +233,8 @@ def paired(plan: dict, rows: list[dict]) -> list[dict]:
         if w is None:
             continue
         ws = [r for r in measured if r["block"] == w["id"]]
+        flag = pair_flag(swapped_out(blocks.get(w["id"])),
+                         *([swapped_out(blocks.get(b["id"]))] if b["config"] == "R" else []))
         for r in [x for x in measured if x["block"] == b["id"]]:
             if b["config"] == "R":
                 c = next((x for x in ws if x["index"] == r["index"]), None)
@@ -209,7 +245,7 @@ def paired(plan: dict, rows: list[dict]) -> list[dict]:
             if c is None or (c["query"], c["tickers"]) != (r["query"], r["tickers"]):
                 continue
             out.append({"round": b["round"], "pair": b.get("pair"), "config": b["config"], "block": b["id"],
-                        "kind": kind, "index": r["index"], "query": r["query"], "tickers": " ".join(r["tickers"]),
+                        "w_block": w["id"], "swap_flag": flag, "kind": kind, "index": r["index"], "query": r["query"], "tickers": " ".join(r["tickers"]),
                         "seconds": r["client_seconds"], "w_seconds": c["client_seconds"],
                         "difference_s": r["client_seconds"] - c["client_seconds"],
                         "ratio": r["client_seconds"] / c["client_seconds"],
@@ -223,12 +259,39 @@ def _median(values) -> float | None:
     return statistics.median(values) if values else None
 
 
-SUMMARY_FIELDS = ("scope", "config", "pair", "kind", "query", "round", "n", "median_difference_s", "median_ratio",
-                  "min_ratio", "max_ratio", "total_difference_s", "total_ratio", "diag_median_spark_difference_s",
-                  "diag_median_rest_difference_s", "estimate_hit_imbalance_s")
+SUMMARY_FIELDS = ("analysis", "scope", "config", "pair", "kind", "query", "round", "n", "n_excluded",
+                  "median_difference_s", "median_ratio", "min_ratio", "max_ratio", "total_difference_s", "total_ratio",
+                  "diag_median_spark_difference_s", "diag_median_rest_difference_s", "estimate_hit_imbalance_s")
+GROUP = ("scope", "config", "pair", "kind", "query", "round")
 
 
 def paired_summary(pairs: list[dict]) -> list[dict]:
+    """The primary analysis, every valid pair (analysis "primary"), then the labelled sensitivity
+    analysis without the pairs not known to be free of swap-outs (SENSITIVITY). Each sensitivity
+    row gives n and n_excluded; a group left with no pair keeps its row, with n 0."""
+    primary = [{**row, "analysis": "primary", "n_excluded": 0} for row in summary_rows(pairs)]
+    kept = {tuple(r[k] for k in GROUP): r for r in summary_rows([p for p in pairs if p["swap_flag"] is False])}
+    sensitivity = []
+    for row in primary:
+        key = tuple(row[k] for k in GROUP)
+        found = kept.get(key) or dict.fromkeys(SUMMARY_FIELDS) | {k: row[k] for k in GROUP} | {"n": 0}
+        sensitivity.append({**found, "analysis": SENSITIVITY, "n_excluded": row["n"] - found["n"]})
+    return [{k: r.get(k) for k in SUMMARY_FIELDS} for r in primary + sensitivity]
+
+
+def swap_flag_counts(pairs: list[dict]) -> dict:
+    """How many block pairs and request pairs are flagged, free, or not recorded, and which."""
+    blocks = {(p["block"], p["w_block"]): p for p in pairs}
+    def count(items):
+        return {"total": len(items), "flagged": sum(i["swap_flag"] is True for i in items),
+                "not_recorded": sum(i["swap_flag"] is None for i in items),
+                "free": sum(i["swap_flag"] is False for i in items)}
+    return {"rule": SWAP_RULE, "block_pairs": count(list(blocks.values())), "request_pairs": count(pairs),
+            "flagged": sorted(f"{b}/{w}" for (b, w), p in blocks.items() if p["swap_flag"] is True),
+            "not_recorded": sorted(f"{b}/{w}" for (b, w), p in blocks.items() if p["swap_flag"] is None)}
+
+
+def summary_rows(pairs: list[dict]) -> list[dict]:
     """By configuration, hit rate, kind and query: the medians of the paired end-to-end
     differences and ratios (the primary result), with the diagnostics' medians beside them.
     Then, per R block and round: the block's total time against its control's (end to end), and
@@ -289,7 +352,20 @@ def paging(window: dict) -> dict:
             "pageouts_bytes": window.get("swap_out_bytes"), "swapins_bytes": None, "swapouts_bytes": None}
 
 
-def check_host(bid: str, info: dict, page_out_limit: int, page_in_limit: int | None) -> list[str]:
+def check_clock(name: str, before: dict | None, after: dict | None, tolerance: float) -> list[str]:
+    """The sleep check between two readings of both clocks: macOS's monotonic clock stops while
+    the Mac sleeps, so the wall clock running ahead of it by more than the tolerance means a
+    sleep (or a step of the wall clock). Batches before 2026-10-26's protocol did not read the
+    wall clock."""
+    if not before or not after or "wall" not in before or "wall" not in after:
+        return [f"{name}: no wall-clock readings"]
+    gap = (after["wall"] - before["wall"]) - (after["mono"] - before["mono"])
+    if abs(gap) > tolerance:
+        return [f"{name}: the wall clock ran {gap:+.1f} s against the monotonic clock: a sleep or a clock step"]
+    return []
+
+
+def check_host(bid: str, info: dict) -> list[str]:
     out = []
     for when in ("before", "after"):
         reading = info.get(when) or {}
@@ -310,15 +386,6 @@ def check_host(bid: str, info: dict, page_out_limit: int, page_in_limit: int | N
             out.append(f"{bid}: memory pressure critical")
         if window.get("thermal_warning") is not None or window.get("performance_warning") is not None:
             out.append(f"{bid}: thermal or performance warning recorded")
-        p = paging(window)
-        if p["pageouts_bytes"] is None:
-            out.append(f"{bid}: page-outs not recorded")
-        elif p["pageouts_bytes"] > page_out_limit:
-            out.append(f"{bid}: {p['pageouts_bytes'] / 2**20:.0f} MiB paged out, over the limit")
-        if page_in_limit is not None and p["pageins_bytes"] is None:
-            out.append(f"{bid}: page-ins not recorded")
-        elif page_in_limit is not None and p["pageins_bytes"] > page_in_limit:
-            out.append(f"{bid}: {p['pageins_bytes'] / 2**20:.0f} MiB paged in, over the limit for W and R")
     settle = info.get("settle")
     if settle is None:                          # batches before the settle (20261026) kept only a count
         if "stragglers" not in info:
@@ -380,11 +447,17 @@ def summarize(rows: list[dict]) -> list[dict]:
     return out
 
 
+OWN_KINDS = ("e3_driver", "summary", "spark_jvm", "python_worker", "other")
+
+
 def host_rows(plan: dict, blocks: dict) -> list[dict]:
-    """One row per recorded block: its page and swap traffic in MiB and the counters they came
-    from (swap empty where not recorded), the load diagnostics, pressure and memory. Descriptive:
-    only check_host's rules gate. The load includes the experiment's own processes, so no column
-    says by itself why a block's latencies differ."""
+    """One row per recorded block, descriptive: nothing here gates. Its page and swap traffic in
+    MiB and the counters they came from (swap empty where not recorded); the load average and the
+    CPUs' busy share; the experiment's own CPU seconds by kind, a lower bound, beside the CPUs'
+    busy seconds over the same instants, and unaccounted_cpu_s, busy less own (empty before the
+    own-CPU sampler): not external interference, since it includes the Docker VM, which runs
+    Redis, and the kernel's work for the experiment; the gap between the clocks; pressure and
+    memory. No column says by itself why a block's latencies differ."""
     def mib(value):
         return None if value is None else value / 2**20
     def gib(reading, name):
@@ -395,14 +468,20 @@ def host_rows(plan: dict, blocks: dict) -> list[dict]:
         info = blocks.get(block["id"])
         if info is None:
             continue
-        window = info.get("host_window") or {}
+        window, own = info.get("host_window") or {}, info.get("own_cpu") or {}
         p = paging(window)
+        a, z = info.get("before") or {}, info.get("after") or {}
         out.append({"block": block["id"], "config": block["config"], "round": block["round"], "pair": block.get("pair"),
                     "lead_in": bool(block.get("lead_in")) or block["config"] == "L", "seconds": info.get("seconds"),
                     "samples": window.get("samples"), "counters": p["counters"],
                     **{f"{name}_mib": mib(p[f"{name}_bytes"]) for name in VM_COUNTERS},
                     "max_pressure_level": window.get("max_pressure_level"), "load_1m_mean": window.get("load_1m_mean"),
                     "load_1m_max": window.get("load_1m_max"), "cpu_busy_share": window.get("cpu_busy_share"),
+                    "cpu_capacity_s": own.get("capacity_s"), "busy_cpu_s": own.get("busy_s"), "own_cpu_s": own.get("own_s"),
+                    **{f"own_{kind}_s": (own["own_by_kind"].get(kind, 0.0) if own else None) for kind in OWN_KINDS},
+                    "unaccounted_cpu_s": own.get("unaccounted_s"),
+                    "clock_gap_s": (z["wall"] - a["wall"]) - (z["mono"] - a["mono"]) if "wall" in a and "wall" in z
+                    else None,
                     "available_gib_before": gib(info.get("before"), "available_bytes"),
                     "available_gib_after": gib(info.get("after"), "available_bytes"),
                     "swap_used_gib_before": gib(info.get("before"), "swap_used_bytes"),
@@ -410,15 +489,26 @@ def host_rows(plan: dict, blocks: dict) -> list[dict]:
     return out
 
 
-def swap_line(hosts: list[dict]) -> str:
-    """The measured blocks' swap traffic in one line, recorded and not gated."""
+def diagnostics_lines(hosts: list[dict]) -> list[str]:
+    """The measured blocks' diagnostics at their extremes, one line each; never gated."""
     measured = [h for h in hosts if not h["lead_in"]]
-    recorded = [h for h in measured if h["swapins_mib"] is not None and h["swapouts_mib"] is not None]
-    if not recorded:
-        return "not recorded"
-    line = (f"up to {max(h['swapins_mib'] for h in recorded):.1f} MiB swapped in and "
-            f"{max(h['swapouts_mib'] for h in recorded):.1f} MiB swapped out in a measured block (vm_stat; not gated)")
-    return line + (f"; not recorded in {len(measured) - len(recorded)} block(s)" if len(recorded) < len(measured) else "")
+    def most(name, unit, scale=1.0, digits=1):
+        values = [h[name] * scale for h in measured if h[name] is not None]
+        missing = len(measured) - len(values)
+        if not values:
+            return "not recorded"
+        return f"up to {max(values):.{digits}f}{unit}" + (f" (not recorded in {missing} block(s))" if missing else "")
+    def share(h):
+        return h["unaccounted_cpu_s"] / h["cpu_capacity_s"] if h["cpu_capacity_s"] else None
+    for h in measured:
+        h["_unaccounted_share"] = share(h) if h["unaccounted_cpu_s"] is not None else None
+    lines = [f"swap-ins {most('swapins_mib', ' MiB')}; swap-outs {most('swapouts_mib', ' MiB')} (per block)",
+             f"page-ins {most('pageins_mib', ' MiB')}; page-outs {most('pageouts_mib', ' MiB')} (per block)",
+             f"own CPU {most('own_cpu_s', ' s')} (per block); unaccounted CPU "
+             f"{most('_unaccounted_share', '% of capacity', 100.0, 0)} (not attributed)"]
+    for h in measured:
+        del h["_unaccounted_share"]
+    return lines
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
@@ -434,28 +524,36 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("batch", type=Path)
-    parser.add_argument("--page-out-limit-mib", type=float, default=64.0, help="per block (Part A, a proposal)")
-    parser.add_argument("--page-in-limit-mib", type=float, default=256.0, help="per W or R block (Part A, a proposal)")
     parser.add_argument("--drift-limit", type=float, default=0.20, help="W's last round against its first (Part A)")
+    parser.add_argument("--clock-tolerance-s", type=float, default=1.0,
+                        help="wall against monotonic clock, per block and per batch (Part A; M3's tolerance)")
     args = parser.parse_args(argv)
-    problems, rows = check(args.batch, page_out_limit=int(args.page_out_limit_mib * 2**20),
-                           page_in_limit=int(args.page_in_limit_mib * 2**20), drift_limit=args.drift_limit)
+    problems, rows = check(args.batch, drift_limit=args.drift_limit, clock_tolerance=args.clock_tolerance_s)
     write_csv(args.batch / "measurements.csv",
               [{k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in r.items() if k != "result"}
                for r in rows if not r["warmup"]])
     write_csv(args.batch / "summary.csv", summarize(rows))
     plan = json.loads((args.batch / "plan.json").read_text())
-    pairs = paired(plan, rows)
+    blocks = {b["block"]: b for b in read_jsonl(args.batch / "blocks.jsonl")}
+    pairs = paired(plan, rows, blocks)
     write_csv(args.batch / "paired.csv", pairs)
     write_csv(args.batch / "paired_summary.csv", paired_summary(pairs))
-    hosts = host_rows(plan, {b["block"]: b for b in read_jsonl(args.batch / "blocks.jsonl")})
+    flags = swap_flag_counts(pairs)
+    (args.batch / "swap_flags.json").write_text(json.dumps(flags, indent=2) + "\n")
+    hosts = host_rows(plan, blocks)
     write_csv(args.batch / "host.csv", hosts)
     valid = not any(problems.values())
     (args.batch / "validity.json").write_text(json.dumps({"valid": valid, "problems": problems}, indent=2) + "\n")
     for name, found in problems.items():
         print(f"{'ok  ' if not found else 'FAIL'} {name}" + ("" if not found else f": {len(found)} problem(s); first: {found[0]}"))
-    print(f"swap: {swap_line(hosts)}")
     print("valid" if valid else "NOT valid")
+    print("diagnostics (measured blocks; never gated):")
+    for line in diagnostics_lines(hosts):
+        print(f"  {line}")
+    b, r = flags["block_pairs"], flags["request_pairs"]
+    print(f"swap-out flags: {b['flagged']} of {b['total']} block pairs flagged, {b['not_recorded']} not recorded "
+          f"({r['flagged']} and {r['not_recorded']} of {r['total']} request pairs); primary analysis keeps all, "
+          f"'{SENSITIVITY}' keeps {r['free']}")
     return 0 if valid else 1
 
 

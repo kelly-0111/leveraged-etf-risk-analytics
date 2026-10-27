@@ -4,13 +4,17 @@ Author: contributed by both the project author and Claude Code. Claude Code prop
 drafted this document and wrote the tooling (`src/etf_risk/cache_experiment.py`,
 `analysis/collect_result_cache_measurements.py`, `docs/result-cache-session.zsh` and their tests).
 The author makes every decision and approval: the decisions taken so far are in section 1, and
-the ones this draft asks for are in section 9. Nothing here is approved yet, and no formal batch
-has run.
+the ones this draft asks for are in section 9. The author approved section 6, the protocol, with
+its swap-out rule, on 2026-10-26. The rest awaits approval, and no formal batch has run.
 
 > **Correction, 2026-10-26.** Until this date E3's tooling and this draft called psutil's `sin`
 > and `sout` "swap-in" and "swap-out". On macOS they are page-ins and page-outs. This draft now
 > uses the correct names, and the batches recorded before the correction are unchanged. See
 > [host-counters-correction.md](host-counters-correction.md).
+
+> **Protocol correction, 2026-10-26, before any formal measurement.** The page-in and page-out
+> validity limits are withdrawn, and the counters are kept as diagnostics (section 6). It does
+> not relabel past batches: each keeps the verdict it was collected with.
 
 ## 1. Question and scope
 
@@ -154,22 +158,40 @@ What this order does and does not do:
   effects: R50, for example, always follows W50 in forward rounds and precedes it in reverse
   ones. Because the two members of a pair are adjacent, slow drift affects both almost equally.
   The drift rule (section 6) watches for faster changes.
-- **Repeats.** Each warm block starts its own process, with its warm-ups, and ends it. One
-  formal batch, with a seed chosen before the batch and recorded. If the batch is invalid, the
+- **Repeats.** Each warm block starts its own process, with its warm-ups, and ends it.
+
+**The formal batch.**
+- **Seed 5309,** fixed on 2026-10-26, before the batch. No dry run or functional check used it:
+  they used 1, 2, 3, 7, 2610 and 2611. So the formal workload's sequences were not seen while the
+  protocol was developed. With the default settings it plans the 56 blocks above.
+- **One formal batch,** in a new folder under `data/outputs-result-cache/formal/`, on the frozen
+  commit with a clean worktree (`run --formal` refuses otherwise).
+
+**Rerun policy.**
+- **The decision to rerun rests on `validity.json` alone,** made before the paired results are
+  read.
+- **A host, cleanup or drift failure allows one rerun.** Host and cleanup cover power, sleep,
+  thermal, memory pressure, competing containers, cleanup and an aborted batch. The rerun uses the
+  same seed and the same frozen commit, in a new folder.
+- **A correctness failure stops formal batches.** Correctness covers complete, statuses, sources,
+  pairs, breaker, answers, keys and Redis. Such a failure points to a fault: no formal batch runs
+  until it is diagnosed. A fix needs a new commit, the author's approval and a new freeze.
+- **At most two formal batches run on one frozen commit.** Each is kept and reported with its
+  verdict. An invalid batch's paired results are reported as invalid observations, never pooled
+  with a valid batch's. If the rerun is invalid too, E3 has no valid formal result, and the
   author decides what follows.
+- **Swap-out flags never cause a rerun.** They only decide what the sensitivity analysis leaves
+  out (section 6).
 
 ## 5. Host conditions and contemporaneous controls on this Mac (proposals)
 
 **Why not the 4.0 GiB gate.** That gate was approved in M2 to decide whether *memory figures*
 are representative: resident sizes shrink under compression and swap. E3's main results are
 *latencies compared within one batch*, where every configuration runs interleaved under the same
-host state. What distorts a latency is something happening during the block:
-- paging and swapping;
-- critical memory pressure;
-- thermal throttling;
-- competing work.
-
-Each of these can be measured directly, per block. Available memory is recorded but not gated:
+host state. What can distort a latency happens during the block: a sleep, thermal throttling,
+critical memory pressure, competing containers or other work, paging or swapping. Section 6
+checks those it can detect reliably and records the rest as diagnostics, with their limits.
+Available memory is recorded but not gated:
 this 8 GiB machine showed 1.2–1.5 GiB available throughout both dry runs, with the editor open
 and 7.7–8.4 GiB of swap in use. Memory figures from E3 (section 7) are reported as not
 representative, like M2's.
@@ -199,6 +221,13 @@ name.
 
   Every sample is kept (`host_samples.jsonl`). The block readings before and after leave out
   psutil's `sin` and `sout` (the correction above).
+- **The experiment's own CPU time, every 0.5 s and at every block boundary**
+  (`own_cpu_samples.jsonl`):
+  - the CPU seconds of the driver and every process descended from it, each followed by pid and
+    creation time, also after it is re-parented (the Spark JVM outlives its summary process);
+  - the CPUs' busy and idle seconds, read at the same instant.
+- **Both clocks,** monotonic and wall, at every block boundary and at the batch's start and end,
+  for the sleep check. `e3_run` keeps the Mac awake (`caffeinate -i`); the check verifies it.
 - **The process tree of each warm process (or each N process), every 0.5 s.** Then one scan,
   after the block, for processes still carrying the block's marker. A full marker scan reads
   every process's environment, which costs too much to repeat during timing.
@@ -210,54 +239,96 @@ name.
 - **The drift rule** (section 6) compares the W controls' medians in the last round with the
   first.
 
-## 6. Validity rules (proposals; checked by the collector)
+## 6. The protocol: host-specific paired latency observations (approved by the author, 2026-10-26)
 
-A batch is valid when every one of these holds; otherwise the collector exits 1 and lists the
-problems (`validity.json`):
-1. **Complete:** every planned request has exactly one record, warm-ups included.
-2. **Statuses:** every answer is `ok`.
-3. **Sources as designed:** W and N from Spark; R and F as designed; every warm-up from Spark.
-   R's realized hit rate equals its designed rate exactly.
-4. **Breaker (F):** with Redis stopped, the first 3 requests count GET errors and the next 3
-   are skipped; after the restart the first request misses.
-5. **Answers:** every answer equals the reference answer (computed first, by a separate no-cache
-   process), value types included.
-6. **Keys:** each R and F block starts with none of its keys in Redis.
-7. **Host, per block:**
-   - AC power and lid open before and after;
-   - no other running container at either reading, and no other project's container event in
-     between; the container monitor ran;
-   - memory pressure never critical;
-   - no thermal or performance warning;
-   - page-outs within their limit in every block, and page-ins within theirs in W and R blocks:
-     64 MiB and 256 MiB, kept for the dry runs (section 9). They stay on the counters they were
-     set from, which were called swap-out and swap-in before the correction. Swap-ins and
-     swap-outs are recorded and reported, not gated: no limit has evidence yet;
-   - **the settle:** after a block's last process exits, and outside every request's timing, the
-     driver waits up to **15 s** (the settle M2's memory check uses) for the block's marked
-     processes to exit, and records each one's pid, name, kind, creation time, and when it was
-     first and last seen and found gone. A process alive after the 15 s fails the block. It is
-     ended (TERM, then KILL) only when its ownership is verified (the same marker and creation
-     time). If the cleanup cannot be confirmed, the batch stops and `batch.json` records
-     `aborted`;
-   - every process exited 0.
-8. **Redis:** its peak within the 128 MiB container limit.
-   **The batch:** not aborted, and no other project's container event at any time of the batch,
-   between block windows included (`containers.jsonl`).
-9. **Pairs:** each R block and its W control ran the identical requests and warm-ups.
-10. **Drift:** for each query, the median client latency of the W controls (all three, pooled) in
-    the last round within **±20%** of the first round's.
+**What a valid batch yields.** Paired end-to-end latency differences, observed on this Mac in one
+batch, under its recorded host state: each R request against the identical request of its W
+control, and each N request against the same request in its round's W0. They are host-specific
+observations, not performance claims (section 12).
 
-**Paging limits.** N and F are not limited on page-ins: every N request starts a new JVM, and F
-stops and starts a container, so their paging is part of what they are. The figures below are
-page-ins and page-outs. Every dry run up to `dry-run/20261026T193201Z-lead-in-round` recorded
-them under the name swap, and none of them recorded swap traffic.
-- **Page-ins in the dry runs:**
-  - W and R blocks: 21–49 MiB in the second dry run, and 26–379 MiB in the sizing run, on a more
-    loaded host. In the lead-in-round dry run, up to 2,306 MiB in one episode (section 10);
-  - N blocks: 984–2,147 MiB;
-  - F blocks: 490–569 MiB.
-- **Page-outs:** at most 20 MiB in any block.
+A valid batch shows that none of the checks below failed. It does not show that every source of
+host interference was controlled. Running each pair's two blocks next to each other is the main
+control.
+
+**Checks.** The collector checks each of these. Any failure makes the batch invalid, and
+`validity.json` lists why.
+
+| Check | Holds when |
+|---|---|
+| Correctness | every planned request is recorded once, warm-ups included; every answer is `ok` and equals the reference answer, value types included; sources are as designed (W and N from Spark, R's hit rate exact, every warm-up from Spark); each R and F block starts with none of its keys in Redis; F's breaker counts 3 GET errors, then skips, and misses after the restart; each R block and its W control ran identical requests and warm-ups |
+| Power | AC power and the lid open at every block's readings |
+| Sleep | over every block and over the whole batch, the wall clock advances as the monotonic clock does, within 1.0 s (M3's tolerance). macOS's monotonic clock stops while the Mac sleeps |
+| Thermal | no thermal or performance warning in any sample |
+| Memory pressure | never critical (level 4) |
+| Competing containers | none running at any block reading; no other project's container event at any time of the batch, the gaps between blocks included; the container monitor ran |
+| Cleanup | every block's marked processes are gone within the 15 s settle, which runs outside request timing. A survivor fails its block and is ended only when its ownership is verified; the batch aborts if that cannot be confirmed. Every process exits 0, and Redis's peak stays within its 128 MiB limit |
+| Drift | for each query, the pooled W median of the last round is within ±20% of the first round's |
+
+**The lead-in round** is checked like any block for correctness, Redis and sleep, and is covered
+by the batch-wide container check. Its other per-block host readings are reported, not gated, and
+it is left out of every comparison.
+
+**Diagnostics,** recorded and reported but never gated (`host.csv`, `host_samples.jsonl`,
+`own_cpu_samples.jsonl`):
+- page-ins and page-outs, and swap-ins and swap-outs (vm_stat);
+- the 1-minute load average and the CPUs' busy share;
+- the experiment's own CPU time by kind, beside the CPUs' busy time read at the same instants, and
+  the remainder, which is left unaccounted for;
+- available memory, swap in use, the pressure level, and the gap between the two clocks;
+- the timing diagnostics of section 7.
+
+**The page limits are withdrawn** (protocol correction, 2026-10-26, decided by the author before
+any formal measurement).
+- Until then, page-outs were limited to 64 MiB per block and page-ins to 256 MiB per W or R block.
+- Those limits were introduced as swap limits, under the misreading of psutil's counters
+  ([host-counters-correction.md](host-counters-correction.md)), and no relation between page
+  counts and timing validity was established.
+- The counters stay as diagnostics. Past batches are not relabelled: each keeps the verdict it
+  was collected with, and none is collected again.
+
+**Limitations.**
+- **Paging.** A page-in is any request for a page from a pager, file reads included. The counters
+  do not say which process caused the paging, or whether any request waited on it. Episodes of
+  hundreds of MiB came and went in both prepared dry runs while the configuration stayed the same;
+  their source is not recorded.
+- **CPU attribution.** The experiment's own CPU is a lower bound. It is sampled every 0.5 s and at
+  block boundaries, so it misses the CPU a process uses after its last sample, and processes
+  shorter than the interval. Two things fall in the unaccounted remainder:
+  - the Docker VM, which runs Redis and cannot be attributed by process;
+  - the kernel's work for the experiment, which is not a process.
+
+  So unaccounted CPU is not evidence of external interference, and total CPU use alone never is.
+- **The checks are a minimum.** A condition they do not cover (paging, CPU or disk contention) can
+  differ between blocks. The design controls only for what affects both members of a pair.
+- **Drift.** In the last prepared dry run, single rounds' W medians ranged from −18% to +11%
+  around round 0's. So the ±20% rule can fail a formal batch on round-to-round variation alone.
+  It is kept unchanged.
+- **Swap.** Only one prepared batch has recorded swap counters.
+
+**The swap-out rule** (approved by the author, 2026-10-26; implemented in the collector).
+- **Why swap matters.** A swap-out means the memory compressor ran out of room and wrote memory to
+  disk. A later swap-in makes whatever needs those pages wait for the disk. Unlike page-ins, swap
+  traffic indicates a memory shortage directly, and it is what the withdrawn limits were meant to
+  catch.
+- **The rule:**
+  - **Flagging.** A pair is flagged when its W block or its R block swapped out (vm_stat's
+    Swapouts rose during the block). An N pair is flagged by its W0 block, the only W or R block
+    in it. `paired.csv` gives each pair's `swap_flag`.
+  - **The primary analysis** keeps every valid pair, flagged or not, and the flagged data are
+    kept.
+  - **The sensitivity analysis,** labelled "sensitivity: excluding swap-out pairs" in
+    `paired_summary.csv`, leaves out every pair not known to be free of swap-outs: flagged, or
+    without swap counters. Every group reports `n` and `n_excluded`, including a group left
+    empty. `swap_flags.json` gives the counts of block pairs and request pairs, and names the
+    flagged ones.
+  - **Effect on validity:** none. Swap-ins are reported only.
+- **Why no size threshold.** The one prepared batch with these counters swapped nothing out in all
+  56 blocks, and swapped in at most 8.4 MiB in a W or R block. The editor-open functional check
+  swapped out up to 556 MiB in a block. One run supports neither a size above zero nor a swap-in
+  limit. The rule's zero is not fitted to that run: it is where the host starts writing memory to
+  disk.
+- **The stricter alternative,** where any swap-out in a W or R block invalidates the batch, was
+  not adopted.
 
 ## 7. Measures and reporting
 
@@ -266,7 +337,9 @@ end-to-end difference**: the client latency of an R request against that of the 
 at the same position of its W control. Differences between blocks with different ticker subsets,
 other repeat patterns or another round are never attributed to caching. The same holds for N:
 each N request is compared with the same request in its round's W0. The lead-in round is never
-compared. **These paired end-to-end differences are the primary result.**
+compared. **These paired end-to-end differences are the primary result.** The primary analysis
+uses every valid pair. The swap-out sensitivity analysis (section 6) is reported beside it,
+labelled, with its sample counts, and never replaces it.
 
 - **Per request:** the client's monotonic latency (from writing the request to reading its
   answer; for N, from starting the process to its exit), and the server's resolve, Spark and
@@ -300,14 +373,17 @@ compared. **These paired end-to-end differences are the primary result.**
   request (client latency less Spark and resolve). F's Spark-served latencies are not compared
   with W's: in the dry run they ranged 0.25–3.9 s while Docker stopped and started the
   container on the same machine.
-- **The host per block** (`host.csv`; descriptive, gated only as section 6 says): page-ins,
-  page-outs, swap-ins and swap-outs in MiB, and which counters they came from; the pressure
-  level; available memory and swap in use before and after.
-  - **The load diagnostics:** the 1-minute load average (mean and maximum over the block's
-    samples), and `cpu_busy_share`, the share of all CPUs' time spent busy during the block.
-  - They describe how busy the machine was. They include the experiment's own processes, the
-    Docker VM's among them, and do not say by themselves why a block's latencies differ.
-  - The drift rule (section 6) is unchanged.
+- **The host per block** (`host.csv`; descriptive, and nothing in it gates):
+  - page-ins, page-outs, swap-ins and swap-outs in MiB, and which counters they came from;
+  - the 1-minute load average (mean and maximum over the block's samples), and `cpu_busy_share`;
+  - the experiment's own CPU seconds by kind (`own_e3_driver_s`, `own_summary_s`,
+    `own_spark_jvm_s`, `own_python_worker_s`, `own_other_s`; total `own_cpu_s`), beside the
+    CPUs' busy seconds read at the same instants (`busy_cpu_s`, out of `cpu_capacity_s`);
+  - `unaccounted_cpu_s`, busy less own, which is not external interference (section 6,
+    limitations);
+  - `clock_gap_s`, the pressure level, and available memory and swap in use before and after.
+
+  None of these says by itself why a block's latencies differ.
 - **Memory, reported and not representative (section 5):** each warm process tree's peak (0.45–0.78
   GiB in the dry runs), each N process's peak (about 0.42 GiB), and Redis's cgroup peak (read
   before every stop, since a restart resets it) and `used_memory_peak`.
@@ -335,16 +411,13 @@ compared. **These paired end-to-end differences are the primary result.**
 4. **The attribution rule** (section 7): only paired differences are attributed to the cache.
 5. **Host conditions and controls** (section 5): the preparation, the preflight, the monitoring,
    and the reason the 4.0 GiB gate is not a timing rule.
-6. **Validity rules and limits** (section 6):
-   - the page-out, page-in and drift limits, kept at 64 MiB, 256 MiB and ±20% for the next dry
-     run (the author, 2026-10-26). The correction renamed the first two; it did not change them;
-   - whether swap-ins and swap-outs get a limit, and which, once vm_stat evidence exists;
-   - whether page-ins should gate W and R at all, since they include file reads;
-   - the 15 s settle and the batch-wide container check;
-   - that critical pressure or any thermal warning invalidates its block, and so the batch.
+6. **The protocol** (section 6): approved on 2026-10-26, with the swap-out rule.
 7. **Reporting** (section 7): paired end-to-end differences as the primary result; the
    diagnostics as descriptive and the hit imbalance as an estimate; F as correctness and Redis's
    share, not a latency comparison; memory figures as not representative.
+8. **The formal batch and the rerun policy** (section 4): seed 5309; at most two formal batches
+   on one frozen commit; a rerun only after a host, cleanup or drift failure; none after a
+   correctness failure until it is diagnosed.
 
 Decided by the author on 2026-10-26, for the next dry run: the lead-in round (section 4), the
 settle and the batch-wide container check (section 6), the descriptive diagnostics (section 7),
@@ -355,6 +428,24 @@ the same day:
 - the load diagnostics;
 - the drift rule unchanged.
 
+After the vm-counters dry run, later the same day, before any formal measurement:
+- **The page-in and page-out limits are withdrawn**, and the counters kept as diagnostics. This is a
+  documented protocol correction, not a relabelling of past batches (section 6).
+- **The experiment's own CPU time,** child processes included, is recorded as a diagnostic.
+  External CPU interference is never inferred from total CPU use alone.
+- **One compact protocol** (section 6) keeps the power, sleep, thermal, critical-pressure,
+  competing-container, correctness, cleanup and drift checks. E3 had no sleep check until then:
+  it relied on `caffeinate` and the lid. The wall-against-monotonic check, with M3's 1.0 s
+  tolerance, was added to meet this decision.
+
+Approved by the author on 2026-10-26:
+- **Section 6,** the protocol.
+- **The swap-out flagging rule:**
+  - a pair is flagged when either its W or its R block swapped out;
+  - all valid pairs stay in the primary analysis, and the flagged data are kept;
+  - the analysis without flagged pairs is reported as a labelled sensitivity analysis, with
+    sample counts.
+
 ## 10. Dry runs so far (not formal)
 
 | Batch | Purpose | Outcome |
@@ -364,8 +455,10 @@ the same day:
 | `dry-run/20261026T160445Z` | **the prepared full-length dry run** (run by the author, editor closed): a single lead-in block L and six measured rounds | NOT valid, on host only (43 problems); every other check held. **42:** "1 marked process alive after the block" in every gated warm block (L's is not gated), none in N. The driver kept only a count, so the processes were not identified. Available memory stayed at 2.8–3.3 GiB and swap in use fell from 1.09 to 1.00 GiB, so they did not accumulate: most likely a shutdown still in progress, which led to the settle (section 6). **1:** `b18-R0` paged in 271 MiB (recorded as swap-in), over 256; its latencies matched its control's (median 0.137 vs 0.138 s). Page-outs at most 5.8 MiB; memory pressure normal throughout; 0 other-project container events, gaps included. Drift: last against first +8.5%, +11.6%, −0.5%. Round 0's R0/W0 ratio was 1.25 (section 4). Kept unchanged (62 files). |
 | `dry-run/20261026T155212Z` | a start of the full-length dry run, before 160445Z | stopped during its third block (`b02-R0`) after 46 s, with 2 of 49 blocks recorded; the driver recorded no abort, and the records do not say why it stopped. Its collector output: NOT valid, with complete 47, pairs 1 and host 1 (the host problem: "1 marked process alive after the block" in `b01-W0`). Kept unchanged (16 files). |
 | `dry-run/20261026T193201Z-lead-in-round` | **the prepared full-length dry run with the lead-in round** (run by the author, editor closed), seed 2611, 56 blocks, 18.0 min | NOT valid: host 7 and drift 1; every other check held. **Host 7:** page-ins (recorded as swap-in) over 256 MiB in the W and R blocks `b22`–`b28`, 267–2,306 MiB, one episode from about t+4.8 to t+11 min that N and F blocks shared (`b30-N` 1,206 MiB, not gated). Page-outs at most 4.9 MiB, swap in use flat at 0.47–0.48 GiB, pressure level 1 throughout, no thermal warning. Swap traffic was not recorded. The settle was clean in all 56 blocks (the warm blocks' JVMs gone after 0.52–0.54 s); 0 other-project container events out of 1,780. **Drift 1:** comparison's pooled W median 0.132 s in round 0 and 0.169 s in round 5 (+28.7%, limit 20%); overview +17.2%, sensitivity +4.9%. Round 0's W controls were the fastest for overview and comparison, as in 160445Z; the records do not show why. Round 0's R0/W0 total ratio was 1.062, inside rounds 1–5's 0.90–1.13. Kept unchanged (69 files). |
+| `dry-run/20261026T225409Z-vm-counters` | **the prepared full-length dry run with vm_stat's counters** (run by the author, editor closed), seed 2611, 56 blocks, 15.4 min, commit `4abec0a` (clean) | **NOT valid, as collected at `4abec0a`: host 4;** every other check held. The four: page-ins over the then-current 256 MiB limit in `b19-W90` (271 MiB), `b20-R50` (273), `b35-W90` (879) and `b37-W50` (279); those blocks swapped in 0.1–0.8 MiB. The limit was withdrawn afterwards (section 6); this verdict stands as recorded, and the batch is not collected again. **Swap:** 0.0 MiB swapped out in all 56 blocks; swap-ins at most 48.3 MiB per block (`b14-N`), at most 8.4 MiB in a W or R block; swap in use 0.60 → 0.37 GiB. **Paging:** two page-in episodes, about t+4.6–6.6 and t+9.5–10.9 min; page-outs at most 4.0 MiB. **Load:** the warm blocks of rounds 1–2 (`b18`–`b29`, about t+5.3–7.8 min) kept 60–81% of all CPU time busy, against 28–56% in rounds 0, 3 and 5 (each block's first 5 s, its JVM start, left out); load average up to 10.2. The experiment's own CPU was not recorded then, so the excess is not attributed. **Drift** held: last round against round 0, −4.7%, −4.4% and −9.9%; single rounds ranged from −17.9% to +11.3%; round 1 had the fastest W medians, round 0 did not. **Pairs:** R0/W0 total ratio 0.998–1.117 across rounds (round 0: 1.072), R50 0.480–0.644, R90 0.117–0.175; hits 5.2–5.6 ms by round median. Settle clean in all 56 blocks; 0 other-project container events out of 1,553; pressure level 1; no thermal warning. Kept unchanged (71 files). |
 | `functional/20261026T172508Z` | functional check of the settle, 1 round, editor open | in every warm block the marked process was the Spark JVM, gone 0.27–0.54 s after the driver exited; no survivor, every block confirmed clean. The batch-wide check counted 3 short-lived containers of another project (15 events, 3 of them between block windows). Paging with the editor open is not threshold evidence. |
 | `functional/20261026T212648Z-vm-counters` | functional check of the corrected counters and the load diagnostics: 1 round, no lead-in round, seed 7, editor open, on the uncommitted change (its source hashes recorded), 5.9 min | **valid** on every check. The records carry vm_stat's four counters under their own names, and no psutil `sin` or `sout`. All 340 samples have every counter, taken 1.02–1.45 s apart, and each block's window equals the difference of its first and last samples. **Swap traffic, recorded and not gated:** swap-outs 0–556 MiB per block, while page-outs stayed at 1.4–6.7 MiB (`b03-R50`: 556 MiB swapped out, 1.8 MiB paged out); swap-ins 25–339 MiB. **The load:** 1-minute load average 9.3–11.9 on 8 logical CPUs, and 76–82% of all CPU time busy in every block. Pressure level 2 throughout, with 1.3–2.0 GiB available. Not evidence for any limit or for timing: the editor was open and the host loaded. |
+| `functional/20261026T233512Z-own-cpu` | functional check of the protocol correction (no page limits, the sleep check, the experiment's own CPU): 1 round, no lead-in round, seed 7, editor open, on the uncommitted change (its source hashes recorded), 2.6 min | **valid** on every check, sleep included. Clock gaps within 1 ms per block, −3 ms over the batch. 319 own-CPU samples followed 47 processes of 4 kinds (e3_driver, summary, spark_jvm, other). Per warm block, own CPU was 21.9–34.4 s, 19.3–31.5 s of it the Spark JVM's, against 32–54 s busy, leaving 9.6–19.5 s unaccounted. N: 75.0 s own, 60.2 s unaccounted. F: 25.9 s own, 48.3 s unaccounted while Docker stopped and started Redis, whose VM is not attributable by process. Swap-outs up to 208 MiB per block. Not evidence about interference or for any limit: the editor was open. |
 | `dry-run/20261026T114515Z` | dry run, 1 round, 12 warm-ups, before the pairs | **valid** on every check then defined (drift trivially: one round). 0 other containers, 0 container events, no critical pressure, no thermal warning. |
 
 **Tests.** On the commit that adds the lead-in round and the diagnostics, the E3 suites
@@ -384,19 +477,42 @@ readings of Pageins and Pageouts. Five deliberate faults were each caught by a f
 
 No earlier batch was collected again: the collector writes into the batch folder.
 
-**The next prepared dry run (proposed).** The design of the lead-in-round dry run, unchanged: 56
-blocks, seed 2611, so that each block can be set beside the same block of that batch. It adds
-the corrected counters and the load diagnostics. It is the first full batch to record swap-ins
-and swap-outs, and the evidence for whether and how to gate them (section 9, decision 6). It
-also puts the load beside the drift rule, which stays unchanged. The author runs it from
-Terminal under the preparation of section 5, with the editor closed. Its records are kept
-whatever its outcome. Claude Code cannot run it: the preparation means quitting the editor,
-which Claude Code runs in.
+With the protocol correction, the same suites pass: **108 tests**. The correction withdraws the
+page limits and adds the sleep check and the experiment's own CPU time; one test follows a
+process re-parented after its parent exits. Five deliberate faults were each caught by a failing
+test:
+- forgetting a gone process's CPU;
+- not following a re-parented process;
+- counting all busy CPU as unaccounted;
+- disabling the sleep check;
+- gating page-ins again.
 
-**Freezing the protocol.** After that dry run, the limits are written into this document, the
-author approves it, and the protocol is frozen: the approved commit is recorded here. The
-formal batch runs on that commit only. `run --formal` refuses a dirty worktree, and the batch
-records its code identity.
+With the swap-out rule, the same suites pass: **111 tests**. Four deliberate faults were each
+caught by a failing test:
+- ignoring the W control's swap-out;
+- keeping unrecorded pairs in the sensitivity analysis;
+- dropping flagged pairs from the primary analysis;
+- flagging an N pair by its own block.
+
+The collector was also run on a copy of `functional/20261026T233512Z-own-cpu` (the original
+untouched). Of its 4 block pairs it flagged 2: R0, whose R block swapped out 75 MiB, and R50,
+whose W control swapped out 50 MiB. The N pair stayed unflagged: its W0 swapped out nothing,
+though the N block swapped out 6 MiB. The sensitivity analysis kept 36 of 96 request pairs.
+
+**The next prepared dry run (proposed; not started).** The same design and seed (2611), under the
+protocol of section 6, so that each block can be set beside the same block of the two earlier
+prepared runs. It adds the experiment's own CPU time, the sleep check, and a second batch of swap
+counters. The author decides when it runs, from Terminal under the preparation of section 5,
+with the editor closed. Its records are kept whatever its outcome. Claude Code cannot run it: the
+preparation means quitting the editor, which Claude Code runs in.
+
+**Freezing the protocol.** Section 6 and the swap-out rule are approved. The freeze needs the
+author's approval of the rest of Part A (section 9), the formal seed and the rerun policy
+included, and the required checks passing on the final code. The frozen commit is then recorded
+here, in a documentation-only commit that leaves the code unchanged; the formal batch's recorded
+source hashes must match the frozen commit's. The formal batch
+runs on that commit only. `run --formal` refuses a dirty worktree, and the batch records its code
+identity.
 
 ## 11. Commands
 
@@ -422,7 +538,7 @@ cd <repository>/.claude/worktrees/result-cache-experiment
 deactivate 2>/dev/null
 export E3_PURPOSE=dry-run
 export E3_SEED=2611
-export E3_BATCH=$(date -u +%Y%m%dT%H%M%SZ)-vm-counters
+export E3_BATCH=$(date -u +%Y%m%dT%H%M%SZ)-protocol
 source docs/result-cache-session.zsh
 e3_redis
 e3_plan

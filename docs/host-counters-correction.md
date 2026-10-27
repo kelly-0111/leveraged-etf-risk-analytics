@@ -118,10 +118,10 @@ correction, if the author wants one, is kept separate from E3.
 
 - **It infers no swap traffic.** The old values are page-ins and page-outs. They give neither a
   value nor a bound for swap in those batches.
-- **It carries no threshold over.** E3's limits were set from page-in and page-out values, and
-  they stay on those counters, now correctly named: page-outs ≤ 64 MiB per block, and page-ins
-  ≤ 256 MiB per W or R block. Swap-ins and swap-outs have no limit until the author sets one
-  from vm_stat evidence.
+- **It carries no threshold over.** E3's limits were set from page-in and page-out values, so
+  this correction kept them on those counters, correctly named: page-outs ≤ 64 MiB per block,
+  and page-ins ≤ 256 MiB per W or R block. Swap-ins and swap-outs got no limit. Section 6 records
+  that the page limits were later withdrawn.
 - **It changes no record.** The approved M3 text changes only as section 3 lists: the names of
   the page figures, and the two statements about heavy swapping.
 
@@ -130,7 +130,21 @@ correction, if the author wants one, is kept separate from E3.
 - **The host sampler** reads `vm_stat` every second, recording `pageins`, `pageouts`, `swapins`
   and `swapouts` in pages, with `page_size`. Every sample is saved to `host_samples.jsonl`.
 - **The block readings** leave out psutil's two counters.
-- **The collector** gates page-outs, and page-ins for W and R, as before, and records swap-ins
-  and swap-outs without gating them. In `host.csv`, a `counters` column says which counters each
-  block's figures came from: `vm_stat`, or `psutil sin/sout` for batches recorded before this
-  correction.
+- **The collector** records page and swap traffic per block. In `host.csv`, a `counters` column
+  says which counters each block's figures came from: `vm_stat`, or `psutil sin/sout` for
+  batches recorded before this correction. Since the protocol correction of section 6, it gates
+  neither.
+
+## 6. Later the same day: the page limits withdrawn
+
+After the prepared dry run `dry-run/20261026T225409Z-vm-counters`, the author withdrew the
+page-in and page-out validity limits, before any formal measurement. They had been introduced as
+swap limits, under the misreading this note corrects, and no relation between page counts and
+timing validity was established.
+- The counters are kept as diagnostics.
+- This is a documented protocol correction ([result-cache-experiment.md](result-cache-experiment.md),
+  section 6), not a relabelling of past batches: each keeps the verdict it was collected with,
+  that dry run's "NOT valid: host 4" included.
+- Real swap traffic got its own rule, approved the same day. A pair is flagged when its W or R
+  block swapped out, and the analysis without flagged pairs is reported as a labelled
+  sensitivity analysis. Validity is unaffected, and no size threshold is set.

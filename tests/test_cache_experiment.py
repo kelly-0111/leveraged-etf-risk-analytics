@@ -254,6 +254,103 @@ def test_a_host_sample_names_vm_stats_counters_and_never_psutils_sin_and_sout(mo
     assert not set(e3.PSUTIL_PAGING) & set(sample)
 
 
+def test_the_block_readings_read_both_clocks_together():
+    a, b = e3.clocks(), e3.clocks()
+    assert set(a) == {"mono", "wall"} and abs((b["wall"] - a["wall"]) - (b["mono"] - a["mono"])) < 0.01
+
+
+class Reads:
+    """A fake ProcessTree.read: one mapping per mark, then the last one again."""
+    def __init__(self, *reads):
+        self.reads = list(reads)
+
+    def __call__(self):
+        return self.reads.pop(0) if len(self.reads) > 1 else self.reads[0]
+
+
+def test_own_cpu_keeps_a_gone_processs_last_value_beside_the_cpus_read_at_the_same_instant():
+    summary, jvm = (10, 1.0), (11, 1.5)
+    busy = iter([(100.0, 700.0), (104.0, 708.0), (110.0, 718.0)])
+    own = e3.OwnCpu(0.01, read=Reads({summary: ("summary", 1.0)},
+                                     {summary: ("summary", 3.0), jvm: ("other", 2.0)},
+                                     {jvm: ("spark_jvm", 5.0)}),           # the summary process is gone
+                    system=lambda: next(busy))
+    first, _, last = own.mark(), own.mark(), own.mark()
+    assert [s["own_s"] for s in own.samples] == [1.0, 5.0, 8.0]
+    assert last["own_by_kind"] == {"summary": 3.0, "spark_jvm": 5.0} and last["processes"] == 2
+    window = e3.own_cpu_window(first, last)
+    assert window["capacity_s"] == 28.0 and window["busy_s"] == 10.0 and window["own_s"] == 7.0
+    assert window["unaccounted_s"] == 3.0 and window["own_by_kind"] == {"spark_jvm": 5.0, "summary": 2.0}
+
+
+def test_a_reused_pid_is_counted_as_another_process():
+    own = e3.OwnCpu(0.01, read=Reads({(9, 1.0): ("other", 2.0)}, {(9, 5.0): ("other", 0.5)}), system=lambda: (0.0, 0.0))
+    own.mark()
+    assert own.mark()["own_s"] == 2.5
+
+
+class FakeProcess:
+    def __init__(self, pid, name, argv):
+        self.pid, self._name, self._argv = pid, name, argv
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        return self._argv
+
+
+@pytest.mark.parametrize("process, kind", [
+    (FakeProcess(1, "python3.12", ["python", "-m", "etf_risk.cache_experiment", "run"]), "e3_driver"),
+    (FakeProcess(2, "python3.12", ["python", "-m", "etf_risk.summary", "--no-cache", "serve"]), "summary"),
+    (FakeProcess(3, "java", ["java", "-cp", "x", "org.apache.spark.deploy.SparkSubmit"]), "spark_jvm"),
+    (FakeProcess(4, "docker", ["docker", "events"]), "other"),
+])
+def test_own_processes_are_named_by_kind(process, kind):
+    assert e3.own_kind(process, root_pid=1) == kind
+
+
+GRANDCHILD = """
+import os, time
+parent = os.getppid()
+deadline = time.monotonic() + 5
+while os.getppid() == parent and time.monotonic() < deadline:
+    time.sleep(0.01)
+while time.process_time() < 0.4:
+    pass
+time.sleep(0.4)
+"""
+CHILD = """
+import subprocess, sys, time
+g = subprocess.Popen([sys.executable, "-c", sys.argv[1]])
+print(g.pid, flush=True)
+time.sleep(0.3)
+"""
+
+
+def test_the_tree_follows_a_process_after_its_parent_exits_and_counts_its_cpu():
+    """As the Spark JVM outlives its summary process: the grandchild burns 0.4 s of CPU only after
+    its parent has exited and it has been re-parented, and the tree still counts it."""
+    import subprocess
+    import time
+    import psutil
+    child = subprocess.Popen([sys.executable, "-c", CHILD, GRANDCHILD], stdout=subprocess.PIPE, text=True)
+    own = e3.OwnCpu(0.05, read=e3.ProcessTree(child.pid).read)
+    own.start()
+    try:
+        grandchild = int(child.stdout.readline())
+        child.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while psutil.pid_exists(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        own.stop()
+        child.stdout.close()
+    seconds = {pid: cpu for (pid, _), (kind, cpu) in own.last.items()}
+    assert child.pid in seconds and grandchild in seconds
+    assert seconds[grandchild] >= 0.35
+
+
 def test_the_block_readings_leave_out_psutils_mislabelled_counters(monkeypatch):
     from etf_risk.jobs import harness
     monkeypatch.setattr(harness, "host_state", lambda: {"available_bytes": 5, "swap_used_bytes": 6,

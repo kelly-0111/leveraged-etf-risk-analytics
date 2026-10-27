@@ -11,8 +11,8 @@ writes the records the collector (analysis/collect_result_cache_measurements.py)
 requests.jsonl (one line per request, warm-ups included), blocks.jsonl (one per block: host
 readings before and after, the pressure sampler's extremes, container events, memory peaks),
 reference.json (each request's answer from a no-cache process, computed first), containers.jsonl
-(every container event of the batch, never a name), host_samples.jsonl (every host sample) and
-batch.json.
+(every container event of the batch, never a name), host_samples.jsonl (every host sample),
+own_cpu_samples.jsonl (every sample of the experiment's own CPU time) and batch.json.
 
 Configurations (Part A, section 2):
 - N: one new process per request (`summary --no-cache query`): process start, imports, a full
@@ -34,7 +34,10 @@ Monitoring, never shown by name: `docker events` for the whole batch (other proj
 events counted, including any between readings), the number of other running containers at every
 block boundary, and a sampler (every --pressure-interval s) of macOS's memory-pressure level,
 vm_stat's page-in, page-out, swap-in and swap-out counters, the 1-minute load average, the CPUs'
-busy and idle time, and `pmset -g therm` warnings.
+busy and idle time, and `pmset -g therm` warnings. A second sampler (every --sample-interval s,
+and at every block boundary) reads the experiment's own CPU time: the driver and every process
+descended from it, followed after re-parenting (OwnCpu). Every block boundary, and the batch's
+start and end, read the monotonic and wall clocks together, for the sleep check.
 
 Paging and swap (docs/host-counters-correction.md). psutil's swap_memory().sin and .sout are, on
 macOS, vm_stat's Pageins and Pageouts: page traffic, file reads included, not swap. Batches up to
@@ -348,14 +351,20 @@ class HostSampler(threading.Thread):
                 else None}
 
 
+def cpu_busy_idle() -> tuple[float, float]:
+    """The CPUs' cumulative busy (user, nice, system) and idle seconds, all CPUs summed."""
+    import psutil
+    cpu = psutil.cpu_times()
+    return cpu.user + cpu.nice + cpu.system, cpu.idle
+
+
 def read_host_sample() -> dict:
     """One sample: the pressure level, vm_stat's counters, the 1-minute load average, the CPUs'
-    cumulative busy (user, nice, system) and idle seconds, all CPUs summed, and pmset's warnings."""
-    import psutil
+    busy and idle seconds, and pmset's warnings."""
     pressure = _run("sysctl", "-n", "kern.memorystatus_vm_pressure_level").strip()
-    cpu = psutil.cpu_times()
+    busy, idle = cpu_busy_idle()
     return {"pressure_level": int(pressure) if pressure.isdigit() else None, **parse_vm_stat(_run("vm_stat")),
-            "load_1m": os.getloadavg()[0], "cpu_busy_s": cpu.user + cpu.nice + cpu.system, "cpu_idle_s": cpu.idle,
+            "load_1m": os.getloadavg()[0], "cpu_busy_s": busy, "cpu_idle_s": idle,
             **parse_therm(_run("pmset", "-g", "therm"))}
 
 
@@ -365,6 +374,118 @@ def host_reading() -> dict:
     The host sampler reads those from vm_stat by their own names."""
     from etf_risk.jobs.harness import host_state
     return {k: v for k, v in host_state().items() if k not in PSUTIL_PAGING}
+
+
+def clocks() -> dict:
+    """The monotonic and wall clocks, read together. macOS's monotonic clock (mach_absolute_time)
+    stops while the Mac sleeps, so a sleep between two readings shows as wall time the monotonic
+    clock did not count."""
+    return {"mono": time.monotonic(), "wall": time.time()}
+
+
+# The experiment's own CPU time
+
+def own_kind(process: Any, root_pid: int) -> str:
+    """e3_driver (the root), summary (a serve or one-shot `etf_risk.summary` process), or what
+    measure.process_kind says of the rest: spark_jvm, python_worker or other."""
+    from etf_risk.measure import process_kind
+    if process.pid == root_pid:
+        return "e3_driver"
+    if "etf_risk.summary" in " ".join(process.cmdline()):
+        return "summary"
+    return process_kind(process, root_pid)
+
+
+class ProcessTree:
+    """The processes of a tree, by (pid, creation time): the root, its descendants, and every
+    process seen in it before that still runs, re-parented or not. A Spark JVM outlives its
+    summary process by about 0.5 s, re-parented to launchd."""
+
+    def __init__(self, root_pid: int):
+        import psutil
+        self.root_pid, self.root = root_pid, psutil.Process(root_pid)
+        self.followed: dict[tuple[int, float], Any] = {}
+
+    def read(self) -> dict[tuple[int, float], tuple[str, float]]:
+        """{(pid, creation time): (kind, CPU seconds, user and system)} for every followed process
+        still running. A process found gone is no longer followed; a pid reused by another
+        process is a new key."""
+        import psutil
+        try:
+            found = [self.root, *self.root.children(recursive=True)]
+        except psutil.Error:
+            found = []
+        for p in found:
+            try:
+                self.followed.setdefault((p.pid, p.create_time()), p)
+            except psutil.Error:
+                continue
+        out = {}
+        for key, p in list(self.followed.items()):
+            try:
+                if not p.is_running():
+                    raise psutil.NoSuchProcess(p.pid)
+                times = p.cpu_times()
+                out[key] = (own_kind(p, self.root_pid), times.user + times.system)
+            except psutil.NoSuchProcess:                  # ZombieProcess included
+                del self.followed[key]
+            except psutil.AccessDenied:
+                continue
+        return out
+
+
+class OwnCpu(threading.Thread):
+    """The experiment's own CPU time: every interval, and at once on mark(), the cumulative CPU
+    seconds of every process read() follows (ProcessTree, rooted at the driver), keeping each
+    process's last value after it is gone, beside the CPUs' busy and idle seconds read at the
+    same instant. A lower bound: CPU a process uses after its last sample, and processes shorter
+    than the interval, are missed. The Docker VM, which runs Redis, is not among the processes.
+    A process's kind is as last seen (a launcher shell becomes the JVM it executes)."""
+
+    def __init__(self, interval: float, read: Callable[[], dict] | None = None,
+                 system: Callable[[], tuple[float, float]] | None = None):
+        super().__init__(daemon=True)
+        self.interval = interval
+        self.read = read or ProcessTree(os.getpid()).read
+        self.system = system or cpu_busy_idle
+        self.last: dict = {}
+        self.samples: list[dict] = []
+        self._lock, self._halt = threading.Lock(), threading.Event()
+
+    def run(self) -> None:
+        while not self._halt.is_set():
+            self.mark()
+            self._halt.wait(self.interval)
+
+    def stop(self) -> None:
+        self._halt.set()
+        self.join(timeout=10)
+
+    def mark(self) -> dict:
+        with self._lock:
+            self.last.update(self.read())
+            busy, idle = self.system()
+            by_kind: dict[str, float] = {}
+            for kind, seconds in self.last.values():
+                by_kind[kind] = by_kind.get(kind, 0.0) + seconds
+            sample = {"mono": time.monotonic(), "busy_s": busy, "idle_s": idle, "own_s": sum(by_kind.values()),
+                      "own_by_kind": by_kind, "processes": len(self.last)}
+            self.samples.append(sample)
+            return sample
+
+
+def own_cpu_window(before: dict, after: dict) -> dict:
+    """Between two OwnCpu samples: the CPUs' capacity and busy seconds, the experiment's own CPU
+    seconds (a lower bound) and by kind, and unaccounted_s, busy less own. Unaccounted CPU is not
+    external interference: it includes the Docker VM (Redis's among it), the kernel's work for
+    the experiment, and own processes the sampler missed."""
+    busy = after["busy_s"] - before["busy_s"]
+    own = after["own_s"] - before["own_s"]
+    kinds = sorted(set(before["own_by_kind"]) | set(after["own_by_kind"]))
+    return {"seconds": after["mono"] - before["mono"], "capacity_s": busy + after["idle_s"] - before["idle_s"],
+            "busy_s": busy, "own_s": own,
+            "own_by_kind": {k: after["own_by_kind"].get(k, 0.0) - before["own_by_kind"].get(k, 0.0) for k in kinds},
+            "unaccounted_s": busy - own}
 
 
 def _run(*argv: str) -> str:
@@ -417,6 +538,7 @@ class Batch:
     python: str = sys.executable
     containers: ContainerEvents | None = None
     host: HostSampler | None = None
+    own: OwnCpu | None = None
     client: Any = None
     marker_prefix: str = field(default="")
 
@@ -446,7 +568,8 @@ def run_block(batch: Batch, block: dict) -> dict:
     from etf_risk.jobs.processes import MARKER_ENV
     from etf_risk.services import memory_peak, other_containers
     ours = batch.plan["keys_by_request"]
-    before = {"host": host_reading(), "other_containers": other_containers(), "mono": time.monotonic()}
+    before = {"host": host_reading(), "other_containers": other_containers(), **clocks()}
+    own_before = batch.own.mark()
     marker = f"e3:{batch.folder.name}:{block['id']}"
     env = {**os.environ, MARKER_ENV: marker}
     env.pop("VIRTUAL_ENV", None)
@@ -485,7 +608,9 @@ def run_block(batch: Batch, block: dict) -> dict:
     last = info["processes"][-1] if block["config"] == "N" else info["serve"]
     info["settle"] = settle(marker, exited_mono=last["exited_mono"], root_pid=last["pid"],
                             grace=batch.settings.settle_grace)            # after timing: no request is affected
-    after = {"host": host_reading(), "other_containers": other_containers(), "mono": time.monotonic()}
+    own_after = batch.own.mark()
+    after = {"host": host_reading(), "other_containers": other_containers(), **clocks()}
+    info["own_cpu"] = own_cpu_window(own_before, own_after)
     info["redis_peak"] = asdict(memory_peak("redis"))
     info["redis_used_memory_peak"] = batch.client.info("memory").get("used_memory_peak")
     info.update(before=before, after=after, seconds=after["mono"] - before["mono"],
@@ -662,11 +787,13 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
     if foreign:
         raise SystemExit(f"Redis holds {foreign} key(s) the experiment does not own; F's restart would erase them")
     batch = Batch(folder, plan, settings, redis_url, client=client, containers=ContainerEvents(PROJECT),
-                  host=HostSampler(settings.pressure_interval))
+                  host=HostSampler(settings.pressure_interval), own=OwnCpu(settings.sample_interval))
     batch.containers.start()
     batch.host.start()
+    batch.own.start()
     status = 0
-    started = {"started_at_utc": datetime.now(timezone.utc).isoformat(), "code": code, "formal": formal,
+    started = {"started_at_utc": datetime.now(timezone.utc).isoformat(), "clock_start": clocks(), "code": code,
+               "formal": formal,
                "python": sys.version.split()[0], "redis_info": {k: client.info("server").get(k) for k in ("redis_version",)},
                "logical_cpus": os.cpu_count(),
                "other_containers_at_start": other_containers(), "keys_deleted_at_start": delete_keys(client, plan["keys"])}
@@ -679,13 +806,16 @@ def run_batch(folder: Path, *, formal: bool, redis_url: str) -> int:
         started["aborted"] = str(error)
         status = 1
     finally:
+        batch.own.stop()
         batch.host.stop()
         batch.containers.stop()
         started["keys_deleted_at_end"] = delete_keys(client, plan["keys"])
         started["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
+        started["clock_end"] = clocks()
         started["container_monitor_error"] = batch.containers.error
         (folder / "containers.jsonl").write_text("".join(json.dumps(e) + "\n" for e in batch.containers.events))
         (folder / "host_samples.jsonl").write_text("".join(json.dumps(s) + "\n" for s in batch.host.samples))
+        (folder / "own_cpu_samples.jsonl").write_text("".join(json.dumps(s) + "\n" for s in batch.own.samples))
         (folder / "batch.json").write_text(json.dumps(started, indent=2, default=str) + "\n")
         client.close()
     return status

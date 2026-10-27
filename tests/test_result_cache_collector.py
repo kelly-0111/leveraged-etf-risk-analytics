@@ -27,6 +27,9 @@ GOOD_WINDOW = {"samples": 20, "max_pressure_level": 2, "thermal_warning": None, 
 # what batches up to dry-run/20261026T193201Z-lead-in-round recorded: psutil's sin and sout, page-ins and page-outs
 LEGACY_WINDOW = {"samples": 20, "max_pressure_level": 2, "thermal_warning": None, "performance_warning": None,
                  "swap_out_bytes": 2**20, "swap_in_bytes": 2**24}
+OWN_CPU = {"seconds": 90.0, "capacity_s": 720.0, "busy_s": 300.0, "own_s": 200.0,
+           "own_by_kind": {"e3_driver": 5.0, "summary": 45.0, "spark_jvm": 150.0}, "unaccounted_s": 100.0}
+WALL = 1.8e9         # the wall clock at the batch's monotonic 0
 
 
 def answer_for(r):
@@ -60,9 +63,9 @@ def build(folder: Path) -> Path:
             rows.append(row(i, r, source, False, phase, dict(counters)))
         start = 100.0 * len(infos)
         info = {"block": b["id"], "config": b["config"], "round": b["round"], "keys_present_after_delete": 0,
-                "before": {"host": GOOD_HOST, "other_containers": 0, "mono": start},
-                "after": {"host": GOOD_HOST, "other_containers": 0, "mono": start + 90.0},
-                "host_window": GOOD_WINDOW, "other_container_events": 0,
+                "before": {"host": GOOD_HOST, "other_containers": 0, "mono": start, "wall": WALL + start},
+                "after": {"host": GOOD_HOST, "other_containers": 0, "mono": start + 90.0, "wall": WALL + start + 90.2},
+                "host_window": GOOD_WINDOW, "own_cpu": OWN_CPU, "other_container_events": 0,
                 "settle": {"grace_s": 15.0, "settled_after_s": 0.6, "survivors": [], "unverified": [], "cleanup": None,
                            "confirmed_clean": True, "seen": [{"pid": 9, "kind": "spark_jvm", "gone_by_s": 0.6}]},
                 "redis_peak": {"peak_bytes": 50 * 2**20}}
@@ -73,7 +76,9 @@ def build(folder: Path) -> Path:
         infos.append(info)
     (folder / "requests.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     (folder / "blocks.jsonl").write_text("".join(json.dumps(i) + "\n" for i in infos))
-    (folder / "batch.json").write_text(json.dumps({"container_monitor_error": None}))
+    (folder / "batch.json").write_text(json.dumps({"container_monitor_error": None,
+                                                   "clock_start": {"mono": -5.0, "wall": WALL - 5.0},
+                                                   "clock_end": {"mono": start + 95.0, "wall": WALL + start + 95.5}}))
     (folder / "containers.jsonl").write_text(json.dumps({"action": "exec_start", "ours": True, "time": 1, "mono": 95.0}) + "\n")
     return folder
 
@@ -139,17 +144,15 @@ PLANTS = {
                                  "host"),
     "a thermal warning": ("blocks.jsonl", lambda bs: _set(first(bs, config="N"),
                                                           host_window={**GOOD_WINDOW, "thermal_warning": 2}), "host"),
-    "too much paged out": ("blocks.jsonl", lambda bs: _set(first(bs, config="W"),
-                                                           host_window={**GOOD_WINDOW, "pageouts": 2**30 // PAGE}), "host"),
-    "W or R paging in": ("blocks.jsonl", lambda bs: _set(first(bs, config="R"),
-                                                         host_window={**GOOD_WINDOW, "pageins": 2**30 // PAGE}), "host"),
-    "page-ins not recorded in a W block": ("blocks.jsonl", lambda bs: _set(first(bs, config="W"),
-                                                                           host_window={**GOOD_WINDOW, "pageins": None}),
-                                           "host"),
-    "page-outs not recorded": ("blocks.jsonl", lambda bs: _set(first(bs, config="N"),
-                                                               host_window={**GOOD_WINDOW, "page_size": None}), "host"),
-    "a legacy W block paging in (psutil sin)": ("blocks.jsonl", lambda bs: _set(
-        first(bs, config="W"), host_window={**LEGACY_WINDOW, "swap_in_bytes": 2**30}), "host"),
+    "a sleep during a block": ("blocks.jsonl", lambda bs: first(bs, config="R")["after"].update(
+        wall=first(bs, config="R")["after"]["wall"] + 60.0), "sleep"),
+    "a sleep during the lead-in round": ("blocks.jsonl", lambda bs: bs[0]["after"].update(
+        wall=bs[0]["after"]["wall"] + 60.0), "sleep"),
+    "a sleep between blocks": ("batch.json", lambda m: m["clock_end"].update(wall=m["clock_end"]["wall"] + 60.0),
+                               "sleep"),
+    "a block without wall-clock readings": ("blocks.jsonl", lambda bs: first(bs, config="W")["before"].pop("wall"),
+                                            "sleep"),
+    "a batch without clock readings": ("batch.json", lambda m: m.pop("clock_start"), "sleep"),
     "a W control that ran other requests": ("requests.jsonl", lambda rs: _set(
         first(rs, config="W", pair=0.5, warmup=False), tickers=["NOT-PLANNED"]), "pairs"),
     "a survivor after the settle": ("blocks.jsonl", lambda bs: first(bs, config="F")["settle"].update(
@@ -207,7 +210,8 @@ def test_the_diagnostics_are_descriptive_columns_beside_the_end_to_end_result(tm
     miss = next(p for p in pairs if p["kind"] == "miss")
     assert hit["diag_spark_difference_s"] == "" and float(miss["diag_spark_difference_s"]) == 0.0
     assert float(hit["difference_s"]) == pytest.approx(0.01 - 0.2)          # end to end, unadjusted
-    blocks = [r for r in csv.DictReader((folder / "paired_summary.csv").open()) if r["scope"] == "block"]
+    blocks = [r for r in csv.DictReader((folder / "paired_summary.csv").open())
+              if r["scope"] == "block" and r["analysis"] == "primary"]
     by_rate = {r["pair"]: r for r in blocks if r["round"] == "0"}
     assert by_rate["0.0"]["estimate_hit_imbalance_s"] == ""                 # no hits, no estimate
     assert by_rate["0.5"]["estimate_hit_imbalance_s"] != "" and by_rate["0.9"]["estimate_hit_imbalance_s"] != ""
@@ -222,25 +226,35 @@ def test_swap_traffic_is_recorded_and_never_gated(tmp_path, capsys):
     assert code == 0 and validity["valid"]
     hosts = list(csv.DictReader((folder / "host.csv").open()))
     assert {h["counters"] for h in hosts} == {"vm_stat"} and float(hosts[0]["swapins_mib"]) == 2048.0
-    assert "up to 2048.0 MiB swapped in and 1024.0 MiB swapped out" in capsys.readouterr().out
+    assert "swap-ins up to 2048.0 MiB; swap-outs up to 1024.0 MiB (per block)" in capsys.readouterr().out
 
 
-def test_a_legacy_batch_is_gated_on_page_ins_and_never_read_as_swap(tmp_path, capsys):
-    """psutil's sin and sout, recorded as swap_in_bytes and swap_out_bytes, are page-ins and page-outs:
-    the same limits apply to them as before the correction, and no swap traffic is inferred."""
+def test_page_traffic_is_reported_and_never_gated(tmp_path, capsys):
+    """The page-in and page-out limits were withdrawn on 2026-10-26 (Part A, section 6): the
+    counters are diagnostics, in any amount and when missing."""
     folder = build(tmp_path / "batch")
-    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window=LEGACY_WINDOW) for b in bs])
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**GOOD_WINDOW, "pageins": 2**32 // PAGE,
+                                                                 "pageouts": 2**31 // PAGE}) for b in bs])
+    edit(folder, "blocks.jsonl", lambda bs: _set(first(bs, config="W"), host_window={**GOOD_WINDOW, "pageins": None}))
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    out = capsys.readouterr().out
+    assert "page-ins up to 4096.0 MiB (not recorded in 1 block(s)); page-outs up to 2048.0 MiB (per block)" in out
+    assert not hasattr(collector, "PAGE_LIMITS") and "--page-in-limit-mib" not in Path(collector.__file__).read_text()
+
+
+def test_a_legacy_batchs_psutil_counters_are_page_counts_never_swap(tmp_path, capsys):
+    """psutil's sin and sout, recorded as swap_in_bytes and swap_out_bytes, are page-ins and page-outs:
+    reported as such, gating nothing, with swap traffic not recorded."""
+    folder = build(tmp_path / "batch")
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**LEGACY_WINDOW, "swap_in_bytes": 2**31})
+                                             for b in bs])
     code, validity = run(folder)
     assert code == 0 and validity["valid"]
     hosts = list(csv.DictReader((folder / "host.csv").open()))
     assert {h["counters"] for h in hosts} == {"psutil sin/sout"}
-    assert {(h["pageins_mib"], h["swapins_mib"], h["swapouts_mib"]) for h in hosts} == {("16.0", "", "")}
-    assert "swap: not recorded" in capsys.readouterr().out
-    edit(folder, "blocks.jsonl", lambda bs: _set(first(bs, config="R"),
-                                                 host_window={**LEGACY_WINDOW, "swap_in_bytes": 300 * 2**20}))
-    code, validity = run(folder)
-    r0 = first(json.loads((folder / "plan.json").read_text())["blocks"], config="R")["id"]
-    assert code == 1 and validity["problems"]["host"] == [f"{r0}: 300 MiB paged in, over the limit for W and R"]
+    assert {(h["pageins_mib"], h["swapins_mib"], h["swapouts_mib"]) for h in hosts} == {("2048.0", "", "")}
+    assert "swap-ins not recorded; swap-outs not recorded (per block)" in capsys.readouterr().out
 
 
 def test_host_csv_has_one_row_per_block_with_the_load_diagnostics(tmp_path):
@@ -251,3 +265,87 @@ def test_host_csv_has_one_row_per_block_with_the_load_diagnostics(tmp_path):
     assert [h["block"] for h in hosts] == [b["id"] for b in plan["blocks"]]
     assert {(h["load_1m_mean"], h["load_1m_max"], h["cpu_busy_share"]) for h in hosts} == {("2.0", "2.5", "0.3")}
     assert {h["lead_in"] for h in hosts if h["round"] == "-1"} == {"True"} and float(hosts[0]["available_gib_before"]) == 2.0
+    assert {round(float(h["clock_gap_s"]), 6) for h in hosts} == {0.2}
+
+
+def test_own_cpu_is_reported_beside_the_busy_cpu_and_never_called_external(tmp_path, capsys):
+    folder = build(tmp_path / "batch")
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    h = next(csv.DictReader((folder / "host.csv").open()))
+    assert (float(h["busy_cpu_s"]), float(h["own_cpu_s"]), float(h["unaccounted_cpu_s"])) == (300.0, 200.0, 100.0)
+    assert (float(h["own_spark_jvm_s"]), float(h["own_summary_s"]), float(h["own_other_s"])) == (150.0, 45.0, 0.0)
+    out = capsys.readouterr().out
+    assert "own CPU up to 200.0 s (per block); unaccounted CPU up to 14% of capacity (not attributed)" in out
+    assert "external" not in out and "interference" not in out
+
+
+def test_a_batch_without_own_cpu_records_leaves_the_columns_empty(tmp_path, capsys):
+    folder = build(tmp_path / "batch")
+    edit(folder, "blocks.jsonl", lambda bs: [b.pop("own_cpu") for b in bs])
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    h = next(csv.DictReader((folder / "host.csv").open()))
+    assert (h["own_cpu_s"], h["own_spark_jvm_s"], h["unaccounted_cpu_s"]) == ("", "", "")
+    assert "own CPU not recorded (per block); unaccounted CPU not recorded (not attributed)" in capsys.readouterr().out
+
+
+def block_id(folder, config, round_, pair=None):
+    plan = json.loads((folder / "plan.json").read_text())
+    return next(b["id"] for b in plan["blocks"] if (b["config"], b["round"], b.get("pair")) == (config, round_, pair))
+
+
+def swap_out(folder, *ids):
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window={**GOOD_WINDOW, "swapouts": 10})
+                                             for b in bs if b["block"] in ids])
+
+
+def summaries(folder):
+    return list(csv.DictReader((folder / "paired_summary.csv").open()))
+
+
+def test_a_pair_is_flagged_when_its_w_or_r_block_swapped_out_and_kept_in_the_primary_analysis(tmp_path, capsys):
+    folder = build(tmp_path / "batch")
+    r50, w90 = block_id(folder, "R", 0, 0.5), block_id(folder, "W", 1, 0.9)
+    swap_out(folder, r50, w90)                              # an R block in round 0, a W control in round 1
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]                  # flags never invalidate
+    pairs = list(csv.DictReader((folder / "paired.csv").open()))
+    flagged = {(p["round"], p["pair"]) for p in pairs if p["swap_flag"] == "True"}
+    assert flagged == {("0", "0.5"), ("1", "0.9")} and {p["swap_flag"] for p in pairs} == {"True", "False"}
+    flags = json.loads((folder / "swap_flags.json").read_text())
+    assert flags["block_pairs"] == {"total": 8, "flagged": 2, "not_recorded": 0, "free": 6}
+    assert flags["request_pairs"] == {"total": 192, "flagged": 60, "not_recorded": 0, "free": 132}
+    rows = summaries(folder)
+    primary = [r for r in rows if r["analysis"] == "primary"]
+    sensitivity = [r for r in rows if r["analysis"] == "sensitivity: excluding swap-out pairs"]
+    assert len(primary) == len(sensitivity) and sum(int(r["n"]) for r in primary if r["scope"] == "requests") == 192
+    assert sum(int(r["n"]) for r in sensitivity if r["scope"] == "requests") == 132
+    assert sum(int(r["n_excluded"]) for r in sensitivity if r["scope"] == "requests") == 60
+    gone = next(r for r in sensitivity if r["scope"] == "block" and (r["round"], r["pair"]) == ("0", "0.5"))
+    assert (gone["n"], gone["n_excluded"], gone["total_ratio"]) == ("0", "30", "")
+    assert "2 of 8 block pairs flagged, 0 not recorded (60 and 0 of 192 request pairs)" in capsys.readouterr().out
+
+
+def test_an_n_pair_is_flagged_by_its_w0_block_alone(tmp_path):
+    folder = build(tmp_path / "batch")
+    swap_out(folder, block_id(folder, "N", 0))
+    run(folder)
+    assert json.loads((folder / "swap_flags.json").read_text())["block_pairs"]["flagged"] == 0
+    swap_out(folder, block_id(folder, "W", 0, 0.0))
+    run(folder)
+    flags = json.loads((folder / "swap_flags.json").read_text())
+    assert flags["block_pairs"]["flagged"] == 2 and len(flags["flagged"]) == 2     # R0 and N of round 0
+
+
+def test_pairs_without_swap_counters_stay_in_the_primary_analysis_and_leave_the_sensitivity_one(tmp_path, capsys):
+    folder = build(tmp_path / "batch")
+    edit(folder, "blocks.jsonl", lambda bs: [_set(b, host_window=LEGACY_WINDOW) for b in bs])
+    code, validity = run(folder)
+    assert code == 0 and validity["valid"]
+    flags = json.loads((folder / "swap_flags.json").read_text())
+    assert flags["block_pairs"] == {"total": 8, "flagged": 0, "not_recorded": 8, "free": 0}
+    rows = summaries(folder)
+    assert sum(int(r["n"]) for r in rows if r["analysis"] == "primary" and r["scope"] == "requests") == 192
+    assert {r["n"] for r in rows if r["analysis"] != "primary"} == {"0"}
+    assert "keeps 0" in capsys.readouterr().out

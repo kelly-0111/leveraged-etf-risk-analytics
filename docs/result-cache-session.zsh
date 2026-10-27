@@ -9,15 +9,13 @@
 #                functional checks the tooling alone
 #   E3_SEED      the workload's seed (default 1); Part A names the formal seed
 #   E3_BATCH     the batch folder's name (default: the UTC time at loading)
-#   E3_PAGE_OUT_MIB, E3_PAGE_IN_MIB, E3_DRIFT   the collector's limits (Part A, section 6)
+#   E3_DRIFT     the collector's drift limit (Part A, section 6; default 0.20)
 
 REPO=${${(%):-%x}:A:h:h}
 cd $REPO || return 1
 E3_PURPOSE=${E3_PURPOSE:-dry-run}
 E3_SEED=${E3_SEED:-1}
 E3_BATCH=${E3_BATCH:-$(date -u +%Y%m%dT%H%M%SZ)}
-E3_PAGE_OUT_MIB=${E3_PAGE_OUT_MIB:-64}
-E3_PAGE_IN_MIB=${E3_PAGE_IN_MIB:-256}
 E3_DRIFT=${E3_DRIFT:-0.20}
 E3_DIR=data/outputs-result-cache/$E3_PURPOSE/$E3_BATCH
 E3_COMPOSE=(docker compose -f docker/compose.yaml)
@@ -66,7 +64,7 @@ e3_run() {
 
 e3_collect() {
   $E3_UV python analysis/collect_result_cache_measurements.py $E3_DIR \
-    --page-out-limit-mib $E3_PAGE_OUT_MIB --page-in-limit-mib $E3_PAGE_IN_MIB --drift-limit $E3_DRIFT \
+    --drift-limit $E3_DRIFT \
     2>&1 | tee -a $E3_DIR/session.log
   return ${pipestatus[1]}
 }
