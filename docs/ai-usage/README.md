@@ -54,6 +54,17 @@ folder, and commit it alongside the related code. If AI generates
 code, add a nearby comment describing its contribution and how you verified
 the result. The hook records only Claude Code conversations in this project.
 
+**Memory content, removed by hand (2026-10-27).** Claude Code's memory files are not shared. In
+the folders added on 2026-10-27, their content was replaced with `[REDACTED:memory]` before
+committing, and each affected `transcript.md` lists `memory ×N` among its redactions. It covered:
+- tool calls on memory files (and their results);
+- the memory index and memory files that Claude Code embeds in system context, attachments and
+  API-request records;
+- notes about memory files changing on disk.
+
+The Markdown view was re-rendered from the sanitized JSONL with this hook's `render_markdown`,
+so the two formats agree. Paths and file names of memory files are kept.
+
 This hook and its configuration were drafted with Codex assistance during
 project setup.
 
