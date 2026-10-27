@@ -82,6 +82,7 @@ RUNS, SUMMARY = "src/etf_risk/runs.py", "src/etf_risk/summary.py"
 CACHE, SERVICES = "src/etf_risk/cache.py", "src/etf_risk/services.py"
 RESOLVER_TESTS, SUMMARY_TESTS = ("tests/test_runs_resolver.py",), ("tests/test_summary.py",)
 CONTRACT_TESTS, CLIENT_TESTS = ("tests/test_cache_contract.py",), ("tests/test_redis_client.py",)
+VMSTAT, VMSTAT_TESTS, SERVICES_TESTS = "src/etf_risk/vmstat.py", ("tests/test_vmstat.py",), ("tests/test_services.py",)
 
 
 @dataclass(frozen=True)
@@ -350,15 +351,41 @@ MUTATIONS = (
              "        if position in host:\n            row.update(host_row(host, position, host_end))\n",
              "", "the per-job host state is left out of injections.csv", tests=COLLECTOR_TESTS),
     # Focused: the power and swap recording of 2026-10-24 (docs/recovery-part-a.md, section 12).
-    Mutation("swap-unrecorded", HARNESS,
-             '            "swap_used_bytes": swap.used, "swap_in_bytes": swap.sin, "swap_out_bytes": swap.sout,\n', "",
-             "the swap is not recorded with the host's state", tests=HARNESS_TESTS),
+    Mutation("vm-counters-unrecorded", HARNESS, '            **vm_bytes(parse_vm_stat(command("vm_stat"))),\n', "",
+             "vm_stat's page and swap counters are not recorded with the host's state", tests=HARNESS_TESTS),
     Mutation("power-unrecorded", HARNESS, '"power_source": parse_power_source(command("pmset", "-g", "batt")),',
              '"power_source": None,', "the power source is not recorded", tests=HARNESS_TESTS),
     Mutation("host-state-end-unrecorded", HARNESS, '            self.log_host("end")\n',
              "", "the host's state at the batch's end is not recorded", tests=HARNESS_TESTS),
-    Mutation("swap-during-job-ignored", COLLECTOR, "        swapped = after[\"swap_out_bytes\"] - reading[\"swap_out_bytes\"]",
-             "        swapped = 0", "a job's swap activity is reported as none", tests=COLLECTOR_TESTS),
+    Mutation("pageouts-during-job-ignored", COLLECTOR, '"pageouts_during_bytes": during("pageouts_bytes"),',
+             '"pageouts_during_bytes": 0,', "a job's page-outs are reported as none", tests=COLLECTOR_TESTS),
+    # Focused: the counter correction and the whole-batch container monitor (2026-10-27).
+    Mutation("old-names-written", HARNESS, '"total_bytes": memory.total, "swap_used_bytes": swap.used,',
+             '"total_bytes": memory.total, "swap_used_bytes": swap.used, "swap_in_bytes": swap.sin,'
+             ' "swap_out_bytes": swap.sout,',
+             "psutil's page counts are written under swap names again", tests=HARNESS_TESTS),
+    Mutation("legacy-read-as-swap", COLLECTOR, '            "swapins_bytes": None, "swapouts_bytes": None}',
+             '            "swapins_bytes": reading.get("swap_in_bytes"), "swapouts_bytes": reading.get("swap_out_bytes")}',
+             "an older batch's page counts are read as swap traffic", tests=COLLECTOR_TESTS),
+    Mutation("vm-bytes-ignore-page-size", VMSTAT, "else parsed[name] * size", "else parsed[name]",
+             "vm_stat's counters are reported in pages as if they were bytes", tests=VMSTAT_TESTS),
+    Mutation("foreign-container-events-pass", COLLECTOR, '    return {"passed": not foreign, "unknown": [],',
+             '    return {"passed": True, "unknown": [],',
+             "another project's container event during the batch passes condition 4", tests=COLLECTOR_TESTS),
+    removing("failed-monitor-passes", COLLECTOR,
+             '    if record.get("error"):\n'
+             '        return {"passed": False, "failed": [], "unknown": [f"the monitor failed: {record[\'error\']}"]}\n'
+             '    if not path.exists():',
+             '    if record.get("error"):\n'
+             '        return {"passed": False, "failed": [], "unknown": [f"the monitor failed: {record[\'error\']}"]}\n',
+             "a monitor that failed counts as a whole-batch pass", tests=COLLECTOR_TESTS),
+    Mutation("stream-end-unnoticed", SERVICES,
+             '                self.error = f"the event stream ended before the session did (exit {self._proc.returncode})"',
+             "                pass", "a monitor whose stream ended early reports no error", tests=SERVICES_TESTS),
+    Mutation("container-monitor-not-started", HARNESS, "            self.containers.start()\n", "",
+             "the whole-batch container monitor never runs", tests=SYNTHETIC_TESTS),
+    Mutation("power-log-unrecorded", HARNESS, '            self.log.log("power_log", **evidence)\n', "",
+             "a batch's sleep and wake evidence is not recorded", tests=SYNTHETIC_TESTS),
     # Focused: the approved controls and the host protocol's timing conditions (2026-10-24).
     Mutation("controls-not-bracketed", HARNESS, '    return ["C0", *jobs, "C0"] if settings.bracket_controls else jobs',
              "    return jobs", "a plan has no control C0 at its ends", tests=HARNESS_TESTS),

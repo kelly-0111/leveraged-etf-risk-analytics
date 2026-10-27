@@ -994,7 +994,12 @@ recovery experiments' arrangement, and is contributed by both:
   unrepresentative (above).
 - **Tests.** The cause of two intermittent failures of the baseline collector's
   tests is unresolved (§10).
-- **Optional:** M3's host-state code still names psutil's page counters `swap_in_bytes`
-  and `swap_out_bytes`, to match its records. Its documents were corrected
-  ([host-counters-correction.md](host-counters-correction.md)), and a code rename
-  would be a separate change.
+- **Done on 2026-10-27, toward closing E2:**
+  - **The page counters,** renamed in M3's code: the host readings record `vm_stat`'s four
+    counters by their own names, and older records are read as page counts
+    ([host-counters-correction.md](host-counters-correction.md), section 7).
+  - **A whole-batch container monitor:** any other project's container event during a batch
+    fails its recovery times, and a missing or failed monitor counts as unknown.
+  - **Sleep and wake evidence** from the power log, recorded as evidence only
+    ([recovery-part-a.md](recovery-part-a.md), section 13).
+  - **Before a new formal batch:** a C0–D1–C0 preflight, once the test window is free.

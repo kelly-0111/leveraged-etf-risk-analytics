@@ -4,8 +4,12 @@ sections 5 and 6).
 A batch folder is what etf_risk.jobs.harness batch wrote:
 
     harness.jsonl   the harness's events: plan, injections, deadlines, observations, peaks, owners,
-                    the host's state (memory, swap, pressure, power, lid) at the start, before
-                    each job and at the end, Spark scratch, setup and final errors
+                    the host's state (memory, swap in use, page and swap counters, pressure, power,
+                    lid) at the start, before each job and at the end, Spark scratch, setup and
+                    final errors, the container monitor's record and the power log's sleep and
+                    wake entries
+    containers.jsonl  every container event from the batch's start to its end (time, action, and
+                    whether it is this project's; never a name), since 2026-10-27
     events/         the workers' logs (A.jsonl, B.jsonl), the reconciler's, and submit.jsonl
     jobs/<store>/   the attempts' folders, with logs/*.launcher.json and, when complete, manifest.json
     reference/      the reference run, under the launcher
@@ -23,8 +27,10 @@ It writes into the batch folder:
 - injections.csv: one row per planned job, with the case, the injection, the metrics of
   section 5, each n/a with its reason or unknown when its record is missing, the verdicts of
   Q1, Q2 and Q3a, and the host before the job (available memory, memory pressure, power source,
-  lid, running containers outside this project) with the bytes swapped out until the next
-  reading;
+  lid, running containers outside this project) with the bytes paged out, swapped in and
+  swapped out until the next reading (pageouts_during_bytes, swapins_during_bytes,
+  swapouts_during_bytes; until 2026-10-27 the page-out column was named swap_out_during_bytes,
+  and older batches' swap columns are empty: see counters());
 - tally.csv: per case, the jobs planned, made, missed, not run and unrecorded, and every verdict value of
   Q1, Q2, deadline_met, Q3a and Q3b, with zeros;
 - validity.json: the batch's purpose (preflight or formal, from its plan), the checks of 6.1
@@ -32,9 +38,12 @@ It writes into the batch folder:
   power, lid and other-container conditions, where a missing reading fails as unknown), two
   verdicts, and, apart
   from them, the outcome checks of 6.2-6.5, each with what it found (6.5's new Spark scratch
-  included). The verdicts (docs/recovery-part-a.md, section 12): its correctness observations
+  included), and the sleep and wake evidence of the power log, stated as not recorded where it
+  is missing. The verdicts (docs/recovery-part-a.md, section 12): its correctness observations
   stand on the checks that do not involve time; its recovery times need those, the clock check,
-  and, at every reading, AC power, the lid open and no running container outside this project.
+  at every reading AC power, the lid open and no running container outside this project, and,
+  over the whole batch, no event of another project's container (container_events; a monitor
+  that is missing or failed makes it unknown, which fails too).
   A preflight's results are never formal results (8.6), whatever its checks found.
 It prints a summary and exits with 1 unless both verdicts are valid: any required check that
 failed, has no result or is missing gives 1, and the summary marks the unknown ones. A failed
@@ -78,13 +87,15 @@ Q3B_VERDICTS = ("matches", "other store", "no such attempt", "wrong worker", "at
 NOT_RUN = ("not run", "not submitted")
 UNRECORDED = ("no record", "no injection record")     # the harness's records lack the job's deadline or injection
 CORRECTNESS_CHECKS = ("code_identity", "fingerprints_agree", "inputs_unchanged", "records_complete")
-TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid", "other_containers")   # every required check
+TIMING_CHECKS = (*CORRECTNESS_CHECKS, "clock", "host_power", "host_lid", "other_containers",   # every required check
+                 "container_events")
+COUNTER_KEYS = ("pageins_bytes", "pageouts_bytes", "swapins_bytes", "swapouts_bytes")
 LIVENESS = ("serve_restarted", "retry", "rewound", "gave_up", "failed_after_ack", "consumer_error", "pass_failed")
 FIELDS = ["position", "case", "job_id", "status", "missed", "injection", "worker", "t_inj", "reference", "deadline_s",
           "detection_s", "rerun_s", "finish_s", "overhead_s", "claims", "accepted", "executions", "complete_executions",
           "wasted_step_s", "fenced_events", "timeliness", "deadline_met", "q1_verdict", "q3a_verdict",
           "host_available_bytes", "memory_pressure", "power_source", "lid_closed", "other_containers",
-          "swap_out_during_bytes"]
+          "pageouts_during_bytes", "swapins_during_bytes", "swapouts_during_bytes"]
 
 
 # Reading the folder
@@ -374,19 +385,35 @@ def host_readings(b: BatchFolder) -> dict:
     return readings
 
 
+def counters(reading: dict | None) -> dict:
+    """A reading's cumulative page and swap counters in bytes (COUNTER_KEYS). Readings since
+    2026-10-27 hold vm_stat's four by their own names. Older ones held psutil's sin and sout as
+    swap_in_bytes and swap_out_bytes, which on macOS are page-ins and page-outs
+    (docs/host-counters-correction.md): they are read as such, and those readings' swap traffic as
+    not recorded, never inferred from them."""
+    reading = reading or {}
+    if any(key in reading for key in COUNTER_KEYS):
+        return {key: reading.get(key) for key in COUNTER_KEYS}
+    return {"pageins_bytes": reading.get("swap_in_bytes"), "pageouts_bytes": reading.get("swap_out_bytes"),
+            "swapins_bytes": None, "swapouts_bytes": None}
+
+
 def host_row(host: dict, position: int, end: dict | None) -> dict:
-    """A job's host columns. swap_out_during_bytes is what the host swapped out from this reading to
-    the next one (the next job's, or the batch's end reading), so it covers the job; None without
-    both."""
+    """A job's host columns. The *_during_bytes columns are what the host paged out, swapped in and
+    swapped out from this reading to the next one (the next job's, or the batch's end reading), so
+    they cover the job; None without both readings' counter (swap traffic in batches recorded
+    before 2026-10-27, which did not record it)."""
     reading = host[position]
     later = sorted(p for p in host if p > position)
     after = host[later[0]] if later else end
-    swapped = None
-    if after is not None and reading.get("swap_out_bytes") is not None and after.get("swap_out_bytes") is not None:
-        swapped = after["swap_out_bytes"] - reading["swap_out_bytes"]
+    a, z = counters(reading), counters(after) if after is not None else None
+
+    def during(key: str) -> int | None:
+        return None if z is None or a[key] is None or z[key] is None else z[key] - a[key]
     return {"host_available_bytes": reading.get("available_bytes"), "memory_pressure": reading.get("memory_pressure"),
             "power_source": reading.get("power_source"), "lid_closed": reading.get("lid_closed"),
-            "other_containers": reading.get("other_containers"), "swap_out_during_bytes": swapped}
+            "other_containers": reading.get("other_containers"), "pageouts_during_bytes": during("pageouts_bytes"),
+            "swapins_during_bytes": during("swapins_bytes"), "swapouts_during_bytes": during("swapouts_bytes")}
 
 
 def host_conditions(b: BatchFolder, host: dict, ran: list[int]) -> dict:
@@ -408,6 +435,55 @@ def host_conditions(b: BatchFolder, host: dict, ran: list[int]) -> dict:
     return {"host_power": condition("power_source", lambda value: value != "AC Power"),
             "host_lid": condition("lid_closed", lambda value: value is not False),
             "other_containers": condition("other_containers", lambda value: value != 0)}
+
+
+def container_events_check(b: BatchFolder) -> dict:
+    """Condition 4 over the whole batch, not only at the readings: no event of another project's
+    container from the batch's start to its end (containers.jsonl, from the harness's docker-events
+    monitor), so that a container that starts or stops between two readings fails it too. Any
+    such event fails the recovery-times verdict for the whole batch. A batch without the monitor's
+    record (every batch before 2026-10-27), or whose monitor failed, is unknown, and unknown fails
+    too: the condition never passes by default."""
+    record = (named(b.harness, "container_monitor") or [None])[-1]
+    path = b.folder / "containers.jsonl"
+    if record is None:
+        return {"passed": False, "failed": [], "unknown": ["no container_monitor record (monitor absent)"]}
+    if record.get("error"):
+        return {"passed": False, "failed": [], "unknown": [f"the monitor failed: {record['error']}"]}
+    if not path.exists():
+        return {"passed": False, "failed": [], "unknown": ["containers.jsonl is missing"]}
+    events = jsonl(path)
+    foreign = [e for e in events if not e.get("ours")]
+    start = (named(b.harness, "batch_started") or [{}])[0].get("mono")
+    return {"passed": not foreign, "unknown": [],
+            "failed": [f"{len(foreign)} event(s) of other projects' containers during the batch"] if foreign else [],
+            "other_project_events": len(foreign), "own_events": len(events) - len(foreign),
+            "first_other_s_after_start": (min(e["mono"] for e in foreign) - start
+                                          if foreign and start is not None else None)}
+
+
+def sleep_wake_evidence(b: BatchFolder) -> dict:
+    """The power log's sleep and wake entries during the batch (the harness's power_log event):
+    evidence beside the clock and lid checks, never a gate. Missing evidence is stated as missing,
+    and a log that does not reach back to the batch's start is no evidence for its first part."""
+    record = (named(b.harness, "power_log") or [None])[-1]
+    if record is None:
+        return {"recorded": False, "why": "no power_log record (batches before 2026-10-27 did not record it)"}
+    if not record.get("available"):
+        return {"recorded": False, "why": record.get("why") or "not available"}
+    entries = record.get("entries") or []
+    kinds = {kind: sum(1 for e in entries if e.get("kind") == kind) for kind in ("Sleep", "Wake", "DarkWake")}
+    return {"recorded": True, "covers_batch": bool(record.get("covers_batch")), "log_starts": record.get("log_starts"),
+            "entries": kinds, "sleep_times": [e.get("ts") for e in entries if e.get("kind") == "Sleep"]}
+
+
+def describe_sleep_wake(evidence: dict) -> str:
+    if not evidence["recorded"]:
+        return f"sleep/wake evidence: NOT RECORDED ({evidence['why']})"
+    counts = ", ".join(f"{k} {v}" for k, v in evidence["entries"].items())
+    coverage = "the log covers the whole batch" if evidence["covers_batch"] else (
+        f"the log starts at {evidence['log_starts']}, after the batch began: no evidence for its first part")
+    return f"sleep/wake evidence: {counts}; {coverage}"
 
 
 def check_state(validity: dict, name: str) -> str:
@@ -446,14 +522,19 @@ def listed(validity: dict, names: list[str]) -> str:
 
 def host_summary(b: BatchFolder, host: dict) -> dict:
     """The batch's host record: where it ran on battery, with the lid closed or with another
-    project's container, the highest memory pressure, the lowest available memory, and the swap
-    from its start to its end."""
+    project's container, the highest memory pressure, the lowest available memory, the change in
+    swap in use, and the page and swap traffic from its start to its end (counters(): swap traffic
+    is None for batches that did not record it)."""
     start = (named(b.harness, "host_state", stage="start") or [{}])[0]
     end = (named(b.harness, "host_state", stage="end") or [{}])[-1]
     jobs = list(host.values())
+    a, z = counters(start), counters(end)
 
     def change(key):
         return end[key] - start[key] if start.get(key) is not None and end.get(key) is not None else None
+
+    def traffic(key):
+        return z[key] - a[key] if a[key] is not None and z[key] is not None else None
 
     return {"jobs_with_a_reading": len(jobs),
             "power_sources": sorted({e["power_source"] for e in [start, *jobs, end] if e.get("power_source")}),
@@ -464,8 +545,10 @@ def host_summary(b: BatchFolder, host: dict) -> dict:
                                         if e.get("memory_pressure") is not None), default=None),
             "min_available_bytes": min((e["available_bytes"] for e in jobs if e.get("available_bytes") is not None),
                                        default=None),
-            "swap_used_change_bytes": change("swap_used_bytes"), "swap_out_batch_bytes": change("swap_out_bytes"),
-            "swap_in_batch_bytes": change("swap_in_bytes")}
+            "swap_used_change_bytes": change("swap_used_bytes"),
+            "counters": "vm_stat" if any(key in start for key in COUNTER_KEYS) else "psutil sin/sout (page counts only)",
+            "pageins_batch_bytes": traffic("pageins_bytes"), "pageouts_batch_bytes": traffic("pageouts_bytes"),
+            "swapins_batch_bytes": traffic("swapins_bytes"), "swapouts_batch_bytes": traffic("swapouts_bytes")}
 
 
 # The batch
@@ -525,6 +608,7 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
         "fingerprints_agree": {"passed": bool(final.get("fingerprints_agree")), "values": final.get("fingerprints")},
         "inputs_unchanged": input_check(b, processed_root),
         **host_conditions(b, host, [r["position"] for r in rows if r.get("job_id") is not None]),
+        "container_events": container_events_check(b),
         "records_complete": {"passed": not named(b.harness, "setup_error") and not named(b.harness, "final_error"),
                              "setup_errors": [e.get("error") for e in named(b.harness, "setup_error")],
                              "final_errors": [e.get("error") for e in named(b.harness, "final_error")]},
@@ -544,6 +628,7 @@ def collect(folder: Path, clock_tolerance_s: float = 1.0, processed_root: Path =
                          "spark_scratch_new": quiescent.get("spark_scratch_new")},
         "cleanup_listing": "cleanup.txt" if (folder / "cleanup.txt").exists() else "not recorded",
         "host_state": host_summary(b, host),
+        "sleep_wake": sleep_wake_evidence(b),
         "q2b_rows": b.q["Q2b"],
         "q3b_not_matching": [r for r in b.q["Q3b"] if r.get("report_verdict") != "matches"],
         "liveness": {name: len(named(b.worker_events() + b.reconciler, name)) for name in LIVENESS},
@@ -615,6 +700,11 @@ def main(argv: list[str] | None = None) -> int:
         check = result["verdicts"][claim]
         print(f"{label}: " + ("valid" if check["valid"] else "INVALID: " + listed(result["validity"], check["failed"])))
     print(f"overlap: {result['outcomes']['overlap']['verdict']}; {q1_summary(result['rows'], result['outcomes'])}")
+    events = result["validity"]["container_events"]
+    print("container events during the batch: " + (
+        f"{events['other_project_events']} of other projects, {events['own_events']} of this project's"
+        if "other_project_events" in events else f"UNKNOWN ({'; '.join(events['unknown'])})"))
+    print(describe_sleep_wake(result["outcomes"]["sleep_wake"]))
     return 0 if all(check["valid"] for check in result["verdicts"].values()) else 1
 
 

@@ -25,11 +25,12 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import numpy as np
@@ -317,6 +318,12 @@ class SyntheticBatch(harness.Batch):
         self.group = Group(self.queue, self.topic)
         self.scratch_dir = out.parent / "scratch"
         (self.scratch_dir / "spark-before-the-batch").mkdir(parents=True)        # never reported as new
+        day_before = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S %z")
+        self.power_log_read = lambda: f"{day_before} Sleep               \tEntering Sleep state due to 'Idle Sleep'\n"
+
+    def container_monitor(self):
+        """No Docker: a silent stream, so the whole-batch monitor runs, sees nothing and fails nothing."""
+        return self.services.ContainerEvents(command=[sys.executable, "-c", "import time; time.sleep(3600)"])
 
     def job_store(self) -> JobStore:
         return JobStore(None, SQLITE, lease=timedelta(seconds=LEASE_S),
@@ -447,8 +454,9 @@ def run_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(kafka, "KafkaPublisher", QueuePublisher)
     monkeypatch.setattr(harness, "deadline_seconds", lambda case, timing, s: LATE.get(case, DEADLINE_S))
     monkeypatch.setattr(harness, "host_state", lambda: {     # a host on AC power, lid open, whatever runs the test
-        "available_bytes": 4 * 2**30, "total_bytes": 8 * 2**30, "swap_used_bytes": 0, "swap_in_bytes": 0,
-        "swap_out_bytes": 0, "memory_pressure": 1, "power_source": "AC Power", "lid_closed": False})
+        "available_bytes": 4 * 2**30, "total_bytes": 8 * 2**30, "swap_used_bytes": 0, "pageins_bytes": 0,
+        "pageouts_bytes": 0, "swapins_bytes": 0, "swapouts_bytes": 0, "memory_pressure": 1,
+        "power_source": "AC Power", "lid_closed": False})
     assert batch.run() == 0
     return batch, processed
 
@@ -463,8 +471,14 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     host = harness.events_named(events, "host_state")                    # at the start, before every job, at the end
     assert [e["stage"] for e in host] == ["start"] + ["job"] * 9 + ["end"]
     assert [e["position"] for e in host if e["stage"] == "job"] == list(range(1, 10))
-    assert all(e["available_bytes"] > 0 and e["swap_out_bytes"] >= 0 and "power_source" in e and "lid_closed" in e
-               and e["other_containers"] == 0 for e in host)
+    assert all(e["available_bytes"] > 0 and e["pageouts_bytes"] >= 0 and e["swapouts_bytes"] >= 0
+               and "power_source" in e and "lid_closed" in e and e["other_containers"] == 0 for e in host)
+    assert not any("swap_out_bytes" in e or "swap_in_bytes" in e for e in host)       # the names retired on 2026-10-27
+    monitor = harness.events_named(events, "container_monitor")             # the whole batch, start to end
+    assert [(m["error"], m["events"], m["other_project_events"]) for m in monitor] == [(None, 0, 0)]
+    assert (batch.out / "containers.jsonl").read_text() == ""
+    power = harness.events_named(events, "power_log")[0]                    # evidence, with the log covering the batch
+    assert power["available"] is True and power["covers_batch"] is True and power["entries"] == []
     quiescent = harness.events_named(events, "quiescent")[0]           # 6.5: the killed W3 attempt's Spark scratch
     assert quiescent["spark_scratch_new"] == [str(batch.scratch_dir / "spark-job-4-attempt-1")]
     cleanup = (batch.out / "cleanup.txt").read_text()                  # 6.2: the unaccepted attempts' folders
@@ -486,6 +500,9 @@ def test_a_synthetic_batch_runs_end_to_end_and_the_collector_reads_it(tmp_path, 
     assert (result["purpose"], result["validity_failed"]) == ("preflight", [])
     assert result["validity"]["records_complete"] == {"passed": True, "setup_errors": [], "final_errors": []}
     assert result["verdicts"] == {"correctness": {"valid": True, "failed": []}, "timing": {"valid": True, "failed": []}}
+    events_check = result["validity"]["container_events"]                  # the whole-batch condition 4
+    assert (events_check["passed"], events_check["other_project_events"]) == (True, 0)
+    assert result["outcomes"]["sleep_wake"]["recorded"] is True and result["outcomes"]["sleep_wake"]["covers_batch"]
     rows = {r["position"]: r for r in result["rows"]}
     assert [rows[p]["status"] for p in rows] == ["made"] * 9
     assert [rows[p]["q1_verdict"] for p in rows] == ["ok"] * 9

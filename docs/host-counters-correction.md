@@ -148,3 +148,21 @@ timing validity was established.
 - Real swap traffic got its own rule, approved the same day. A pair is flagged when either member
   swapped out (N pairs included), and the analysis without flagged pairs is reported as a labelled
   sensitivity analysis. Validity is unaffected, and no size threshold is set.
+
+## 7. 2026-10-27: M3's code renamed, older records read as they are
+
+At the author's decision, the recovery harness and its collector no longer use the old names:
+- **New readings** record `vm_stat`'s counters by their own names: `pageins_bytes`,
+  `pageouts_bytes`, `swapins_bytes` and `swapouts_bytes`. Both the harness and the result-cache
+  experiment use the shared parser in `src/etf_risk/vmstat.py`. Swap in use is unchanged.
+- **`swap_in_bytes` and `swap_out_bytes` are no longer written,** so no record holds two meanings
+  under one name.
+- **The collector's columns** are `pageouts_during_bytes`, `swapins_during_bytes` and
+  `swapouts_during_bytes`, and the batch totals are `pageins_batch_bytes` to
+  `swapouts_batch_bytes`. They replace `swap_out_during_bytes`, `swap_out_batch_bytes` and
+  `swap_in_batch_bytes`.
+- **Older records:** where a reading holds only `swap_in_bytes` and `swap_out_bytes`, the collector
+  reads them as page-ins and page-outs, and reports that batch's swap traffic as not recorded,
+  never inferred from them.
+- **No record is changed,** and no earlier batch is collected again: the collector writes into the
+  batch folder. Each keeps the verdicts it was collected with.

@@ -514,7 +514,8 @@ preflight-4, the first batch to record macOS's pressure level, had it at warning
 ## 13. After approval (2026-10-25)
 
 _Added after the formal batches. Sections 1–12 are unchanged as approved, except the wording
-corrected on 2026-10-26 (the last item)._
+corrected on 2026-10-26. The items dated 2026-10-27 change the tooling and condition 4's
+monitoring, at the author's decision._
 
 - **The formal batches.** batch-1 stopped when the host restarted. batch-2, the one rerun of
   row 11, completed. The author kept batch-2's correctness observations valid and ruled its
@@ -541,3 +542,21 @@ corrected on 2026-10-26 (the last item)._
   Swap in use and its figures are unchanged. No condition gated on these counters, so no verdict
   changes. The harness and the collector keep the names `swap_in_bytes`, `swap_out_bytes` and
   `swap_out_during_bytes`, so that they match the records.
+- **The counters renamed in the code (2026-10-27, the author's decision).** New readings record
+  `vm_stat`'s page-in, page-out, swap-in and swap-out counters by their own names, and the
+  collector's columns are renamed to match. Older records' `swap_in_bytes` and `swap_out_bytes`
+  are read as page counts, and their swap traffic as not recorded
+  ([host-counters-correction.md](host-counters-correction.md), section 7). No record changes.
+- **Condition 4 over the whole batch (2026-10-27, the author's decision).**
+  - **The monitor.** The harness runs `docker events` from the batch's start to its end
+    (`containers.jsonl`: time, action and whether a container is this project's, never a name).
+  - **The rule.** Any event of another project's container in that time, the gaps between readings
+    included, fails the recovery-times verdict for the whole batch. A monitor that is missing or
+    failed gives unknown, which fails too. This closes the gap noted above: the count at the
+    readings remains, but it is no longer the only check.
+  - **Earlier batches** have no monitor record, so this check is unknown for them. Their recorded
+    verdicts stand as collected.
+- **Sleep and wake evidence (2026-10-27).** At its end, a batch records the Sleep, Wake and
+  DarkWake entries of `pmset -g log` during the batch: their times and kinds, never the reasons.
+  It also records whether the log reaches back to the batch's start. The evidence is reported
+  beside the clock and lid checks, never as a gate, and a batch without it says so.

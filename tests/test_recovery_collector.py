@@ -60,14 +60,18 @@ def write_csv(path, header, rows):
 
 
 def host_reading(stage, position=None, *, power="AC Power", lid_closed=False, other_containers=0):
-    """A host_state event as the harness writes it (docs/recovery-part-a.md, section 12)."""
+    """A host_state event as the harness writes it since 2026-10-27 (docs/recovery-part-a.md, section 12)."""
     e = {"event": "host_state", "stage": stage, "available_bytes": 2 * 2**30, "total_bytes": 8 * 2**30,
-         "swap_used_bytes": 0, "swap_in_bytes": 0, "swap_out_bytes": 0, "memory_pressure": 1,
-         "power_source": power, "lid_closed": lid_closed, "other_containers": other_containers}
+         "swap_used_bytes": 0, "pageins_bytes": 0, "pageouts_bytes": 0, "swapins_bytes": 0, "swapouts_bytes": 0,
+         "memory_pressure": 1, "power_source": power, "lid_closed": lid_closed, "other_containers": other_containers}
     return e if position is None else {**e, "position": position}
 
 
-def make_batch(tmp_path, *, step_code=CODE, host=True):
+OWN_EVENTS = [{"action": "start", "ours": True, "time": 1, "mono": 1005.0},
+              {"action": "die", "ours": True, "time": 2, "mono": 1590.0}]
+
+
+def make_batch(tmp_path, *, step_code=CODE, host=True, monitor=True, power_log=True):
     """Four planned jobs: C0 and W3 on worker A, W5a on B, and a K2 that memory stopped."""
     b = tmp_path / "batch"
     dates = nyse_sessions("2024-01-02", 31)
@@ -173,6 +177,15 @@ def make_batch(tmp_path, *, step_code=CODE, host=True):
         with open(b / "harness.jsonl", "a") as f:
             for e in (host_reading("start"), *(host_reading("job", p) for p in (1, 2, 3)), host_reading("end")):
                 f.write(json.dumps(e) + "\n")
+    if monitor:                                 # the whole-batch container monitor, with this project's events only
+        write_jsonl(b / "containers.jsonl", OWN_EVENTS)
+        with open(b / "harness.jsonl", "a") as f:
+            f.write(json.dumps({"event": "container_monitor", "error": None, "events": len(OWN_EVENTS),
+                                "other_project_events": 0, "mono": 1599.0}) + "\n")
+    if power_log:                               # the power log reaches back before the batch; no sleep in it
+        with open(b / "harness.jsonl", "a") as f:
+            f.write(json.dumps({"event": "power_log", "available": True, "entries": [], "covers_batch": True,
+                                "log_starts": utc(0), "mono": 1599.5}) + "\n")
     return b
 
 
@@ -335,31 +348,60 @@ def test_a_recorded_setup_or_final_error_fails_validity(batch, tmp_path):
     assert validity["validity"]["records_complete"]["setup_errors"] == ["RuntimeError: init-db: exit 1"]
 
 
-def test_the_host_state_gives_each_job_its_swap_activity_power_and_pressure(tmp_path):
-    batch = make_batch(tmp_path, host=False)
+def write_readings(batch, readings, counter_fields):
+    """Host readings (stage, position, cumulative MiB, power, pressure), with counter_fields(mib) giving
+    each reading's counter keys: the legacy psutil names or vm_stat's."""
     gib, mib = 2**30, 2**20
     with open(batch / "harness.jsonl", "a") as f:
-        for stage, position, swapped_out, power, pressure in (("start", None, 0, "AC Power", 1),
-                                                              ("job", 1, 10, "AC Power", 1),
-                                                              ("job", 2, 10, "Battery Power", 2),
-                                                              ("job", 3, 50, "AC Power", 4),
-                                                              ("end", None, 80, "AC Power", 1)):
+        for stage, position, cumulative, power, pressure in readings:
             e = {"event": "host_state", "stage": stage, "available_bytes": 2 * gib, "total_bytes": 8 * gib,
-                 "swap_used_bytes": swapped_out * mib, "swap_in_bytes": 0, "swap_out_bytes": swapped_out * mib,
+                 "swap_used_bytes": cumulative * mib, **counter_fields(cumulative * mib),
                  "memory_pressure": pressure, "power_source": power, "lid_closed": position == 2}
             if position is not None:
                 e["position"] = position
             f.write(json.dumps(e) + "\n")
+
+
+READINGS = (("start", None, 0, "AC Power", 1), ("job", 1, 10, "AC Power", 1), ("job", 2, 10, "Battery Power", 2),
+            ("job", 3, 50, "AC Power", 4), ("end", None, 80, "AC Power", 1))
+
+
+def test_a_legacy_batchs_psutil_counters_are_read_as_page_counts_and_its_swap_as_not_recorded(tmp_path):
+    """Batches before 2026-10-27 recorded psutil's sin and sout as swap_in_bytes and swap_out_bytes:
+    on macOS page-ins and page-outs (docs/host-counters-correction.md). The same values come out
+    under the page names, and no swap traffic is inferred from them."""
+    batch = make_batch(tmp_path, host=False)
+    gib, mib = 2**30, 2**20
+    write_readings(batch, READINGS, lambda b: {"swap_in_bytes": 0, "swap_out_bytes": b})
     result = crm.collect(batch, processed_root=tmp_path / "processed")
     rows = {r["position"]: r for r in result["rows"]}
-    assert [rows[p]["swap_out_during_bytes"] for p in (1, 2, 3)] == [0, 40 * mib, 30 * mib]   # the last, to the end
+    assert [rows[p]["pageouts_during_bytes"] for p in (1, 2, 3)] == [0, 40 * mib, 30 * mib]   # the last, to the end
+    assert {(rows[p]["swapins_during_bytes"], rows[p]["swapouts_during_bytes"]) for p in (1, 2, 3)} == {(None, None)}
+    assert not any("swap_out_during_bytes" in r for r in result["rows"])                       # the column retired
     assert [(rows[p]["power_source"], rows[p]["memory_pressure"], rows[p]["lid_closed"]) for p in (1, 2, 3)] == [
         ("AC Power", 1, False), ("Battery Power", 2, True), ("AC Power", 4, False)]
     assert "power_source" not in rows[4]                              # K2 was not run: no reading
     assert result["outcomes"]["host_state"] == {
         "jobs_with_a_reading": 3, "power_sources": ["AC Power", "Battery Power"], "on_battery": [2], "lid_closed": [2],
         "other_containers_at": [], "max_memory_pressure": 4, "min_available_bytes": 2 * gib, "swap_used_change_bytes": 80 * mib,
-        "swap_out_batch_bytes": 80 * mib, "swap_in_batch_bytes": 0}
+        "counters": "psutil sin/sout (page counts only)", "pageins_batch_bytes": 0, "pageouts_batch_bytes": 80 * mib,
+        "swapins_batch_bytes": None, "swapouts_batch_bytes": None}
+
+
+def test_a_batchs_vm_stat_counters_give_each_job_its_page_and_swap_traffic(tmp_path):
+    batch = make_batch(tmp_path, host=False)
+    mib = 2**20
+    write_readings(batch, READINGS, lambda b: {"pageins_bytes": 2 * b, "pageouts_bytes": b, "swapins_bytes": b // 2,
+                                                "swapouts_bytes": 3 * b})
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    rows = {r["position"]: r for r in result["rows"]}
+    assert [rows[p]["pageouts_during_bytes"] for p in (1, 2, 3)] == [0, 40 * mib, 30 * mib]
+    assert [rows[p]["swapins_during_bytes"] for p in (1, 2, 3)] == [0, 20 * mib, 15 * mib]
+    assert [rows[p]["swapouts_during_bytes"] for p in (1, 2, 3)] == [0, 120 * mib, 90 * mib]
+    host = result["outcomes"]["host_state"]
+    assert (host["counters"], host["pageins_batch_bytes"], host["swapouts_batch_bytes"]) == ("vm_stat", 160 * mib,
+                                                                                            240 * mib)
+    assert crm.FIELDS[-3:] == ["pageouts_during_bytes", "swapins_during_bytes", "swapouts_during_bytes"]
 
 
 # The host protocol's timing conditions (docs/recovery-part-a.md, section 12)
@@ -452,6 +494,87 @@ def test_a_reading_without_the_container_count_is_unknown_and_fails(batch, tmp_p
     assert result["validity"]["other_containers"] == {"passed": False, "failed": [], "unknown": ["end"]}
     assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
     assert "recovery times: INVALID: other_containers (unknown)" in capsys.readouterr().out
+
+
+# Condition 4 over the whole batch: the docker-events monitor (since 2026-10-27)
+
+def add_foreign_event(batch, mono):
+    write_jsonl(batch / "containers.jsonl", [*OWN_EVENTS, {"action": "start", "ours": False, "time": 3, "mono": mono}])
+
+
+def test_a_foreign_container_event_between_readings_invalidates_the_whole_timing_verdict(batch, tmp_path, capsys):
+    """Every reading counted no other container; one started and stopped between two of them."""
+    add_foreign_event(batch, 1150.0)
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    assert result["validity"]["other_containers"]["passed"] is True                 # the readings saw nothing
+    check = result["validity"]["container_events"]
+    assert (check["passed"], check["other_project_events"], check["own_events"]) == (False, 1, 2)
+    assert check["first_other_s_after_start"] == 150.0
+    assert result["verdicts"] == {"correctness": {"valid": True, "failed": []},
+                                  "timing": {"valid": False, "failed": ["container_events"]}}
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+    out = capsys.readouterr().out
+    assert "recovery times: INVALID: container_events" in out and "container_events (unknown)" not in out
+    assert "container events during the batch: 1 of other projects, 2 of this project's" in out
+
+
+def test_this_projects_own_container_events_pass(batch, tmp_path):
+    check = crm.collect(batch, processed_root=tmp_path / "processed")["validity"]["container_events"]
+    assert (check["passed"], check["other_project_events"], check["own_events"]) == (True, 0, 2)
+
+
+@pytest.mark.parametrize("break_it, why", [
+    (lambda b: edit_harness(b, lambda e: None if e["event"] == "container_monitor" else e), "monitor absent"),
+    (lambda b: edit_harness(b, lambda e: {**e, "error": "the event stream ended before the session did (exit 1)"}
+                            if e["event"] == "container_monitor" else e), "the monitor failed"),
+    (lambda b: (b / "containers.jsonl").unlink(), "containers.jsonl is missing"),
+])
+def test_a_missing_or_failed_monitor_is_unknown_and_fails_the_timing_verdict(batch, tmp_path, capsys, break_it, why):
+    break_it(batch)
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    check = result["validity"]["container_events"]
+    assert check["passed"] is False and check["failed"] == [] and why in check["unknown"][0]
+    assert result["verdicts"]["timing"] == {"valid": False, "failed": ["container_events"]}
+    assert result["verdicts"]["correctness"]["valid"] is True
+    assert crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")]) == 1
+    assert "container_events (unknown)" in capsys.readouterr().out
+
+
+def test_an_earlier_batch_without_the_monitor_is_unknown_never_a_pass(tmp_path):
+    batch = make_batch(tmp_path, monitor=False)
+    check = crm.collect(batch, processed_root=tmp_path / "processed")["validity"]["container_events"]
+    assert check == {"passed": False, "failed": [], "unknown": ["no container_monitor record (monitor absent)"]}
+
+
+# Sleep and wake evidence from the power log: reported, never a gate, and missing evidence stated
+
+def test_sleep_and_wake_evidence_is_reported_with_its_coverage(batch, tmp_path, capsys):
+    edit_harness(batch, lambda e: {**e, "entries": [{"ts": utc(1300), "kind": "Sleep"}, {"ts": utc(1310), "kind": "Wake"}]}
+                 if e["event"] == "power_log" else e)
+    result = crm.collect(batch, processed_root=tmp_path / "processed")
+    evidence = result["outcomes"]["sleep_wake"]
+    assert evidence["entries"] == {"Sleep": 1, "Wake": 1, "DarkWake": 0} and evidence["sleep_times"] == [utc(1300)]
+    assert result["verdicts"]["timing"]["valid"] is True                     # evidence only: the clock check gates sleeps
+    crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")])
+    assert "sleep/wake evidence: Sleep 1, Wake 1, DarkWake 0; the log covers the whole batch" in capsys.readouterr().out
+
+
+def test_missing_sleep_and_wake_evidence_is_stated_as_not_recorded(tmp_path, capsys):
+    batch = make_batch(tmp_path, power_log=False)
+    assert crm.collect(batch, processed_root=tmp_path / "processed")["outcomes"]["sleep_wake"] == {
+        "recorded": False, "why": "no power_log record (batches before 2026-10-27 did not record it)"}
+    crm.main(["--batch", str(batch), "--processed-root", str(tmp_path / "processed")])
+    assert "sleep/wake evidence: NOT RECORDED (no power_log record" in capsys.readouterr().out
+    with open(batch / "harness.jsonl", "a") as f:
+        f.write(json.dumps({"event": "power_log", "available": False, "why": "pmset -g log printed nothing"}) + "\n")
+    assert crm.collect(batch, processed_root=tmp_path / "processed")["outcomes"]["sleep_wake"] == {
+        "recorded": False, "why": "pmset -g log printed nothing"}
+
+
+def test_a_power_log_that_starts_after_the_batch_is_no_evidence_for_its_first_part(batch, tmp_path):
+    edit_harness(batch, lambda e: {**e, "covers_batch": False, "log_starts": utc(1200)} if e["event"] == "power_log" else e)
+    evidence = crm.collect(batch, processed_root=tmp_path / "processed")["outcomes"]["sleep_wake"]
+    assert crm.describe_sleep_wake(evidence).endswith("after the batch began: no evidence for its first part")
 
 
 # The summary's Q1 line: a job without a Q1 row has an unknown verdict, never an ok one
