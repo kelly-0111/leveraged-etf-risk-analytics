@@ -82,6 +82,22 @@ def test_text_reproducing_a_private_file_is_replaced_whole():
     assert r.text("see docs/plan.md: Send CV and SOP draft to Dr. Quill") == "see docs/plan.md: Send CV and SOP draft to Dr. Quill"
 
 
+def test_generic_lines_shared_with_a_private_file_do_not_count():
+    """A public message with four Markdown tables was blacked out because the private file had the same
+    table rules: lines without a letter or digit carry nothing private and are not matched."""
+    r = redactor(private_files={"docs/plan.md": PRIVATE_FILE + "|---|---|---|\n| --- | --- | --- |\n=============\n"})
+    public = "\n".join(["| ID | Shows | Check |", "|---|---|---|", "| M1 | returns | counts |", ""] * 4)
+    assert r.text(public) == public and "private-file" not in r.counts
+
+
+def test_a_private_line_repeated_counts_once():
+    r = redactor(private_files={"docs/plan.md": PRIVATE_FILE})
+    repeated = "\n".join(["Send CV and SOP draft to Dr. Quill"] * 3 + ["List courses and semesters taken"])
+    assert r.text(repeated) == repeated                      # two distinct lines, below MIN_FILE_LINE_MATCHES
+    distinct = "\n".join(PRIVATE_FILE.splitlines()[1:] + ["|---|---|---|"])
+    assert r.text(distinct) == "[REDACTED:private-file docs/plan.md]"   # three distinct lines still replace it
+
+
 def test_jsonl_records_stay_valid_and_reasoning_is_removed():
     raw = "\n".join(json.dumps(rec) for rec in [
         {"type": "user", "cwd": "/Users/alice.w/proj", "message": {"content": "my email is aw1@uni.edu"}},
