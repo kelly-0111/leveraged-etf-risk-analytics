@@ -4,6 +4,7 @@ Uses small fake transcripts shaped like Claude Code JSONL records.
 AI contribution: written with Claude Code (Opus 5.5).
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -120,3 +121,59 @@ def test_crlf_transcript_archives_like_lf(tmp_path):
     for file in ("transcript.raw.jsonl", "transcript.jsonl", "transcript.md"):
         assert (lf / file).read_bytes() == (crlf / file).read_bytes()
     assert [json.loads(line) for line in (crlf / "transcript.raw.jsonl").read_text().split("\n") if line] == records
+
+
+def git(root, *args):
+    return subprocess.run(["git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.org",
+                           "-c", "commit.gpgsign=false", *args], check=True, capture_output=True, text=True).stdout
+
+
+def session_in_repo(tmp_path):
+    git(tmp_path, "init", "-q")
+    source = tmp_path / "session.jsonl"
+    source.write_text("\n".join(lines(prompt("first: secret plan", "2026-10-11T02:00:00Z"),
+                                      reply("one", "2026-10-11T02:00:05Z"))) + "\n", encoding="utf-8")
+    [folder] = archive(source, SESSION, tmp_path)
+    return source, folder
+
+
+def publish(root, folder):
+    """Commit a folder's shared files as a log sanitized by hand; the raw file stays untracked."""
+    shared = [folder / "transcript.jsonl", folder / "transcript.md"]
+    for path in shared:
+        path.write_bytes(path.read_bytes().replace(b"secret plan", b"[REDACTED:memory]"))
+    git(root, "add", "--", *map(str, shared))
+    git(root, "commit", "-q", "-m", "Publish a reviewed log")
+    return {p.name: p.read_bytes() for p in shared}
+
+
+def test_published_logs_stay_byte_identical_and_new_messages_still_save(tmp_path):
+    source, folder = session_in_repo(tmp_path)
+    published = publish(tmp_path, folder)
+    (folder / "transcript.raw.jsonl").unlink()
+    with source.open("a", encoding="utf-8") as f:
+        f.write("\n".join(json.dumps(r, ensure_ascii=False) for r in (
+            prompt(f"second {SEPARATORS}", "2026-10-11T02:09:00Z"), reply("two", "2026-10-11T02:09:04Z"))) + "\n")
+    folders = archive(source, SESSION, tmp_path)
+    archive(source, SESSION, tmp_path)  # a later run changes nothing either
+
+    assert {name: (folder / name).read_bytes() for name in published} == published
+    assert [line for line in git(tmp_path, "status", "--porcelain").splitlines() if not line.startswith("??")] == []
+    assert "secret plan" in (folder / "transcript.raw.jsonl").read_text(encoding="utf-8")  # raw archive kept
+    new = folders[1]
+    assert sorted(p.name for p in new.iterdir()) == ["transcript.jsonl", "transcript.md", "transcript.raw.jsonl"]
+    records = [json.loads(line) for line in (new / "transcript.jsonl").read_text(encoding="utf-8").split("\n") if line]
+    assert len(records) == 2 and records[0]["message"]["content"] == f"second {SEPARATORS}"
+    assert f"second {SEPARATORS}" in (new / "transcript.md").read_text(encoding="utf-8")
+
+
+def test_local_edits_to_published_logs_are_not_overwritten(tmp_path):
+    source, folder = session_in_repo(tmp_path)
+    published = publish(tmp_path, folder)
+    md = folder / "transcript.md"
+    md.write_bytes(md.read_bytes() + b"\nA local note.\n")
+    edited = md.read_bytes()
+    archive(source, SESSION, tmp_path)
+    assert md.read_bytes() == edited
+    assert (folder / "transcript.jsonl").read_bytes() == published["transcript.jsonl"]
+    assert [line[:2] for line in git(tmp_path, "status", "--porcelain").splitlines() if not line.startswith("??")] == [" M"]
