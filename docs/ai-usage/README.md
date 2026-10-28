@@ -86,6 +86,10 @@ they disclose nothing private:
 
 The earlier versions remain in Git history. The unsanitized originals are kept locally, out of Git.
 
+**Whitespace, an accepted exception.** Transcripts are verbatim, so lines of tool output can end in
+spaces or tabs, and `git diff --check` reports them when a folder is added. They are not removed:
+each `transcript.md` must stay identical to the rendering of its `transcript.jsonl`.
+
 This hook and its configuration were drafted with Codex assistance during
 project setup.
 
