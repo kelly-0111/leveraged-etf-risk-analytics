@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×3, home ×72, model-reasoning ×1, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×3, home ×72, memory ×21, model-reasoning ×1, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T10:43:14.555Z
 
@@ -30,8 +30,8 @@ I'll record your 4.4 ranges and revised 4.2, then review them.
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Still open: the 4.2 lower edge, and 4.1–4.3 are not yet in the doc. 4.4 issued.",
-  "new_string": "Still open: the 4.2 lower edge, and 4.1–4.3 are not yet in the doc. 4.4 issued. The first 4.4 reply had reasoning but no numbers. Accepted 4.4 (2026-10-18): largest total RSS across all 4 runs is s14 1.3–2.0, s7 1.3–2.4, s3 1.4–3.2 GiB (judgment ranges allowing more peak overlap, the per-type sum being about 2.0, plus JVM/buffer growth); 4.2 revised to 1.3–1.8 GiB (lower edges are variation around 1.453, not shrinkage). Go/no-go expectation: at an assumed 3.5 GiB free, P ≤ 1.29, so s3 is expected to be skipped. Sensitivity given: the low end 1.3 passes once ≥3.54 GiB is free, and P above 1.84 never passes because of the 4.80 cap. 4.5 issued (H1/H2 verdicts; concavity raises the fitted intercept; three points if s3 is skipped)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -40,7 +40,7 @@ I'll record your 4.4 ranges and revised 4.2, then review them.
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 5. Assistant — 2026-10-18T10:44:25.367Z

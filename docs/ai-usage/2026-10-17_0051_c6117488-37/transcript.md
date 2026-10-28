@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×21, home ×233, model-reasoning ×16, user ×47. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): container ×13, git-user ×21, home ×233, model-reasoning ×16, user ×47. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-17T05:51:42.151Z
 
@@ -517,9 +517,9 @@ commits since ffcff78: 0
 --- images ---
 etf-risk:dev 34c68005d41c 1.98GB
 --- running containers ---
-michaelf34/infinity:latest project-infinity-1
-project-frontend project-frontend-1
-project-backend project-backend-1
+michaelf34/infinity:latest [REDACTED:container]
+[REDACTED:container] [REDACTED:container]
+[REDACTED:container] [REDACTED:container]
 (none above means no containers or services running)
 ```
 
@@ -547,7 +547,7 @@ Docker verification is finished: all eight steps pass on the final image, `etf-r
 
 ## Notes
 - **The memory budget held twice, with little headroom.** The stride-21 run peaked at 2,282 MiB earlier and 2,342 MiB now, about 91% of 2.5 GiB. That figure includes page cache. Treat 2.5 GiB as validated for stride 21 only, not for denser strides.
-- **Three other containers were running in Docker's VM during these checks:** `project-infinity-1`, `project-frontend-1` and `project-backend-1`, from another Compose project. I didn't start or touch them. They don't affect correctness, but they share the VM's 3.83 GiB. That matters for the memory budgets when the services stage comes.
+- **Three other containers were running in Docker's VM during these checks:** `[REDACTED:container]`, `[REDACTED:container]` and `[REDACTED:container]`, from another Compose project. I didn't start or touch them. They don't affect correctness, but they share the VM's 3.83 GiB. That matters for the memory budgets when the services stage comes.
 - **Outputs:** each image's runs have their own ids (`docker-34c68005d41c-…`). The earlier verification outputs are kept unchanged in the gitignored `data/outputs-docker/` and `data/windows-docker/`.
 - **Clean flag:** records will show clean `true` only once this stage is committed and the image rebuilt.
 

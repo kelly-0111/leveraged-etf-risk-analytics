@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×2514, home ×2787, model-reasoning ×18, user ×41. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×2514, home ×2787, memory ×32, model-reasoning ×18, user ×41. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-22T06:40:37.791Z
 
@@ -279,8 +279,8 @@ hashed paths changed: 0
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/pandas-baseline.md",
-  "old_string": "**The experiment is complete.**",
-  "new_string": "**Post-commit correction (uncommitted, 2026-10-22).** The author caught that \"P runs on one core\" is not established: PyArrow 26's `read_table` and `to_pandas` default to use_threads=True (8 threads), and the records show one process only. Changes made:\n- spec §8 now says \"P runs in one process\";\n- the spec memory bullet now says \"Overall ... 26.6% lower; it was lower in both halves\" (the halves were 27.1% and 25.8%);\n- pandas-baseline.md 15.5 gained a thread-count limitation, plus a \"Part B, revision\" history line.\n\nThe Part A \"one core\" wording (1.1, 11.2) is kept as pre-registered; the limitation qualifies 1.1. Do not write \"one core\" for P again; say \"one process\".\n\n**The experiment is complete.**"
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -289,7 +289,7 @@ hashed paths changed: 0
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/pandas-baseline.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 25. Assistant — 2026-10-22T06:43:05.598Z

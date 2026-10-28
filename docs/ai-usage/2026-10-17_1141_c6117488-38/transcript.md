@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×21, home ×252, model-reasoning ×16, user ×20. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): container ×42, git-user ×21, home ×252, model-reasoning ×16, user ×20. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-17T16:41:16.225Z
 
@@ -465,14 +465,14 @@ The count shows one running container whose image name matches mysql, kafka or r
 ### Tool result
 
 ```
-mysql:8.0 | project-mysql-1 | Up 11 hours (healthy) | project
+mysql:8.0 | [REDACTED:container] | Up 11 hours (healthy) | project
 --- all running containers ---
-project-infinity-1 (michaelf34/infinity:latest), compose project: project, up 11 hours ago
-project-frontend-1 (project-frontend), compose project: project, up 46 hours ago
-project-backend-1 (project-backend), compose project: project, up 46 hours ago
-project-mysql-1 (mysql:8.0), compose project: project, up 46 hours ago
-project-chromadb-1 (chromadb/chroma:latest), compose project: project, up 46 hours ago
-project-ollama-1 (ollama/ollama:latest), compose project: project, up 46 hours ago
+[REDACTED:container] (michaelf34/infinity:latest), compose project: project, up 11 hours ago
+[REDACTED:container] ([REDACTED:container]), compose project: project, up 46 hours ago
+[REDACTED:container] ([REDACTED:container]), compose project: project, up 46 hours ago
+[REDACTED:container] (mysql:8.0), compose project: project, up 46 hours ago
+[REDACTED:container] (chromadb/chroma:latest), compose project: project, up 46 hours ago
+[REDACTED:container] (ollama/ollama:latest), compose project: project, up 46 hours ago
 ```
 
 ## 37. Assistant — 2026-10-17T16:45:30.587Z
@@ -491,19 +491,19 @@ project-ollama-1 (ollama/ollama:latest), compose project: project, up 46 hours a
 ### Tool result
 
 ```
-project-infinity-1: 481.9MiB / 3.828GiB
-project-frontend-1: 80.26MiB / 3.828GiB
-project-backend-1: 46.05MiB / 3.828GiB
-project-mysql-1: 86MiB / 3.828GiB
-project-chromadb-1: 24.09MiB / 3.828GiB
-project-ollama-1: 1.325GiB / 3.828GiB
+[REDACTED:container]: 481.9MiB / 3.828GiB
+[REDACTED:container]: 80.26MiB / 3.828GiB
+[REDACTED:container]: 46.05MiB / 3.828GiB
+[REDACTED:container]: 86MiB / 3.828GiB
+[REDACTED:container]: 24.09MiB / 3.828GiB
+[REDACTED:container]: 1.325GiB / 3.828GiB
 --- published host ports ---
-project-infinity-1: 0.0.0.0:7997->7997/tcp, [::]:7997->7997/tcp
-project-frontend-1: 0.0.0.0:5173->5173/tcp, [::]:5173->5173/tcp
-project-backend-1: 0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
-project-mysql-1: 0.0.0.0:3306->3306/tcp, [::]:3306->3306/tcp
-project-chromadb-1: 0.0.0.0:8001->8000/tcp, [::]:8001->8000/tcp
-project-ollama-1: 0.0.0.0:11434->11434/tcp, [::]:11434->11434/tcp
+[REDACTED:container]: 0.0.0.0:7997->7997/tcp, [::]:7997->7997/tcp
+[REDACTED:container]: 0.0.0.0:5173->5173/tcp, [::]:5173->5173/tcp
+[REDACTED:container]: 0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
+[REDACTED:container]: 0.0.0.0:3306->3306/tcp, [::]:3306->3306/tcp
+[REDACTED:container]: 0.0.0.0:8001->8000/tcp, [::]:8001->8000/tcp
+[REDACTED:container]: 0.0.0.0:11434->11434/tcp, [::]:11434->11434/tcp
 ```
 
 ## 39. Assistant — 2026-10-17T16:45:59.806Z

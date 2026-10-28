@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×195, home ×340, model-reasoning ×7, user ×41. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×195, home ×340, memory ×66, model-reasoning ×7, user ×41. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T21:08:53.292Z
 
@@ -89,7 +89,7 @@ stage_task_counts: {'window_stats': {'jobs': 12, 'stages': 19, 'tasks': 53}, 'mo
 ```
 {
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "content": "---\nname: partition-experiment-proposal\ndescription: Shuffle-partition experiment, reduced design set by the author 2026-10-19 (A/B/C, order A-B-C-C-B-A); revised proposal awaiting review, nothing implemented or measured\nmetadata:\n  type: project\n---\n\nAuthor's decisions (2026-10-19), fixed:\n- Workload: the stride-7 set, unchanged. Three configurations, AQE enabled in all: A = 200 partitions, coalescing on; B = 200, coalescing off; C = 8, coalescing off.\n- Order A-B-C-C-B-A; each protocol `--repeats 4` (one warm-up, three measured).\n- Identical code and dependency hashes across all new runs, and verified input checksums. The new code hashes need not match the old window-generation code (a7fb72d).\n- Deferred: other partition counts and extensive diagnostic tooling (event-log runs, parsers, per-stage lists, spill, CPU).\n- The stride experiment's predictions, sections and records stay unchanged.\n\nRevised proposal sent for review, not approved:\n- Acceptance: one code state; `verified_sha256` holds the seven inputs and matches the stride-7 config; recorded settings match each configuration; task counts equal within a configuration, with B's model phase at least 200 tasks; all runs ok; `paired` equal to A's within 1e-9; 4 of 4 runs per protocol.\n- Drift: the A pair (positions 1 and 6) and the B and C pairs must each be within 10%.\n- Effect rule: more than 10% of A's median (0.2 GiB for memory), with the same sign in both halves.\n- Only code change: `--shuffle-partitions` and `--coalesce` flags, unset by default. If the collector is extended, the stride CSV must stay byte-identical (9b7dcf51...). New session helpers go in a new file, since `docs/stride-session.zsh` is cited by hash. Part A recommended in a new `docs/partition-experiment.md`.\n\nEarlier 2026-10-19: stride close-out edits to README.md, docs/spec.md and the status line of docs/experiments.md are made but uncommitted, with three commits proposed. The Part B authorship line is the author's to write.\n\n**Why:** the design exists only in the conversation, and the author reviews before any implementation, measurement or commit.\n\n**How to apply:** start from the author's review comments. Predictions and the remaining limits are the author's ([[stage3-tutor-mode]]). Stage 4 plan (figures, report, demo; MySQL/Kafka/Redis deferred) as proposed in the same session. Commits per [[git-and-privacy-rules]].\n"
+  "content": "[REDACTED:memory]"
 }
 ```
 
@@ -98,7 +98,7 @@ stage_task_counts: {'window_stats': {'jobs': 12, 'stages': 19, 'tasks': 53}, 'mo
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 7. Assistant — 2026-10-19T21:12:56.370Z
@@ -109,8 +109,8 @@ The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/git-and-privacy-rules.md",
-  "old_string": "and report hits by file:line and code point without printing the line.",
-  "new_string": "and report hits by file:line and code point without printing the line. Keyword scans only point to places to read; they never clear a folder. Never present a folder without matches as ready: the user reviews every folder in full before naming it for a commit (user correction, 2026-10-19)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -119,7 +119,7 @@ The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/git-and-privacy-rules.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 9. Assistant — 2026-10-19T21:12:58.257Z

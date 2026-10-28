@@ -65,6 +65,31 @@ committing, and each affected `transcript.md` lists `memory ×N` among its redac
 The Markdown view was re-rendered from the sanitized JSONL with this hook's `render_markdown`,
 so the two formats agree. Paths and file names of memory files are kept.
 
+**Corrections to committed logs (2026-10-28).** A review of all 185 committed folders found
+content that the earlier reviews missed. Both formats of 50 folders were sanitized, nothing else:
+- Memory content in 47 folders: 46 from batches committed before 2026-10-27, which had not been
+  memory-sanitized, and one line left in a folder added on 2026-10-27. 1,335 items were replaced
+  with `[REDACTED:memory]` as above, including copies in tool results' record fields
+  (`toolUseResult`) and in API-request records. Memory text that the user typed in a prompt is
+  kept, as the user's own words.
+- Container names of two other Docker Compose projects in 3 folders, one of them added on
+  2026-10-27, whose review had found none: 90 were replaced with `[REDACTED:container]`.
+
+Each changed `transcript.md` was re-rendered with `render_markdown`, and its header counts the
+new markers. `[REDACTED:private-file]` markers were left as they were. Reviewed and kept, as
+they disclose nothing private:
+- two reads of `.git/info/exclude`, showing Git's default comments and the name of a private
+  planning file that these logs already show;
+- app paths: Python's framework bundle, and VS Code, the editor used for this project;
+- home-folder paths: this project's helper script, the tests' example `~/proj`, macOS crash
+  reports and VS Code's support folder.
+
+The earlier versions remain in Git history. The unsanitized originals are kept locally, out of Git.
+
+**Whitespace, an accepted exception.** Transcripts are verbatim, so lines of tool output can end in
+spaces or tabs, and `git diff --check` reports them when a folder is added. They are not removed:
+each `transcript.md` must stay identical to the rendering of its `transcript.jsonl`.
+
 This hook and its configuration were drafted with Codex assistance during
 project setup.
 

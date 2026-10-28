@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×6, home ×87, model-reasoning ×2, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×6, home ×87, memory ×21, model-reasoning ×2, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T10:38:02.279Z
 
@@ -57,8 +57,8 @@ I'll record the revised 4.3 and the facts I'll need to review 4.4.
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "4.3 issued: wall time at s14/7/3.",
-  "new_string": "4.3 issued: wall time at s14/7/3. First 4.3 attempt (10 + 35 × ratio) had a fixed part too low: the records show regression-r2 (4 windows, 12,056 rows) at 16.3 s in-process and supplement-r2 (151 windows, 75,971 rows) at 21.9 s, both with the run-of-record code, 57 jobs each, run sequentially in the same session without overlap; outside-process time was 1.0–1.6 s per s21 run. Revised 4.3 (accepted): 17 + 28 × ratio gives 59/101/213 s, bands −20%/+30% (47–77, 81–131, 170–277 s), aborts 177/303/639 s; H1 stays on the fitted intercept with the small run as a supporting comparison. Its whole-run anchor replaces the phase-by-phase split. Memory facts for 4.4: only s21 has memory records (the small runs were not measured); s21 max_processes_seen 12–14 with default_parallelism 8, i.e. about 8 workers already active. Still open: the 4.2 lower edge, and 4.1–4.3 are not yet in the doc. 4.4 issued."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -67,7 +67,7 @@ I'll record the revised 4.3 and the facts I'll need to review 4.4.
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 8. Assistant — 2026-10-18T10:39:48.651Z

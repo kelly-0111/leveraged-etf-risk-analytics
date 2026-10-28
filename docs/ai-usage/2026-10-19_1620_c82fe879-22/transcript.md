@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×405, home ×610, model-reasoning ×12, user ×44. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×405, home ×610, memory ×45, model-reasoning ×12, user ×44. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T21:20:05.279Z
 
@@ -130,7 +130,7 @@ The draft passes every check. Updating memory so it points to the draft as the f
 ```
 {
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "content": "---\nname: partition-experiment-proposal\ndescription: Shuffle-partition experiment; full draft in docs/partition-experiment.md (untracked, marked draft awaiting review); nothing implemented, measured or committed\nmetadata:\n  type: project\n---\n\nThe complete proposal is `docs/partition-experiment.md`, written 2026-10-19 and marked as a draft awaiting the author's review. Its section 1.2 lists the author's decisions, and section 13 lists Claude Code's proposals still to be reviewed. The draft is the design's single source; this note only records the decisions and their status.\n\nAuthor's decisions (2026-10-19):\n- A = 200 partitions, coalescing on; B = 200, off; C = 8, off. AQE enabled in all three.\n- Stride-7 set; order A-B-C-C-B-A; `--repeats 4` per protocol.\n- Identical code and dependency hashes across the new runs, and verified input checksums. The new hashes need not match the old window-building code.\n- Task counts are observations, not pass/fail criteria. Settings are verified through the recorded configuration and the execution plans. The draft proposes `plans.json` read from Spark's SQL status store, outside the timed phases.\n- `paired` and `path_summary` of every run are compared with A by their full keys: rows, keys, columns, NULLs, breach fields, and floats within 1e-12 + 1e-9 × |r|.\n- Deferred: other configurations and extensive diagnostic tooling. The stride experiment's predictions and records stay unchanged.\n\nNot allowed until the author approves: pipeline changes, measurements, commits, pushes.\n\n**Why:** the author reviews the draft before any implementation, measurement or commit.\n\n**How to apply:** take changes from the author's review comments on the draft. Predictions (draft section 11) are the author's ([[stage3-tutor-mode]]). Pending commits from the stride close-out are described in the same session; follow [[git-and-privacy-rules]].\n"
+  "content": "[REDACTED:memory]"
 }
 ```
 
@@ -139,7 +139,7 @@ The draft passes every check. Updating memory so it points to the draft as the f
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 16. Assistant — 2026-10-19T21:27:19.964Z

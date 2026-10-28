@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9861, home ×11805, model-reasoning ×130, user ×320. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9861, home ×11805, memory ×79, model-reasoning ×130, user ×320. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T22:08:41.671Z
 
@@ -1909,7 +1909,7 @@ I'll wait on the dry batch with a monitor that fires once, when position 6 ends 
 ```
 {
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "content": "---\nname: partition-experiment-proposal\ndescription: Shuffle-partition experiment; draft revision 2 in docs/partition-experiment.md, code implemented and tested but uncommitted, dry run done; no formal measurement\nmetadata:\n  type: project\n---\n\nState on 2026-10-19 (late):\n\n**Stride close-out, committed.** `6d19f1b` (collector), `05c5a79` (experiments.md Part B, with the 5.6 \"summed stage task counts\" wording) and `516b28a` (README and spec). Not pushed. AI logs and the partition draft were left out, as the author asked.\n\n**Roles.** The author lifted tutor mode for this part: \"You write the engineering code and tests; I review the results and run the formal measurements. Keep A/B/C and the 24-run design. Ask only if a material scope change is needed.\" Routine issues are fixed directly, without another document-review cycle.\n\n**Implemented, uncommitted.**\n- `src/etf_risk/plans.py`: SQL status store via py4j, `waitUntilEmpty`, watermark, and capture of final plans plus the \"number of partitions\" metric of each AQEShuffleRead.\n- `spark_pipeline.py`:\n  - flags `--shuffle-partitions`, `--coalesce on|off` and `--record-plans`;\n  - the partition flags are refused (exit 2) inside an existing session;\n  - `pipeline_options` and `plan_capture` in run.json; a capture failure never changes the status.\n- `analysis/collect_partition_measurements.py`: separate collector, criteria 1–5, `--check-protocol`.\n- `docs/partition-session.zsh`: `ready`, `position n`, `positions.tsv`, `abort_run`.\n- Tests: `tests/test_partition_options.py` (9) and `tests/test_partition_collector.py` (34).\n\n**Draft revision 2.**\n- Matching source and dependency hashes, with the commit only reported.\n- A batch is one sequence per session; a code fix starts a new batch.\n- One failure and retry table (3.4).\n- Finality required only of adaptive plans.\n- Timing metric `wall_excl_capture_s = wall_s − plan_capture_s`.\n\n**Findings from Spark 4.2.0.** The explain mode reads back as \"FORMATTED\". `errorMessage` is `Some(\"\")` on success. One execution per run is a `CreateViewCommand` with no jobs (empty phase, not adaptive).\n\n**Why:** the author reviews the code and the results before any commit, and runs the formal session.\n\n**How to apply:** next steps come from the author's review. Do not commit the partition code or draft, or run formal measurements, unless asked. Predictions (draft section 11) are the author's ([[stage3-tutor-mode]]). Commits follow [[git-and-privacy-rules]].\n"
+  "content": "[REDACTED:memory]"
 }
 ```
 
@@ -1926,7 +1926,7 @@ Monitor started (task bm5tc804b, expires in 15m unless the source ends first; yo
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 139. Assistant — 2026-10-19T22:41:00.841Z

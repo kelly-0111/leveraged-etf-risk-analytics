@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×513, home ×700, model-reasoning ×11, user ×44. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×513, home ×700, memory ×30, model-reasoning ×11, user ×44. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T21:49:44.913Z
 
@@ -135,8 +135,8 @@ One section reference, "5.5", matches no heading. I'll find it:
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "old_string": "Review 2026-10-19: a fresh session (036c80c6, read-only, log `2026-10-19_1628_036c80c6-01`) found 16 issues; its review is in `~/.claude/plans/shiny-foraging-bee.md`. None has been applied to the draft yet. Its finding on summed stage task counts (stages listed by several jobs) may also affect the wording of experiments.md 5.6.",
-  "new_string": "Review 2026-10-19: a fresh session (036c80c6, read-only, log `2026-10-19_1628_036c80c6-01`) found 16 issues; its review is in `~/.claude/plans/shiny-foraging-bee.md`. Revision 1 of the draft, made at the author's request the same day, applies the 15 findings about the document; its \"Draft history\" table maps each finding to its change. Choices made in revision 1, still awaiting review:\n- plan capture is opt-in (`--record-plans`);\n- AQEShuffleRead \"number of partitions\" metrics are captured, keeping the spec's promise;\n- inside an existing session the flags are refused, and flag tests run in a subprocess;\n- an explicit position mapping, with one re-run per position;\n- a separate collector, leaving `collect_measurements.py` untouched.\n\nStill open outside the draft: the wording of experiments.md 5.6, \"`tasks_<group>` count the Spark tasks\". Stages listed by several jobs may be counted twice, so \"summed stage task counts\" is the safe wording. It is not changed until the author decides, and it sits in the pending stride commit."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -145,7 +145,7 @@ One section reference, "5.5", matches no heading. I'll find it:
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 16. Assistant — 2026-10-19T21:56:46.939Z

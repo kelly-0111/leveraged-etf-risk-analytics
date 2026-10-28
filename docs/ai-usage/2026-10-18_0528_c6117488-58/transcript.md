@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×103, model-reasoning ×4, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×103, memory ×21, model-reasoning ×4, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T10:28:34.660Z
 
@@ -87,8 +87,8 @@ I'll update my tutor notes with your 4.1 and 4.2 and the Stage 2 memory facts.
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Fact for 4.1: the run of record's code differs from today's only in provenance.py, and uv.lock is identical.",
-  "new_string": "Fact for 4.1: the run of record's code differs from today's only in provenance.py, and uv.lock is identical. User's predictions (given in chat, not yet in the doc as of 2026-10-18): 4.1 s21 median 45 s ±10 s (5 s noise + 5 s machine-state allowance), 35–55 s, abort at 135 s; all criteria met. 4.2: the max over all 4 runs including warm-up is 1.2–1.8 GiB; all met except that the lower edge 1.2 needs a reason (their own reasoning points upward). Stage 2 s21 records: run peaks warm-up 1.344, 1.244, 1.270, 1.453 GiB (the max over all four is also 1.453); spark_jvm 0.92–1.06 GiB (above the 1.0 GiB heap in run 4), python_worker 0.70–0.87, driver 0.11; the per-kind sum (~2.0) exceeds the total because the kinds peak at different times; free before 1.34–1.62 GiB; warm-up wall 43.6 s; measured 44.7/47.0/40.2 s. Run 4's wall 40.18 s vs total_in_process 39.1 s gives about 1.1 s outside the process (not told to the user). 4.3 issued: wall time at s14/7/3."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -97,7 +97,7 @@ I'll update my tutor notes with your 4.1 and 4.2 and the Stage 2 memory facts.
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 11. Assistant — 2026-10-18T10:30:23.221Z

@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1596, home ×1899, model-reasoning ×24, user ×59. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1596, home ×1899, memory ×21, model-reasoning ×24, user ×59. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T04:47:39.536Z
 
@@ -266,8 +266,8 @@ checked 52 values from the records; missing or different: ['04:53:54']
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Measurement session complete (5 protocols, 20 runs). Next: run-log notes (gate decision, s3 reason, WeChat), then Part B (user's CSV builder; Claude drafts results tables from it, marked).",
-  "new_string": "Measurement session complete (5 protocols, 20 runs). 2026-10-19 the user stated: s3 was deliberate (\"to see whether it would complete despite failing the gate\"); record it as a protocol deviation, results exploratory; WeChat may have been open during s3 (not remembered clearly) and its state during s21r cannot be confirmed: record as uncertain; keep sections 1–4 unchanged; no re-runs; move to Part B. Done at the user's request: 4 marked notes appended to run-log.txt (gate decision, deviation and reason, WeChat uncertainty, late watcher; 98 earlier lines unchanged); `EXPLORATORY.txt` in the s3 output folder (mirrors SUPERSEDED.txt); docs/experiments.md, uncommitted: header AI paragraph and status updated, section 5 drafted as 5.1 protocols (roles planned / exploratory / drift check), 5.2 run log (helpers described, \"kept outside the repository\"), 5.3 deviations and uncertain conditions (names WeChat and \"one further app\"), 5.4 gate, 5.5 drift, with 5.6 CSV (TODO author) and 5.7 summary tables (TODO, Claude drafts from the CSV); 52 values verified by script; sections 1–4 and 6 byte-identical to HEAD. Part B plan issued: B1 user reviews 5.1–5.5 (WeChat naming, the further app, whether to commit the helper); B2 user writes the CSV builder in analysis/ (20 rows, spec §4 columns, explicit role mapping, self-checks, deterministic; reference values only after the attempt); B3 Claude drafts 5.7 from the CSV; B4 user: fit and section 6 (primary fit as planned on 21/14/7 with the first s21, marked affected by drift; anything with the repeated s21 or s3 labeled post hoc/exploratory; write the five questions into section 6); B5 Part B authorship line, README/spec status, commits (doc by explicit path; AI logs separately), PR with a merge commit."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -276,7 +276,7 @@ checked 52 values from the records; missing or different: ['04:53:54']
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 25. Assistant — 2026-10-19T04:55:42.513Z

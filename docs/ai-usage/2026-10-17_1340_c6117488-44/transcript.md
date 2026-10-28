@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): email ×2, git-user ×47, home ×316, model-reasoning ×18, private-term ×2, user ×66. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): email ×2, git-user ×47, home ×316, memory ×4, model-reasoning ×18, private-term ×2, user ×66. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-17T18:40:01.993Z
 
@@ -113,25 +113,7 @@ ls: .github/workflows: No such file or directory
 ### Tool result
 
 ```
-<system-reminder>This memory is 4 days old. Memories are point-in-time observations, not live state — claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact.</system-reminder>
-1	---
-2	name: git-and-privacy-rules
-3	description: What may be committed in the leveraged ETF repo and how; rules for AI logs and the private plan
-4	metadata:
-5	  node_type: memory
-6	  type: project
-7	  originSessionId: c6117488-0e99-49dd-a985-5cad552900a1
-8	  modified: 2026-10-13T05:13:36.583Z
-9	---
-10	
-11	- Commit only when asked; never push or merge unless asked. Stage by explicit path (never `git add -A`) and check the staged list before committing.
-12	- AI-usage logs in `docs/ai-usage/` are reviewed by the user and committed in separate commits, only the folders they name.
-13	- `data/` stays out of Git. `docs/implementation-plan.md` is private (excluded via `.git/info/exclude`): never quote or reference it in repo files or logs; point to `docs/spec.md` or `docs/data-sources.md` instead.
-14	
-15	**Why:** the logs can carry private instructions, and the plan holds third-party details.
-16	
-17	**How to apply:** before any commit, grep the staged files for private-plan references, local paths and personal info. Related: [[scope-discipline]].
-18	
+[REDACTED:memory]
 ```
 
 ## 9. Assistant — 2026-10-17T18:42:16.756Z

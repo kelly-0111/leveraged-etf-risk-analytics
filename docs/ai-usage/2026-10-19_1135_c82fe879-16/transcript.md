@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1320, home ×1534, model-reasoning ×10, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1320, home ×1534, memory ×21, model-reasoning ×10, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T16:35:29.001Z
 
@@ -227,8 +227,8 @@ private-plan or local-path mentions in the doc diff: 0
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Next: the author's answers (a)–(e) (Claude reviews, hints only), then B5",
-  "new_string": "The author pasted answers (a)–(e) (2026-10-19); Claude's review found: (a) missing b, the fixed-phase comparison and the crossover value, \"84.5% of the baseline\" ambiguous; (b) no explicit verdict, ratio ×1.87 vs the repeated s21; (c) 3.3% is the measured-run median (largest of four +1.8%), type change unanswered, heap excess unquantified; (d) H1 reversal and failed drift expectation missing, Stage 2 anchoring facts (free memory 1.34–1.62 vs 3.02–3.50 GiB; LPM state unrecorded); (e) sampling vs summing wording. On the user's \"sure\", the answers were inserted as \"Answer (author)\" blocks with all non-optional fixes applied, the section 6 note and the header listing the corrections and additions; optional suggestions not added. Verified: 22/22 figures match the records, 0 TODOs left in the document, sections 1–4 unchanged. Next: B5"
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -237,7 +237,7 @@ private-plan or local-path mentions in the doc diff: 0
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 25. Assistant — 2026-10-19T16:38:01.025Z

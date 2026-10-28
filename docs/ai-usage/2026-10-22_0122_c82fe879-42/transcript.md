@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1131, home ×1267, model-reasoning ×4, user ×29. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1131, home ×1267, memory ×27, model-reasoning ×4, user ×29. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-22T06:22:00.532Z
 
@@ -92,8 +92,8 @@ The addition is in place. 15.4 now reads as your four sentences, Part A is still
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/pandas-baseline.md",
-  "old_string": "Review suggestions were sent, not applied:\n- 15.4 answers \"where\" but not \"why\", and omits that the predicted memory ranking held;\n- optional: add \"median\" in 15.1 and 15.3.\n\n**Still open:** the author's decision on the suggestions; the authorship line; then the top status line, README and spec at finalization; a commit by explicit path; push and merge only when asked.",
-  "new_string": "After the review the author added two sentences of their own to 15.4 (\"The estimate overstated pandas's model and other phase times. The predicted memory ranking held, but the records do not explain why pandas's peak exceeded its range.\"), and the section 15 note records this. The optional \"median\" wording in 15.1 and 15.3 was not taken up, so leave those answers as written.\n\n**Still open:** the authorship line; then the top status line, README and spec at finalization; a commit by explicit path once the author says so; push and merge only when asked."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -102,7 +102,7 @@ The addition is in place. 15.4 now reads as your four sentences, Part A is still
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/pandas-baseline.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 12. Assistant — 2026-10-22T06:22:47.973Z
