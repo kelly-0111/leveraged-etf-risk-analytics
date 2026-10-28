@@ -596,3 +596,7 @@ monitoring, at the author's decision._
     It runs with `pipefail`, and collects the batch even when the batch ends with an error.
   - **After the session:** `docs/verify_frozen_code.py` confirms that every code record of the
     batch matches `4fc550e`, with a clean worktree and seed 544.
+  - **Ran on 2026-10-27,** from 16:23 to 16:55. The collector's verdicts were both valid, and the
+    frozen code was verified. The results are in [recovery-part-b.md](recovery-part-b.md), section
+    10. Its answers and limits were drafted with Claude Code and approved by the author on
+    2026-10-27.

@@ -23,7 +23,7 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
 | Optional systems extension: MySQL job table, Kafka job queue, Redis result cache ([spec §11](docs/spec.md)) | **In progress, not complete**: the outstanding items in the rows below |
 | Extension: job table, Kafka delivery and reconciler, and a worker running the real pipeline ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)) | Implemented; tested on SQLite and against MySQL and Kafka. The MySQL and Kafka container limits held in one isolated check under host memory pressure; **the native processes' memory is not validated** |
-| Extension: recovery study, E1 and E2 ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)) | Documented: E1 has supporting correctness observations; **valid formal E2 recovery-time evidence is outstanding** |
+| Extension: recovery study, E1 and E2 ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)) | Documented: E1 has supporting correctness observations. **Valid formal E2 recovery-time evidence is now available** from formal batch-3, for this host and configuration only: one batch of 30 jobs, valid for correctness and recovery times, on verified frozen code. Its answers and limits (Part B, section 10) were drafted with Claude Code and approved by the author on 2026-10-27. batch-1 and batch-2 stay invalid for recovery times |
 | Extension: Redis result cache for the three summary queries ([docs/result-cache.md](docs/result-cache.md)) | Implemented: accepted and registered runs only; falls back to Spark when Redis fails |
 | Extension: result-cache experiment, E3 ([docs/result-cache-experiment.md](docs/result-cache-experiment.md), [docs/result-cache-part-b.md](docs/result-cache-part-b.md)) | Complete: one valid formal batch of host-specific paired latency observations, not a general performance claim |
 | Test suite | **Open**: two intermittent failures of `tests/test_baseline_collector.py`, with the cause unresolved ([spec §10](docs/spec.md)) |
@@ -491,6 +491,10 @@ together with how it was checked.
      - the recovery study's documentation, with supporting correctness observations for E1
        ([docs/recovery-part-a.md](docs/recovery-part-a.md),
        [docs/recovery-part-b.md](docs/recovery-part-b.md));
+     - valid formal E2 recovery-time evidence for this host and configuration: formal batch-3,
+       on 2026-10-27, on verified frozen code. All 30 jobs met their deadlines, and none was
+       lost or accepted twice. The answers were approved by the author on 2026-10-27. batch-1
+       and batch-2 stay invalid for recovery times;
      - the result cache ([docs/result-cache.md](docs/result-cache.md));
      - its experiment, E3, with one valid formal batch on this Mac
        ([docs/result-cache-experiment.md](docs/result-cache-experiment.md),
@@ -499,7 +503,6 @@ together with how it was checked.
        at 0%, 50% and 90% hits took a median 1.04, 0.51 and 0.14 times their controls' time.
        These are host-specific paired observations.
    - **Outstanding:**
-     - valid formal E2 recovery-time evidence: both formal batches were invalid for timing;
      - a representative validation of the native processes' memory: the container limits
        held, but under host memory pressure;
      - the cause of two intermittent failures of `tests/test_baseline_collector.py`

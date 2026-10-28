@@ -121,6 +121,34 @@ How each item is met is Claude Code's proposal, in the sections named.
     and spec record the recovery study as documented, with E1 supported by correctness
     observations and valid formal E2 recovery-time evidence outstanding; the systems extension is
     not complete.
+- **E2's evidence (2026-10-27).** The entries above are kept as they were decided.
+  - **Approved: the evidence plan.**
+    - The host readings record `vm_stat`'s counters by name, and older records are read as page
+      counts.
+    - A whole-batch container monitor: any other project's container event fails the recovery
+      times, and a missing or failed monitor counts as unknown.
+    - Sleep and wake evidence, recorded and never a gate.
+    - A C0–D1–C0 preflight. The optional probe with another project's container is skipped.
+  - **Approved: one more formal batch, batch-3.**
+    - It uses the same plan, with the code frozen at `4fc550e`.
+    - The change to the container events' text is a recorded exception to the preflight-first
+      rule.
+    - If batch-3 were invalid, it would be kept and reported, and no further batch would run.
+
+    See [recovery-part-a.md](recovery-part-a.md), section 13.
+  - **batch-3 supplies valid formal E2 recovery-time evidence for this host and configuration.**
+    - The collector's verdicts were both valid, and the frozen code was verified.
+    - All 30 jobs met their deadlines, and none was lost or accepted twice.
+    - batch-1 and batch-2 stay invalid for recovery times.
+  - **Approved: the answers and limits** for batch-3, as drafted with Claude Code
+    ([recovery-part-b.md](recovery-part-b.md), section 10).
+  - **Limitation retained: MySQL's fenced branch was not observed in any formal batch.** In this
+    branch MySQL returns after F, so the attempt is fenced and the job runs again. All 10 D1 and D2
+    jobs of the formal batches finished with their one attempt: 2 in batch-1, 4 in batch-2 and 4
+    in batch-3. D1's fenced branch appeared only in preflight-2, as a functional observation
+    ([recovery-part-a.md](recovery-part-a.md), section 11).
+  - **The systems extension is still not complete:** the native processes' memory is not
+    validated, and the cause of two intermittent baseline-collector test failures is open.
 - **Throughout.** No formal experiment ran before Part A's approval. Until the fourth review the
   work was documents only.
 
