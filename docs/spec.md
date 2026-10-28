@@ -1034,8 +1034,9 @@ limitations (the author's decision, 2026-10-27):
   E3's workload only.
 - **Scale.** One Kafka broker and one MySQL database, with no throughput, scaling
   or durability claim beyond them (**Not claimed**, above).
-- **The demo** shows the whole path once, with one job, one worker and no
-  failure. E1 and E2 cover the failures ([demo.md](demo.md), section 5).
+- **The demo** shows the whole path once, with one job and one worker. Its one
+  failure is Redis stopped, answered by Spark; it shows no worker, MySQL or Kafka
+  failure, which E1 and E2 cover ([demo.md](demo.md), section 5).
 
 Open in the test suite, outside the extension: the cause of two intermittent
 failures of the baseline collector's tests (§10).

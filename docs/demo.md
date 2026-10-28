@@ -108,7 +108,9 @@ to `data/outputs-demo/<UTC stamp>/`, outside Git.
 
 In the second run, the miss's Spark query took 7.7 s, the hit 0.04 s and the fallback 7.8 s. These
 are single observations, not measurements; [E3](result-cache-part-b.md) is the measured
-comparison. The demo shows no failure and no recovery; for those, see E1 and E2 in
+comparison. The demo injects one failure, Redis stopped, and the request is answered by Spark; E3
+measured that fallback ([result-cache-part-b.md](result-cache-part-b.md), section 2.4). It shows no
+worker, MySQL or Kafka failure and no recovery; for those, see E1 and E2 in
 [recovery-part-b.md](recovery-part-b.md). It also runs one job on one worker.
 
 ## From a fresh clone
