@@ -21,12 +21,12 @@ are not forecasts, and the model ignores fees, financing and execution.
 | Pandas baseline: the Spark pipeline against a single-process pandas implementation, end to end, at stride 7 ([docs/pandas-baseline.md](docs/pandas-baseline.md)) | Complete; pandas had a 41.8% shorter median wall time and a 26.6% lower median peak total RSS; outputs within tolerance |
 | Caching experiment: no cache, the window-member rows, and those plus the four read-back tables, at stride 7 ([docs/caching-experiment.md](docs/caching-experiment.md)) | Complete; no clear difference in runtime or peak memory; outputs within tolerance |
 | Figures and final write-up: twelve figures drawn from the result files, the results write-up and a demo ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)) | Complete; figure numbers checked against the documented values, conclusions approved by the author; eight of the figures need the data under `data/`, which is not in Git |
-| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache ([spec §11](docs/spec.md)) | **In progress, not complete**: the outstanding items in the rows below |
-| Extension: job table, Kafka delivery and reconciler, and a worker running the real pipeline ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)) | Implemented; tested on SQLite and against MySQL and Kafka. The MySQL and Kafka container limits held in one isolated check under host memory pressure; **the native processes' memory is not validated** |
-| Extension: recovery study, E1 and E2 ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)) | Documented: E1 has supporting correctness observations. **Valid formal E2 recovery-time evidence is now available** from formal batch-3, for this host and configuration only: one batch of 30 jobs, valid for correctness and recovery times, on verified frozen code. Its answers and limits (Part B, section 10) were drafted with Claude Code and approved by the author on 2026-10-27. batch-1 and batch-2 stay invalid for recovery times |
+| Optional systems extension: MySQL job table, Kafka job queue, Redis result cache ([spec §11](docs/spec.md)) | **Complete, with documented limitations** ([spec §11](docs/spec.md)): the evidence is host-specific; E2 and E3 rest on one valid formal batch each; MySQL's fenced branch was not observed; the native processes' memory is not validated; one broker and one database. A one-command demo runs it end to end ([docs/demo.md](docs/demo.md), section 5) |
+| Extension: job table, Kafka delivery and reconciler, and a worker running the real pipeline ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md), [docs/worker-pipeline.md](docs/worker-pipeline.md)) | Implemented; tested on SQLite and against MySQL and Kafka. The MySQL and Kafka container limits held in one isolated check under host memory pressure. **The native processes' memory is not validated**, a documented limitation with no native budget claimed |
+| Extension: recovery study, E1 and E2 ([docs/recovery-part-a.md](docs/recovery-part-a.md), [docs/recovery-part-b.md](docs/recovery-part-b.md)) | Complete. E1 has supporting correctness observations from batch-2 and batch-3. **Valid formal E2 recovery-time evidence** comes from formal batch-3, for this host and configuration only: one batch of 30 jobs, valid for correctness and recovery times, on verified frozen code. Its answers and limits (Part B, section 10) were drafted with Claude Code and approved by the author on 2026-10-27. MySQL's fenced branch was not observed in any formal batch. batch-1 and batch-2 stay invalid for recovery times |
 | Extension: Redis result cache for the three summary queries ([docs/result-cache.md](docs/result-cache.md)) | Implemented: accepted and registered runs only; falls back to Spark when Redis fails |
 | Extension: result-cache experiment, E3 ([docs/result-cache-experiment.md](docs/result-cache-experiment.md), [docs/result-cache-part-b.md](docs/result-cache-part-b.md)) | Complete: one valid formal batch of host-specific paired latency observations, not a general performance claim |
-| Test suite | **Open**: two intermittent failures of `tests/test_baseline_collector.py`, with the cause unresolved ([spec §10](docs/spec.md)) |
+| Test suite | **Open**: two intermittent failures of `tests/test_baseline_collector.py` kept no failing assertion, so their cause is unknown. A third was traced to a source edit made while the suite ran, and the fixture now names such edits (PR #19) ([spec §10](docs/spec.md)) |
 
 ## Reading guide
 
@@ -69,8 +69,10 @@ are not forecasts, and the model ignores fees, financing and execution.
    ran its session, and the
    [collector](analysis/collect_caching_measurements.py) builds its
    measurements CSV and checks its acceptance criteria.
-9. **The optional systems extension** ([spec §11](docs/spec.md), in progress; its
-   architecture diagram, guarantees and open items are there):
+9. **The optional systems extension** ([spec §11](docs/spec.md), complete with documented
+   limitations; its architecture diagram, guarantees and limitations are there):
+   - **the demo:** [docs/demo.md](docs/demo.md), section 5, a job submitted, run, accepted and
+     served from the cache, then with Redis stopped, in one command;
    - **the job queue:** [docs/job-table.md](docs/job-table.md) (the job table and its
      guarantees), [docs/job-queue.md](docs/job-queue.md) (Kafka delivery and the
      reconciler) and [docs/worker-pipeline.md](docs/worker-pipeline.md) (the worker
@@ -313,6 +315,14 @@ configuration, not comparable with native measurements.
 ### Systems extension services (runbook)
 
 These are for the optional job queue and result cache ([spec §11](docs/spec.md)).
+- **End to end, in one command.** `zsh docs/extension-demo.zsh` starts fresh services, then:
+  - submits a job, which a worker runs with the real pipeline and the job table accepts;
+  - serves the accepted run's summary from the cache, as a miss and then a hit;
+  - stops Redis, and the same request falls back to Spark;
+  - checks each outcome, keeps its records in `data/outputs-demo/`, and removes the services.
+
+  The demo is described in [docs/demo.md](docs/demo.md), section 5. The commands below take the
+  same parts one at a time.
 - **Compose services.** MySQL, Kafka and Redis run in Docker Compose
   ([docker/compose.yaml](docker/compose.yaml)), each with a memory limit and reachable from
   this machine only.
@@ -483,8 +493,11 @@ together with how it was checked.
    review the data's terms of use.
 3. **Figures and the final write-up** (Stage 4) are complete
    ([docs/results.md](docs/results.md), [docs/demo.md](docs/demo.md)).
-4. **Optional systems extension** (spec §11): in progress, not complete.
+4. **Optional systems extension** (spec §11): complete, with documented limitations.
    - **Done:**
+     - a one-command demo of the whole path: submission, execution, the accepted result, a
+       cache miss and hit, and the fallback with Redis stopped
+       ([docs/demo.md](docs/demo.md), section 5);
      - the job queue, which runs the real pipeline
        ([docs/job-table.md](docs/job-table.md), [docs/job-queue.md](docs/job-queue.md),
        [docs/worker-pipeline.md](docs/worker-pipeline.md));
@@ -502,8 +515,15 @@ together with how it was checked.
        request in a warm Spark session, a hit took a median 5.4 ms instead of 0.132 s. Blocks
        at 0%, 50% and 90% hits took a median 1.04, 0.51 and 0.14 times their controls' time.
        These are host-specific paired observations.
-   - **Outstanding:**
-     - a representative validation of the native processes' memory: the container limits
-       held, but under host memory pressure;
-     - the cause of two intermittent failures of `tests/test_baseline_collector.py`
-       ([spec §10](docs/spec.md)).
+   - **Documented limitations** ([spec §11](docs/spec.md)):
+     - **One host:** every result comes from one 8 GiB Mac, as counts and paired observations,
+       with no rate and no general performance claim.
+     - **One formal batch each:** E2 and E3 each rest on one valid formal batch, and E2 has
+       two jobs per case. MySQL's fenced branch (D1, D2) was not observed in any formal batch.
+     - **Native memory:** the native processes' memory is not validated, and no native budget
+       is claimed. The host condition for representative figures was not met in the one check
+       that tested it. The MySQL and Kafka container limits held in that check.
+     - **Scale:** one Kafka broker and one MySQL database, with no throughput, scaling or
+       durability claim beyond them.
+5. **Test suite:** the cause of two intermittent failures of
+   `tests/test_baseline_collector.py` is unknown ([spec §10](docs/spec.md)).
