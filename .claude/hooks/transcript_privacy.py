@@ -12,7 +12,9 @@ home directory is shown as ~. What is redacted:
   - optional, from .claude/transcript-privacy.local.json (gitignored):
         {"private_terms": ["a name"], "private_files": ["docs/private.md"]}
     terms are replaced case-insensitively; any text that reproduces
-    MIN_FILE_LINE_MATCHES or more lines of a private file is replaced whole.
+    MIN_FILE_LINE_MATCHES or more distinct lines of a private file is replaced
+    whole. Lines shorter than MIN_FILE_LINE_CHARS, or without a letter or digit
+    (Markdown table rules, separators), are too generic to count.
 
 Rules are pattern-based, so a reviewed transcript is still required before
 committing (see docs/ai-usage/README.md).
@@ -35,7 +37,8 @@ CONFIG_PATH = Path(".claude") / "transcript-privacy.local.json"
 EMAIL_ALLOWLIST = {"noreply@anthropic.com", "git@github.com"}
 MIN_LITERAL_CHARS = 3            # never redact a value so short it matches everywhere
 MIN_FILE_LINE_CHARS = 12         # ignore short, generic lines of private files
-MIN_FILE_LINE_MATCHES = 3
+MIN_FILE_LINE_MATCHES = 3        # distinct lines; a line repeated in a text counts once
+HAS_LETTER_OR_DIGIT = re.compile(r"[^\W_]")   # lines without one, e.g. |---|---|, are generic
 
 # "\\?" also catches regex-escaped addresses such as name@mail\.com in commands.
 EMAIL = re.compile(r"[\w.%+-]+@[A-Za-z0-9-]+(?:\\*\.[A-Za-z0-9-]+)*\\*\.[A-Za-z]{2,}")
@@ -77,7 +80,8 @@ class Redactor:
         terms = sorted({t for t in private_terms if len(t) >= MIN_LITERAL_CHARS}, key=len, reverse=True)
         self._terms = re.compile("|".join(map(re.escape, terms)), re.IGNORECASE) if terms else None
         self._private_lines = {
-            name: {line for line in map(_normalize_line, text.splitlines()) if len(line) >= MIN_FILE_LINE_CHARS}
+            name: {line for line in map(_normalize_line, text.splitlines())
+                   if len(line) >= MIN_FILE_LINE_CHARS and HAS_LETTER_OR_DIGIT.search(line)}
             for name, text in (private_files or {}).items()
         }
 
@@ -88,7 +92,7 @@ class Redactor:
 
     def text(self, s: str) -> str:
         for name, lines in self._private_lines.items():
-            if sum(_normalize_line(line) in lines for line in s.splitlines()) >= MIN_FILE_LINE_MATCHES:
+            if len(lines.intersection(map(_normalize_line, s.splitlines()))) >= MIN_FILE_LINE_MATCHES:
                 self.counts["private-file"] += 1
                 return marker(f"private-file {name}")
         s = self._sub(SECRET_TOKEN, marker("secret"), s, "secret")
