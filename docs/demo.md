@@ -2,12 +2,14 @@
 
 A short walk-through on the machine that holds the project's data: the tests, the figures and their
 check, the SQL analyses of the run of record, and a small pipeline run with its independent check.
-About ten minutes, most of it the test suite.
+About ten minutes, most of it the test suite. Section 5 then runs the optional systems extension end
+to end, with Docker, in about two minutes more.
 
 _Drafted with Claude Code (Opus 5.5) on 2026-10-22 and 2026-10-23. Every command was run on the
 project's machine on those days with the results described here; the figures and the pipeline run
 went to a scratch folder instead of `data/figures-demo` and `data/outputs-demo`, and the fresh-clone
-commands ran in a copy of the repository's committed files, without `data/`._
+commands ran in a copy of the repository's committed files, without `data/`. Section 5 and its
+script were written with Claude Code on 2026-10-27 and run that day, as described there._
 
 **Before you start.** Python 3.12, Java 17 and [uv](https://docs.astral.sh/uv/); run everything from
 the repository root. Steps 2 to 4 use data under `data/`, which is not in Git and exists only on the
@@ -68,6 +70,46 @@ of checks. The second compares a sample of windows with an independent Python co
 windows and 106 paths on 2026-10-23) and reports 0 mismatches; both find the one breached window,
 AAPL's calendar year 2000. The outputs go to `data/outputs-demo/`, outside Git; nothing is
 overwritten, so another run needs a new `--run-id`.
+
+## 5. The systems extension end to end
+
+It needs Docker, no container of this project (the script refuses to start otherwise), and the
+processed snapshot `full-2026-10-12`. It takes about two minutes.
+
+```bash
+zsh docs/extension-demo.zsh
+```
+
+On fresh MySQL, Kafka and Redis containers, with a reconciler and one worker running, it does four
+things:
+1. **Submits a calendar-year job.** The job table stores it, and Kafka carries its id:
+   `{"job_id": 1, "published": true, "recorded": true}`.
+2. **Runs it.** Worker A claims the job and runs windows, spark_pipeline and verify. The job table
+   accepts one result: `job 1: succeeded; attempts 1:accepted`, with the run's digest, and
+   `invariants: all hold`.
+3. **Serves that accepted run from the result cache,** asking for its `overview` twice, each in a
+   new process:
+   - first a miss: `"source": "spark"`, one miss and one write;
+   - then a hit: `"source": "cache"`, one hit.
+4. **Stops Redis and asks again.** The answer comes from Spark, with `"status": "ok"`, one failed
+   GET and nothing written. All three answers are identical.
+
+After each step it prints `as expected` or `NOT AS EXPECTED`, and it exits 0 only if every outcome
+was as expected. It then writes the job table's export, the cleanup listing and the containers'
+memory peaks. Finally it removes the services and their volumes, after an error too. Its records go
+to `data/outputs-demo/<UTC stamp>/`, outside Git.
+
+**The runs on 2026-10-27** (local time, UTC−5; the records' names are UTC):
+
+| Records | Code | Outcome |
+|---|---|---|
+| `20261028T015659Z` | `88de115` | Every outcome as expected. The script then hung while stopping the worker and the reconciler: it had sent SIGINT to the shell's background jobs, which ignore it. Claude Code stopped the two processes of this run with SIGTERM, and the script finished and cleaned up (exit 0). `a001f72` fixed the script; the note beside the records says what was done. |
+| `20261028T020812Z` | `a001f72`, no uncommitted path | Every outcome as expected, unattended, in about two minutes. Exit 0, with no container, volume or process left. |
+
+In the second run, the miss's Spark query took 7.7 s, the hit 0.04 s and the fallback 7.8 s. These
+are single observations, not measurements; [E3](result-cache-part-b.md) is the measured
+comparison. The demo shows no failure and no recovery; for those, see E1 and E2 in
+[recovery-part-b.md](recovery-part-b.md). It also runs one job on one worker.
 
 ## From a fresh clone
 
@@ -137,10 +179,9 @@ is likely but not shown.
 
 ## The optional systems extension
 
-This walk-through covers the pipeline only.
-- **Commands:** the extension's (the job queue with a worker running the real pipeline, and the
-  result cache) are in the README's
-  [runbook](../README.md#systems-extension-services-runbook). They need Docker and its services
-  and were not run for this demo.
-- **Design, results and open items:** in the documents the README's reading guide lists under
+- **The demo:** section 5 runs it end to end.
+- **Its other commands:** they are in the README's
+  [runbook](../README.md#systems-extension-services-runbook): the services one at a time, the job
+  tests against them, and the cache's commands.
+- **Design, results and limitations:** in the documents the README's reading guide lists under
   the extension, and in [spec §11](spec.md).
