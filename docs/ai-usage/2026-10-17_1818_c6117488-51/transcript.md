@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×117, model-reasoning ×7, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×117, memory ×22, model-reasoning ×7, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-17T23:18:12.998Z
 
@@ -319,8 +319,8 @@ run-20261013T000707Z-3
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Findings: the new s21 set is byte-identical to `-r2`; only `provenance.py` (changed in 6a460b0) differs from the `-r2` build's code.",
-  "new_string": "Findings: the new s21 set is byte-identical to `-r2`; only `provenance.py` (changed in 6a460b0) differs from the `-r2` build's code. Step 1 reviewed 2026-10-17: all 7 criteria met, and the user's 2.3, 2.4 and 2.6 are correct. Reference values: eligible starts P−252 AAPL 11,103, MSFT 9,777, NVDA 6,526, QQQ 6,494, TSLA 3,650 (=37,550); all dates are consecutive NYSE sessions; all 20 per-ticker counts are floor or ceil of n/s; nesting s14 896 present / 894 absent (exactly j%42==0; AAPL 265, MSFT 233, NVDA 156, QQQ 155, TSLA 87), s7 and s3 contain all 1,790. To fix: in 2.1, all old-set files are dated 2026-10-13 UTC (the user wrote \"some\"); \"edited by the author\" markers on 2.1 and 2.5; the authorship line should state how the drafted parts were checked. Step 2 issued: section 1 (design) and section 3 (run conditions, a numeric go/no-go rule for s3, failures). Trap: the default `--out-root` sends s21 runs into `data/outputs/windows/full-2026-10-12/rolling-252-s21/` (superseded pre-cleanup runs, `SUPERSEDED.txt`)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -329,7 +329,7 @@ run-20261013T000707Z-3
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 10. Assistant — 2026-10-17T23:21:27.253Z

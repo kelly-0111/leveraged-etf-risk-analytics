@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×6, home ×79, model-reasoning ×3, user ×18. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×6, home ×79, memory ×20, model-reasoning ×3, user ×18. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-14T02:12:36.002Z
 
@@ -107,8 +107,8 @@ The ordering is now correct, and the query matches the output you pasted. I'll u
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "SQL task 1 (issued 2026-10-13, waiting for the user's attempt): one",
-  "new_string": "SQL task 1 (issued 2026-10-13; on 2026-10-13 the user's `analysis/sql_overview.py` met criteria 1–6 with COUNT(*), COUNT(col), SUM(CASE), percentile(col, 0.5) and a CASE sort key; criterion 7's two written answers still pending): one"
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -117,7 +117,7 @@ The ordering is now correct, and the query matches the output you pasted. I'll u
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 7. Assistant — 2026-10-14T02:13:37.448Z

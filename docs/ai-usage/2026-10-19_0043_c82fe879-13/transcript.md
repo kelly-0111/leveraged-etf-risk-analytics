@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1380, home ×1554, model-reasoning ×13, user ×31. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×1380, home ×1554, memory ×21, model-reasoning ×13, user ×31. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T05:43:31.506Z
 
@@ -123,8 +123,8 @@ private-plan or local-path mentions in the doc diff: 0
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Next: 5.6 (author: CSV location, columns, tasks caveat), B3 5.7 tables from the CSV (Claude, offered), B4 fit and section 6 (author), B5.",
-  "new_string": "At the user's request (2026-10-19) Claude drafted 5.6 (location data/outputs-experiments/measurements.csv, not in Git, rebuilt byte-identically; rows and the script's checks; a 10-group table of the 37 columns with sources; limitations: aborted-run placeholders unsupported, tasks_<group> are task counts not partition counts and shuffle_partitions_requested is the setting, sampled RSS limits, roles from ROLES with only exploratory cross-checked) and 5.7 (ok non-warm-up runs only, 3 per protocol, median (min–max); planned table: s21 baseline 22.226 (20.918–22.711) s / 2.619 (2.482–2.667) GiB, s14 20.294 (20.221–20.346) / 2.684 (2.676–2.686), s7 25.660 (24.699–26.001) / 2.705 (2.681–2.707); drift-check table: s21 repeated 18.153 (18.029–18.295) / 2.681 (2.658–2.694); drift note 18.3% below, comparisons marked affected; exploratory table: s3 40.170 (39.907–42.032) / 2.733 (2.730–2.767); notes that section 4's memory predictions use the all-four-runs maximum, which stays in the CSV, and that the comparison with section 4 belongs to section 6). Header AI paragraph mentions 5.6–5.7. Verified by script: sections 1–4 and 6 identical to the committed version, 37 of 37 columns named, 5 of 5 table rows match the CSV. Next: section 6 (author: fit and answers; primary fit on baseline/planned rows, drift-affected; anything else labeled), then B5 (Part B authorship line, README/spec, commits of docs/experiments.md and analysis/collect_measurements.py by explicit path, AI logs separately, PR with a merge commit)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -133,7 +133,7 @@ private-plan or local-path mentions in the doc diff: 0
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 14. Assistant — 2026-10-19T05:46:17.886Z

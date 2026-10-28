@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×102, model-reasoning ×6, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×102, memory ×22, model-reasoning ×6, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T06:50:33.173Z
 
@@ -139,8 +139,8 @@ running
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Trap: the default `--out-root` sends s21 runs into `data/outputs/windows/full-2026-10-12/rolling-252-s21/` (superseded pre-cleanup runs, `SUPERSEDED.txt`).",
-  "new_string": "Trap: the default `--out-root` sends s21 runs into `data/outputs/windows/full-2026-10-12/rolling-252-s21/` (superseded pre-cleanup runs, `SUPERSEDED.txt`). Section 1 reviewed 2026-10-18 (user's design: H1 dominant if fitted intercept a > 50% of the s21 median wall; H2 slope > 0 and fitted values within 20%; H3 a measurement question; a repeated baseline for drift). Fixes given: restore \"and why\" plus the spec §2 citation; no pandas baseline is planned; \"matters most\" → \"dominates\"; \"predictions\" → \"fitted values\". Section 3 guidance issued. Machine facts on 2026-10-18: Mac14,2 (M2 Air, fanless); Low Power Mode ON (`pmset -g` lowpowermode 1, not recorded in run.json); system sleep 1 min (use `caffeinate -i`); `pmset -g therm` reports nothing; 1.57 GiB available with Docker Desktop running. measure.py writes the protocol JSON only at the end, so Ctrl-C loses the record; abort by killing the spark_pipeline child instead."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -149,7 +149,7 @@ running
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 9. Assistant — 2026-10-18T06:53:21.309Z

@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×978, home ×1088, model-reasoning ×4, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×978, home ×1088, memory ×22, model-reasoning ×4, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-22T06:44:43.942Z
 
@@ -74,8 +74,8 @@ The sentence is in verbatim, the old wording is gone, everything before 15.5 is 
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/pandas-baseline.md",
-  "old_string": "The author caught that \"P runs on one core\" is not established: PyArrow 26's `read_table` and `to_pandas` default to use_threads=True (8 threads), and the records show one process only.",
-  "new_string": "The author caught that \"P runs on one core\" is not established. PyArrow 26's `read_table` and `to_pandas` default to use_threads=True, which permits threads (pool capacity 8) but does not show they were used. Actual thread usage was not recorded; the records show one process only. The author's wording, now in 15.5: \"PyArrow permits multithreaded reads and conversion by default; actual thread usage during the measurements was not recorded.\""
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -84,7 +84,7 @@ The sentence is in verbatim, the old wording is gone, everything before 15.5 is 
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/pandas-baseline.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 10. Assistant — 2026-10-22T06:45:21.693Z

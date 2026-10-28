@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×17, home ×145, model-reasoning ×10, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×17, home ×145, memory ×22, model-reasoning ×10, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-17T21:54:33.406Z
 
@@ -212,8 +212,8 @@ The draft is in place and checks out against the records. I'll note the split in
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Review is read-only; compute reference values only after the attempt.",
-  "new_string": "Review is read-only; compute reference values only after the attempt. Split agreed 2026-10-17 for `docs/experiments.md`: Claude drafts the parts derived from records (step 1 items 2.1 build/provenance, 2.2 counts table, 2.5 baseline equality; later the results tables from the CSV), each marked \"Drafted with Claude Code\", with an AI-contribution line in the header. The user writes everything else (authorship line, design, self-check meaning, count check, nesting, run conditions, predictions, answers), left as `TODO (author)` placeholders. Drafted 2026-10-17, uncommitted. Findings: the new s21 set is byte-identical to `-r2`; only `provenance.py` (changed in 6a460b0) differs from the `-r2` build's code."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -222,7 +222,7 @@ The draft is in place and checks out against the records. I'll note the split in
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 16. Assistant — 2026-10-17T21:58:14.831Z

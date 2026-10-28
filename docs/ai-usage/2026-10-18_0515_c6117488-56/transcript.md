@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×145, model-reasoning ×6, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×145, memory ×21, model-reasoning ×6, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T10:15:48.481Z
 
@@ -193,8 +193,8 @@ run of record has measurement.wall_seconds: True | peak_rss_by_kind_bytes: True 
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Section 4 guidance issued; it flagged that predicted medians set the 3× abort threshold.",
-  "new_string": "Section 4 guidance issued; it flagged that predicted medians set the 3× abort threshold. At the user's request (2026-10-18): added 3.7 Records and summaries (the CSV keeps all runs including warm-ups and failures; summaries use only measured ok runs; output tables only from ok runs, incomplete ones skipped); 3.6 now says the cleanup was observed in one test and is not guaranteed, with checks after every abort written to the run log. Section 4 now goes one prediction at a time: 4.1 s21 median wall (issued), then 4.2 s21 memory, 4.3 time at s14/7/3, 4.4 memory at s14/7/3, 4.5 H1/H2, 4.6 s3 go/no-go and abort thresholds. Fact for 4.1: the run of record's code differs from today's only in provenance.py, and uv.lock is identical."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -203,7 +203,7 @@ run of record has measurement.wall_seconds: True | peak_rss_by_kind_bytes: True 
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 17. Assistant — 2026-10-18T10:17:39.849Z

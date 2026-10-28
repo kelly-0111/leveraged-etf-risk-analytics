@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×8029, home ×8836, model-reasoning ×69, user ×125. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×8029, home ×8836, memory ×4, model-reasoning ×69, user ×125. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-22T07:07:19.195Z
 
@@ -231,7 +231,7 @@ tracked: docs/ai-usage/2026-10-22_0111_c6117488-68/transcript.jsonl docs/ai-usag
 1287:    predictions, for the author's approval;
 1289:- Part A is approved before any caching measurement.
 1405:   approval**. No formal caching measurement runs before that approval. After it, commit the code,
-1439:  "new_string": "- Design approved 2026-10-22, with the full plan in `~/.claude/plans/i-agree-with-starting-cozy-steele.md`:\n  - stride 7; A none, B member rows, C = B plus the four read-back ta
+[REDACTED:memory]
 1453:The caching design is approved and saved, including your three clarifications. As agreed, nothing in the repository has changed, and I haven't started any caching work.
 1457:- **Caching:** waiting for that gate. The full plan is in the approved plan file, with a summary in the project memory.
 1470:4. **Part A:** draft `docs/caching-experiment.md` with those criteria and predictions drawn from the partition and baseline records, then **stop for your approval**. Nothing gets committed and no
@@ -457,7 +457,7 @@ The approved plan is in that reviewed, committed log. It starts at "## Approved 
 1436	  "replace_all": false,
 1437	  "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/caching-experiment.md",
 1438	  "old_string": "**Why:** research question 3 includes caching;",
-1439	  "new_string": "- Design approved 2026-10-22, with the full plan in `~/.claude/plans/i-agree-with-starting-cozy-steele.md`:\n  - stride 7; A none, B member rows, C = B plus the four read-back tables reused by all later phases;\n  - order A–B–C–C–B–A, `--repeats 4`;\n  - `MEMORY_AND_DISK_DESER`; explicit `count()` fill in the producing phase; `unpersist(blocking=True)` after the last reader;\n  - `finally` cleanup of run-owned caches on every path, with release mode recorded;\n  - fill and release costs inside the phase timings, plus a `cache` section in run.json;\n  - cache use verified by storage info (primary) and `InMemoryTableScan` in plans, whose row metric has three states: >0, 0 (legitimate, counts as use) and missing (unknown, not proof); exact criteria set from a probe and fixed in Part A;\n  - all four output tables compared with A's position-1 run 2 within 1e-12 + 1e-9·|r|;\n  - collector imports the partition collector's functions unchanged; `docs/caching-session.zsh` adapted;\n  - outputs go to `data/outputs-caching/<batch>/<A|B|C>`.\n- Gates: start (branch `feature/caching` from that commit) only after the pandas baseline's Part B is committed; stop for the author's approval of Part A before any formal caching measurement.\n\n**Why:** research question 3 includes caching;"
+[REDACTED:memory]
 1440	}
 1441	```
 1442	

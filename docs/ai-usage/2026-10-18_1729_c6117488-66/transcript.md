@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×11, home ×135, model-reasoning ×6, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×11, home ×135, memory ×21, model-reasoning ×6, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T22:29:45.898Z
 
@@ -204,8 +204,8 @@ I'll record the commit in my tutor notes.
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "(`docs/experiments.md` only, 473 lines, explicit-path staging, not pushed; the authorship TODO is still in it).",
-  "new_string": "(`docs/experiments.md` only, 473 lines, explicit-path staging, not pushed; the authorship TODO is still in it). The authorship line (third person, chosen by the user from three Claude drafts, noted in the AI paragraph) and the corrected status line were committed as 0e3c130. Only the Part B placeholders (sections 5–6) remain."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -214,7 +214,7 @@ I'll record the commit in my tutor notes.
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 18. Assistant — 2026-10-18T22:31:23.712Z

@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×6963, home ×8002, model-reasoning ×42, user ×117. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×6963, home ×8002, memory ×48, model-reasoning ×42, user ×117. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-20T01:10:13.705Z
 
@@ -2013,8 +2013,8 @@ data/outputs-partitions: not created yet
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "old_string": "**Why:** the author reviews the code and the results before any commit, and runs the formal session.",
-  "new_string": "**Part A committed (2026-10-19, local time).** On branch `feature/shuffle-partitions`, created from `516b28a`:\n- `e6fa339`: code, tests and helpers;\n- `caa0be1`: docs/partition-experiment.md as Part A, with README and spec.\n\nNot pushed or merged. The author approved:\n- the predictions (A 25.7 s, B 33 s, C 25.7 s), with B's task and file costs labeled as assumptions;\n- `wall_excl_capture_s` as the primary metric;\n- the 4.0 load limit and the 30-minute boot wait;\n- the batch and retry rules;\n- abort limits on raw elapsed time: 77 s for A and C, 99 s for B (the watcher flags them).\n\nCode state at the commit: 11 source files, source_sha256 digest 9145d690012f, uv.lock 99484c14ebf3. Full suite: 157 passed.\n\nNext: the author runs the formal session (`source docs/partition-session.zsh`, `steps`, positions 1–6), then the collector on batch-1, then Part B. The author's authorship line in the partition document is still to be added.\n\n**Why:** the author reviews the code and the results before any commit, and runs the formal session."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -2023,7 +2023,7 @@ data/outputs-partitions: not created yet
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 125. Assistant — 2026-10-20T01:22:19.567Z

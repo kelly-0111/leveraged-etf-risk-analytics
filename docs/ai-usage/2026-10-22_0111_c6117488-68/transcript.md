@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): email ×3, git-user ×4329, home ×4885, model-reasoning ×37, user ×82. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): email ×3, git-user ×4329, home ×4885, memory ×47, model-reasoning ×37, user ×82. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-22T06:11:39.518Z
 
@@ -1435,8 +1435,8 @@ is committed. Formal caching measurements start only after the author approves P
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/caching-experiment.md",
-  "old_string": "**Why:** research question 3 includes caching;",
-  "new_string": "- Design approved 2026-10-22, with the full plan in `~/.claude/plans/i-agree-with-starting-cozy-steele.md`:\n  - stride 7; A none, B member rows, C = B plus the four read-back tables reused by all later phases;\n  - order A–B–C–C–B–A, `--repeats 4`;\n  - `MEMORY_AND_DISK_DESER`; explicit `count()` fill in the producing phase; `unpersist(blocking=True)` after the last reader;\n  - `finally` cleanup of run-owned caches on every path, with release mode recorded;\n  - fill and release costs inside the phase timings, plus a `cache` section in run.json;\n  - cache use verified by storage info (primary) and `InMemoryTableScan` in plans, whose row metric has three states: >0, 0 (legitimate, counts as use) and missing (unknown, not proof); exact criteria set from a probe and fixed in Part A;\n  - all four output tables compared with A's position-1 run 2 within 1e-12 + 1e-9·|r|;\n  - collector imports the partition collector's functions unchanged; `docs/caching-session.zsh` adapted;\n  - outputs go to `data/outputs-caching/<batch>/<A|B|C>`.\n- Gates: start (branch `feature/caching` from that commit) only after the pandas baseline's Part B is committed; stop for the author's approval of Part A before any formal caching measurement.\n\n**Why:** research question 3 includes caching;"
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -1445,7 +1445,7 @@ is committed. Formal caching measurements start only after the author approves P
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/caching-experiment.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 44. Assistant — 2026-10-22T06:24:08.445Z

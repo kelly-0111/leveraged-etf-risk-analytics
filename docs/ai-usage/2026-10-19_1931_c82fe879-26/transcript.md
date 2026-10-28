@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×7083, home ×8207, model-reasoning ×67, user ×139. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×7083, home ×8207, memory ×40, model-reasoning ×67, user ×139. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-20T00:31:53.683Z
 
@@ -1239,8 +1239,8 @@ stride doc unchanged since commit: yes
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "old_string": "**Why:** the author reviews the code and the results before any commit, and runs the formal session.",
-  "new_string": "**Review and revision 3 (2026-10-20 UTC).**\n- Exchanges' runtime \"number of partitions\" is recorded and checked.\n- `--check-protocol --config` checks settings and plans after each protocol.\n- New per-phase exchange columns in the CSV.\n- Timing-boundary test, and `tests/test_partition_session.py`.\n- Dry batch dry-2 passed with the final code. Full suite: 156 passed.\n\n**Predictions.** A prediction worksheet (A 25.7 s ±20%, B 33 s −20%/+60%, C 25.7 s ±20%; aborts at 77/99/77 s) was sent for the author to confirm or edit. Section 11 is written only after the author confirms. Then prepare the Part A commit (README/spec updates included) without committing.\n\n**Why:** the author reviews the code and the results before any commit, and runs the formal session."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -1249,7 +1249,7 @@ stride doc unchanged since commit: yes
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 122. Assistant — 2026-10-20T00:54:05.010Z

@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×14, home ×240, model-reasoning ×13, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×14, home ×240, memory ×21, model-reasoning ×13, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T07:35:16.234Z
 
@@ -501,8 +501,8 @@ Section 3 is drafted and checked. I'll record the decisions in my tutor notes be
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "measure.py writes the protocol JSON only at the end, so Ctrl-C loses the record; abort by killing the spark_pipeline child instead.",
-  "new_string": "measure.py writes the protocol JSON only at the end, so Ctrl-C loses the record; abort by killing the spark_pipeline child instead. 2026-10-18, at the user's request: Claude applied the section 1 and 2.1 fixes (noted in the header) and drafted section 3 from the user's AskUserQuestion decisions (marked as drafted): strict machine state (Low Power Mode off; Docker, VS Code and apps quit; Terminal plus `caffeinate -i`; mains power; ≥3.0 GiB available via psutil with `--group measure`); 5-min pauses and a repeated s21 last with a ±10% median drift tolerance; s3 go/no-go is PROPORTIONAL (s7 max peak × 12,518/5,364 + 0.5 GiB ≤ min(4.80 GiB, free before s3); 4 × max s7 wall × ratio ≤ 60 min; all s7 runs ok); failures: stop and investigate (checks_failed stops everything; failed allows one re-run with a reason; memory exceeded means no denser stride; abort above 3× the predicted median by killing the pipeline). Output root proposed: `data/outputs-experiments`; a run log goes in section 5. Noted to the user: the proportional rule needs about 3.4–3.9 GiB free even if the s7 peak equals Stage 2's s21 peaks (1.24–1.45 GiB), and never passes above a 1.84 GiB s7 peak. Next: section 4 predictions (the user writes; memory as ranges)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -511,7 +511,7 @@ Section 3 is drafted and checked. I'll record the decisions in my tutor notes be
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 35. Assistant — 2026-10-18T08:00:49.643Z

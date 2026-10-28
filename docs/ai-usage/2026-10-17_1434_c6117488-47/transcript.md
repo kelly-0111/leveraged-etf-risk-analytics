@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×15, home ×181, model-reasoning ×10, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×15, home ×181, memory ×22, model-reasoning ×10, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-17T19:34:58.542Z
 
@@ -632,8 +632,8 @@ Approved. I'm updating my tutor notes with your decisions and the step-1 task. I
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "The `--shuffle-partitions` question (user writes it or Claude adds it) is deferred to task 2.",
-  "new_string": "The `--shuffle-partitions` question (user writes it or Claude adds it) is deferred to task 2. User's Part A decisions (2026-10-17): strides 21, 14, 7, 3 from sparse to dense; stride 3 only if earlier results show acceptable time and memory; no stride 1; memory predictions as ranges; four ok runs per protocol as the goal, failures and early stops kept and reported. The user writes `docs/experiments.md` one step at a time (outline: 1 design, 2 window definitions, 3 run conditions and go/no-go, 4 predictions, commit Part A, 5 results, 6 answers). Step 1 issued 2026-10-17: build all four sets under a separate `--out-root` (never `--overwrite`), then section 2 with build commands and provenance, a counts table (per ticker, window-member rows, path-day rows \"at most\", ratio to s21), the 11 self-checks and what written zeros do and do not show, a count check against 37,550 / stride (within 5), equality of the new s21 set with `-r2`, and nesting key matches against the 1,790 s21 keys. Corrections given to the earlier criteria: one code state = identical `source_sha256` and `uv_lock_sha256` plus a clean tree (a docs commit changes `git_commit`); the baseline is rebuilt with the other strides and shown equal to `-r2`. Review is read-only; compute reference values only after the attempt."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -642,7 +642,7 @@ Approved. I'm updating my tutor notes with your decisions and the step-1 task. I
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 22. Assistant — 2026-10-17T19:41:13.665Z

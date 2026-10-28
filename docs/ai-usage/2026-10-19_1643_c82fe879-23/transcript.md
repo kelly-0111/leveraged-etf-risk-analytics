@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×573, home ×838, model-reasoning ×17, private-file ×1, user ×55. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×573, home ×838, memory ×44, model-reasoning ×17, private-file ×1, user ×55. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T21:43:34.858Z
 
@@ -523,8 +523,8 @@ tests/test_spark_equivalence.py:192:    assert spark_pipeline.main(["--windows",
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "old_string": "- `paired` and `path_summary` of every run are compared with A by their full keys: rows, keys, columns, NULLs, breach fields, and floats within 1e-12 + 1e-9 × |r|.",
-  "new_string": "- `paired` and `path_summary` of every run are compared with A by their full keys: missing and duplicate keys, row counts, NULLs, breach flags, and numeric values within an explicit tolerance. The author gave no tolerance value; 1e-12 + 1e-9 × |r| is the draft's proposal, not a decision. A fresh session first recorded it wrongly as a decision; corrected 2026-10-19."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -533,7 +533,7 @@ tests/test_spark_equivalence.py:192:    assert spark_pipeline.main(["--windows",
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 18. Assistant — 2026-10-19T21:46:48.922Z
@@ -544,8 +544,8 @@ The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md",
-  "old_string": "Not allowed until the author approves: pipeline changes, measurements, commits, pushes.",
-  "new_string": "Not allowed until the author approves: pipeline changes, measurements, commits, pushes.\n\nReview 2026-10-19: a fresh session (036c80c6, read-only, log `2026-10-19_1628_036c80c6-01`) found 16 issues; its review is in `~/.claude/plans/shiny-foraging-bee.md`. None has been applied to the draft yet. Its finding on summed stage task counts (stages listed by several jobs) may also affect the wording of experiments.md 5.6."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -554,7 +554,7 @@ The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/partition-experiment-proposal.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 20. Assistant — 2026-10-19T21:46:50.612Z

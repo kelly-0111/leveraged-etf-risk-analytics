@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×15, home ×159, model-reasoning ×9, user ×58. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×15, home ×159, memory ×21, model-reasoning ×9, user ×58. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T10:10:43.593Z
 
@@ -258,8 +258,8 @@ I'll update my tutor notes with the verified abort behavior and the start of sec
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Next: section 4 predictions (the user writes; memory as ranges).",
-  "new_string": "Next: section 4 predictions (the user writes; memory as ranges). 2026-10-18: the user kept the proportional rule (skipping s3 is acceptable), the output root and the manual run log. Abort procedure verified at the user's request (3.3 command, s21, scratch out-root, `--repeats 2`, kill after the workers started at 19 s): failed with exit -15, 1 of 2 runs started, protocol JSON written, measure exit 1; JVM and worker gone in about 1 s; no spark-*/blockmgr-* left in $TMPDIR (= java.io.tmpdir) or /tmp; repo and data/ unchanged. The run folder keeps partial window_stats/ and path_days/ plus measure's run.json (\"no run.json written\"). Added to 3.6 as a verified note. The abort test's 0.75 GiB at 17 s must not be used as a prediction input. Section 4 guidance issued; it flagged that predicted medians set the 3× abort threshold."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -268,7 +268,7 @@ I'll update my tutor notes with the verified abort behavior and the start of sec
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 19. Assistant — 2026-10-18T10:14:29.347Z

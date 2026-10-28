@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×12, home ×120, model-reasoning ×7, user ×20. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×12, home ×120, memory ×48, model-reasoning ×7, user ×20. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-14T04:03:56.970Z
 
@@ -148,8 +148,8 @@ Task 3 is complete. I'll update my progress note with task 3's result and task 4
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "SQL task 3, issued 2026-10-13; `analysis/sql_sensitivity.py` met criteria 1–5 the same day (COUNT/percentile with FILTER (WHERE contains_unverified_day = false)); the written answers and the optional GROUPING SETS stretch are pending. Task: sensitivity",
-  "new_string": "SQL task 3, complete on 2026-10-13 (`analysis/sql_sensitivity.py`: COUNT/percentile with FILTER (WHERE contains_unverified_day = false)). Written answers correct (all 12 breached are flagged, 66 = 517 - 451; sensitive to extreme periods, not errors). Feedback given: TSLA's 57 flagged windows come from 9 unverified days and have a 2x median of +157.8%; the shift goes up for AAPL and down for TSLA. Optional GROUPING SETS stretch not done. Task: sensitivity"
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -158,7 +158,7 @@ Task 3 is complete. I'll update my progress note with task 3's result and task 4
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 12. Assistant — 2026-10-14T04:07:25.119Z
@@ -169,8 +169,8 @@ The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "VALUES test: (false,0.1),(false,0.3),(true,0.9),(false,NULL) gives 4/3/0.3/3/2/0.2.",
-  "new_string": "VALUES test: (false,0.1),(false,0.3),(true,0.9),(false,NULL) gives 4/3/0.3/3/2/0.2.\n\nSQL task 4, issued 2026-10-13, waiting for the attempt: each ticker's worst 2x max drawdown and how many windows share it (within 1e-9), using MAX() OVER (PARTITION BY ticker) and two query levels, no JOIN. Reference, n_mdd_2x / worst_mdd_2x / n_at_worst / n_at_worst_flagged / first..last entry_date at worst:\nAAPL 517/94.35%/7/7/1982-11-26..1983-05-26; MSFT 466/90.60%/1/0/2000-01-07; NVDA 311/99.52%/3/3/2001-10-12..2001-12-12; TSLA 174/94.41%/3/0/2022-01-20..2022-03-22; QQQ 310/92.95%/1/0/2000-04-07.\nDiagnostics: AAPL n_at_worst 6 = exact '=' (one window differs in the last bits); tolerance 0.02 gives AAPL 8, MSFT 3, NVDA 14, TSLA 4, QQQ 8 (distinct windows merged); AAPL n_mdd_2x 529 = COUNT(*)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -179,7 +179,7 @@ The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 14. Assistant — 2026-10-14T04:07:42.492Z

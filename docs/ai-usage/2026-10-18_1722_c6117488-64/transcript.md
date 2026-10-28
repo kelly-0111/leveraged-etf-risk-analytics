@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×8, home ×125, model-reasoning ×5, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×8, home ×125, memory ×21, model-reasoning ×5, user ×28. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-18T22:22:27.402Z
 
@@ -134,8 +134,8 @@ I'll update my tutor notes to show section 4 is in the doc and what's left for P
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Part A still needs: 4.1–4.5 text in the doc (offered a verbatim copy marked as the user's text), a 4.6 summary table drafted by Claude (marked), the authorship line, then the user's commit of Part A. The user runs the measurements.",
-  "new_string": "Part A still needs: 4.1–4.5 text in the doc (offered a verbatim copy marked as the user's text), a 4.6 summary table drafted by Claude (marked), the authorship line, then the user's commit of Part A. The user runs the measurements. Done 2026-10-18 at the user's request: 4.1–4.5 copied from chat (revisions merged; the H1 \"least certain\" sentence added at their request) and 4.6 drafted (table with bands 35–55, 47.2–76.7, 80.8–131.3, 170.4–276.9 s; aborts 135/177/303/639 s; s3 rule figures 1.29 / 3.53 / 1.84; H1 sensitivity; records used), all verified by script; the header was updated. Only the authorship TODO is left in Part A. Next: the user writes the authorship line, then commits Part A (`docs/experiments.md` only, explicit path), then runs the measurement session per section 3 with VS Code closed, then Part B."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -144,7 +144,7 @@ I'll update my tutor notes to show section 4 is in the doc and what's left for P
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 15. Assistant — 2026-10-18T22:25:39.635Z

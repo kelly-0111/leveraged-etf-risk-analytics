@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×2490, home ×2791, model-reasoning ×23, user ×47. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×2490, home ×2791, memory ×21, model-reasoning ×23, user ×47. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-19T05:49:44.049Z
 
@@ -364,8 +364,8 @@ private-plan or local-path mentions in the doc diff: 0
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "Next: section 6 (author: fit and answers; primary fit on baseline/planned rows, drift-affected; anything else labeled), then B5 (Part B authorship line, README/spec, commits of docs/experiments.md and analysis/collect_measurements.py by explicit path, AI logs separately, PR with a merge commit).",
-  "new_string": "Section 6 (2026-10-19, AskUserQuestion): the user chose \"Claude drafts facts, the author interprets\" (lifts the no-fit rule for these facts) and asked for the criterion-5 column. Original questions (log -46): (a) fit a + b × windows, a vs fixed phases, crossover stride; (b) fastest phase vs the 252/stride shuffle and one-pandas-call-per-window hypothesis; (c) peak memory change, which type grows, relation to the 1.0 GiB driver-JVM heap; (d) where predictions were off and why; (e) what the measurements cannot show. Drafted (marked): 5.2 column \"lowest free before a run\" (3.02, 3.38, 3.46, 2.97 for s3 run 2, 3.10 GiB); 6.1 fit table (planned first s21/14/7: a 18.79 s, b 1.201 ms/window, 84.5% of 22.226, max error 8.5%, crossover 15,642 windows ≈ stride 2.4, H1 condition holds, H2 holds; post hoc repeated s21: a 14.56, b 2.078, 80.2%, 0.8%, 7,006 (5.4); exploratory +s3: 16.91, 1.821, 76.1%, 9.3%, 9,286 (4.0); both: 14.67, 2.039, 80.8%, 0.9%, 7,196 (5.2)); a vs session_start 3.155 + outside 1.286 = 4.442 s (×5.95, ×4.23); 6.2 phase table (model +3.227 s ×1.66 fastest, summaries +1.487 ×1.35; inputs ×2.997; model per window 2.722/1.943/1.510 ms, repeated 2.425, s3 1.300; drift 0.455–0.955 s per phase); 6.3 memory table (total +0.086 GiB +3.3% s21→s7; JVM +0.022, workers +0.015; JVM RSS 0.518–0.571 GiB above the 1.000 GiB heap); 6.4 predictions-vs-results table (4.1–4.4 all outside except s3 memory inside; 4.3 model a 17 vs 18.79, b 15.64 vs 1.201 ms = 13.0×; H1 contradicted; H2 as expected; gate as expected; drift; no aborts). Each subsection ends with \"TODO (author): your answer\"; 6.5 (e) is a TODO. Verified by script: 18/18 table rows, 10/10 measured values, predicted values found in section 4, sections 1–4 identical to the committed version. Next: the author's answers (a)–(e) (Claude reviews, hints only), then B5 (Part B authorship line, README/spec, commits of docs/experiments.md and analysis/collect_measurements.py by explicit path, AI logs separately, PR with a merge commit)."
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -374,7 +374,7 @@ private-plan or local-path mentions in the doc diff: 0
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 28. Assistant — 2026-10-19T05:58:51.653Z

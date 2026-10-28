@@ -6,7 +6,7 @@ Redacted record: [transcript.jsonl](transcript.jsonl)
 
 This readable view includes user/assistant messages and tool calls/results. Internal reasoning and session metadata are omitted.
 
-Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×93, model-reasoning ×5, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
+Redactions (markers like `[REDACTED:email]`; home directory shown as `~`): git-user ×9, home ×93, memory ×22, model-reasoning ×5, user ×26. Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.
 
 ## 1. User — 2026-10-14T03:21:18.915Z
 
@@ -137,8 +137,8 @@ Found 6 errors.
 {
   "replace_all": false,
   "file_path": "~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md",
-  "old_string": "SQL task 3, issued 2026-10-13, waiting for the attempt: sensitivity",
-  "new_string": "SQL task 3, issued 2026-10-13; `analysis/sql_sensitivity.py` met criteria 1–5 the same day (COUNT/percentile with FILTER (WHERE contains_unverified_day = false)); the written answers and the optional GROUPING SETS stretch are pending. Task: sensitivity"
+  "old_string": "[REDACTED:memory]",
+  "new_string": "[REDACTED:memory]"
 }
 ```
 
@@ -147,7 +147,7 @@ Found 6 errors.
 ### Tool result
 
 ```
-The file ~/.claude/projects/-Users-[REDACTED:user]-leveraged-etf-risk-analytics/memory/stage3-tutor-mode.md has been updated successfully.
+[REDACTED:memory]
 ```
 
 ## 8. Assistant — 2026-10-14T03:22:29.145Z
