@@ -89,3 +89,34 @@ def test_existing_folder_is_reused_even_if_the_name_would_differ(tmp_path):
     source = tmp_path / "session.jsonl"
     source.write_text("\n".join(lines(prompt("first", "2026-10-11T02:00:00Z"), reply("ok", "2026-10-11T02:00:01Z"))) + "\n")
     assert archive(source, SESSION, tmp_path) == [existing]
+
+
+SEPARATORS = "line separator, paragraph separator"  # valid unescaped inside JSON strings
+
+
+def test_unicode_line_separators_stay_inside_their_records(tmp_path):
+    records = [prompt(f"first {SEPARATORS}", "2026-10-11T02:00:00Z"), reply(f"one {SEPARATORS}", "2026-10-11T02:00:05Z"),
+               prompt("second", "2026-10-11T02:09:00Z"), reply("two", "2026-10-11T02:09:04Z")]
+    source = tmp_path / "session.jsonl"
+    source.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8")
+    folders = archive(source, SESSION, tmp_path)
+    assert len(folders) == 2
+    for folder, expected in zip(folders, (records[:2], records[2:])):
+        for name in ("transcript.raw.jsonl", "transcript.jsonl"):
+            text = (folder / name).read_text(encoding="utf-8")
+            assert [json.loads(line) for line in text.split("\n") if line] == expected  # record count and text
+    md = (folders[0] / "transcript.md").read_text(encoding="utf-8")
+    assert f"first {SEPARATORS}" in md and f"one {SEPARATORS}" in md
+
+
+def test_crlf_transcript_archives_like_lf(tmp_path):
+    records = [prompt("first", "2026-10-11T02:00:00Z"), reply("one", "2026-10-11T02:00:05Z")]
+    for name, end in (("lf", "\n"), ("crlf", "\r\n")):
+        (tmp_path / name).mkdir()
+        source = tmp_path / name / "session.jsonl"
+        source.write_bytes((end.join(json.dumps(r) for r in records) + end).encode())
+        archive(source, SESSION, tmp_path / name)
+    lf, crlf = (next((tmp_path / name / "docs" / "ai-usage").iterdir()) for name in ("lf", "crlf"))
+    for file in ("transcript.raw.jsonl", "transcript.jsonl", "transcript.md"):
+        assert (lf / file).read_bytes() == (crlf / file).read_bytes()
+    assert [json.loads(line) for line in (crlf / "transcript.raw.jsonl").read_text().split("\n") if line] == records
