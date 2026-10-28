@@ -71,6 +71,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from etf_risk import cache, runs, summary
+from etf_risk.services import ContainerEvents, parse_container_event  # noqa: F401  shared with the recovery harness
+from etf_risk.vmstat import VM_COUNTERS, parse_vm_stat  # noqa: F401  shared with the recovery harness
 
 QUERIES = ("overview", "comparison", "sensitivity")
 SUBSETS = [list(c) for n in range(1, len(summary.TICKERS) + 1)
@@ -234,51 +236,6 @@ def delete_keys(client: Any, keys: list[str]) -> int:
 
 # Monitors
 
-class ContainerEvents(threading.Thread):
-    """`docker events` for container events, from start() until stop(). Each event keeps its
-    time, its action and whether it belongs to this project; never a name or an id."""
-
-    def __init__(self, project: str, command: list[str] | None = None):
-        super().__init__(daemon=True)
-        self.project = project
-        self.command = command or ["docker", "events", "--filter", "type=container", "--format", "{{json .}}"]
-        self.events: list[dict] = []
-        self.error: str | None = None
-        self._proc: subprocess.Popen | None = None
-
-    def run(self) -> None:
-        try:
-            self._proc = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        except OSError as error:
-            self.error = f"{type(error).__name__}: {error}"
-            return
-        for line in self._proc.stdout:
-            event = parse_container_event(line, self.project)
-            if event is not None:
-                event["mono"] = time.monotonic()
-                self.events.append(event)
-
-    def stop(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
-            self._proc.terminate()
-            self._proc.wait(timeout=10)
-        self.join(timeout=10)
-
-    def count(self, start: float, end: float, *, ours: bool) -> int:
-        return sum(1 for e in self.events if start <= e["mono"] <= end and e["ours"] == ours)
-
-
-def parse_container_event(line: str, project: str) -> dict | None:
-    try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    attributes = (data.get("Actor") or {}).get("Attributes") or {}
-    return {"action": data.get("Action") or data.get("status"),
-            "ours": attributes.get("com.docker.compose.project") == project,
-            "time": data.get("time")}
-
-
 def parse_therm(text: str) -> dict:
     """`pmset -g therm`: the thermal and performance warning levels and the CPU power status,
     None while macOS has recorded none."""
@@ -289,21 +246,8 @@ def parse_therm(text: str) -> dict:
             "cpu_speed_limit": level("CPU_Speed_Limit")}
 
 
-VM_COUNTERS = ("pageins", "pageouts", "swapins", "swapouts")
-# psutil's sin and sout as harness.host_state() names them: on macOS, Pageins and Pageouts
+# psutil's sin and sout as harness.host_state() named them until 2026-10-27: on macOS, Pageins and Pageouts
 PSUTIL_PAGING = ("swap_in_bytes", "swap_out_bytes")
-
-
-def parse_vm_stat(text: str) -> dict:
-    """`vm_stat`: the page size, and the cumulative Pageins, Pageouts, Swapins and Swapouts in
-    pages; None for any it does not print. Pageins counts requests for pages from a pager, file
-    reads included; Swapins and Swapouts count pages moved between the compressor and the swap
-    files (mach/vm_statistics.h)."""
-    size = re.search(r"page size of (\d+) bytes", text)
-    def count(name: str) -> int | None:
-        match = re.search(rf"^{name.capitalize()}:\s+(\d+)\.", text, re.MULTILINE)
-        return int(match.group(1)) if match else None
-    return {"page_size": int(size.group(1)) if size else None, **{name: count(name) for name in VM_COUNTERS}}
 
 
 class HostSampler(threading.Thread):
@@ -369,9 +313,10 @@ def read_host_sample() -> dict:
 
 
 def host_reading() -> dict:
-    """A block's reading before and after: harness.host_state() without psutil's sin and sout,
-    which it names swap_in_bytes and swap_out_bytes and which on macOS are page-ins and page-outs.
-    The host sampler reads those from vm_stat by their own names."""
+    """A block's reading before and after: harness.host_state(), without psutil's sin and sout,
+    which it named swap_in_bytes and swap_out_bytes until 2026-10-27 (on macOS they are page-ins
+    and page-outs). Since then it records vm_stat's counters by their own names
+    (pageins_bytes, ...), which pass through."""
     from etf_risk.jobs.harness import host_state
     return {k: v for k, v in host_state().items() if k not in PSUTIL_PAGING}
 

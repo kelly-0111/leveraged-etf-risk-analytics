@@ -12,6 +12,7 @@ import json
 import re
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -489,16 +490,90 @@ def test_the_power_source_and_the_lid_are_read_from_pmset_and_ioreg():
     assert [harness.parse_lid_closed(t) for t in (IOREG_OPEN, IOREG_CLOSED, "")] == [False, True, None]
 
 
-def test_the_host_state_has_memory_swap_pressure_power_and_the_lid():
-    outputs = {"sysctl": "4\n", "pmset": PMSET_BATTERY, "ioreg": IOREG_CLOSED}
+VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                4589.
+Pageins:                                    100.
+Pageouts:                                     7.
+Swapins:                                     30.
+Swapouts:                                    40.
+"""
+
+
+def test_the_host_state_has_memory_swap_in_use_vm_counters_pressure_power_and_the_lid():
+    outputs = {"sysctl": "4\n", "pmset": PMSET_BATTERY, "ioreg": IOREG_CLOSED, "vm_stat": VM_STAT}
     state = harness.host_state(command=lambda *argv: outputs[argv[0]])
-    assert set(state) == {"available_bytes", "total_bytes", "swap_used_bytes", "swap_in_bytes", "swap_out_bytes",
-                          "memory_pressure", "power_source", "lid_closed"}
+    assert set(state) == {"available_bytes", "total_bytes", "swap_used_bytes", "pageins_bytes", "pageouts_bytes",
+                          "swapins_bytes", "swapouts_bytes", "memory_pressure", "power_source", "lid_closed"}
     assert (state["memory_pressure"], state["power_source"], state["lid_closed"]) == (4, "Battery Power", True)
-    assert all(isinstance(state[k], int) and state[k] >= 0
-               for k in ("available_bytes", "swap_used_bytes", "swap_in_bytes", "swap_out_bytes"))
+    assert (state["pageins_bytes"], state["pageouts_bytes"], state["swapins_bytes"], state["swapouts_bytes"]) == (
+        100 * 16384, 7 * 16384, 30 * 16384, 40 * 16384)
+    assert all(isinstance(state[k], int) and state[k] >= 0 for k in ("available_bytes", "swap_used_bytes"))
     unknown = harness.host_state(command=lambda *argv: "")                 # a host that gives none of them
     assert (unknown["memory_pressure"], unknown["power_source"], unknown["lid_closed"]) == (None, None, None)
+    assert {k: unknown[k] for k in ("pageins_bytes", "swapouts_bytes")} == {"pageins_bytes": None, "swapouts_bytes": None}
+
+
+def test_the_host_state_never_writes_psutils_page_counts_under_swap_names():
+    """Until 2026-10-27, swap_in_bytes and swap_out_bytes held psutil's sin and sout: on macOS,
+    page-ins and page-outs (docs/host-counters-correction.md). No new record may hold them."""
+    state = harness.host_state(command=lambda *argv: VM_STAT if argv[0] == "vm_stat" else "")
+    assert not {"swap_in_bytes", "swap_out_bytes"} & set(state)
+
+
+POWER_LOG = """2026-10-26 22:40:00 -0500 Notification        Display is turned on
+2026-10-26 22:51:27 -0500 Sleep               \tEntering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active
+2026-10-26 22:51:29 -0500 Wake Request        \t[*process*=powerd request=Maintenance deltaSecs=7200]
+2026-10-26 22:53:00 -0500 DarkWake            \tDarkWake from Deep Idle [CDNP] : due to SMC.OutboxNotEmpty
+2026-10-26 22:55:07 -0500 Wake                \tWake from Deep Idle [CDNVA] : due to UserActivity Assertion
+2026-10-26 23:30:00 -0500 Sleep               \tEntering Sleep state due to 'Idle Sleep'
+"""
+
+
+def test_the_power_log_gives_sleep_and_wake_entries_in_the_batch_by_time_and_kind_only():
+    start = datetime.fromisoformat("2026-10-27T03:45:00+00:00")             # 22:45 -0500
+    end = datetime.fromisoformat("2026-10-27T04:00:00+00:00")               # 23:00 -0500
+    found = harness.parse_power_log(POWER_LOG, start, end)
+    assert [e["kind"] for e in found["entries"]] == ["Sleep", "DarkWake", "Wake"]   # not the Wake Request, nor 23:30
+    assert all(set(e) == {"ts", "kind"} for e in found["entries"])                    # never the reason text
+    assert found["covers_batch"] is True and found["log_starts"].startswith("2026-10-26T22:40:00")
+    late = harness.parse_power_log(POWER_LOG, datetime.fromisoformat("2026-10-27T03:00:00+00:00"), end)
+    assert late["covers_batch"] is False                                              # the log starts after the batch
+
+
+def test_missing_power_log_evidence_is_stated_never_taken_as_no_sleep():
+    ts = ("2026-10-27T03:45:00+00:00", "2026-10-27T04:00:00+00:00")
+    assert harness.power_log_evidence(*ts, read=lambda: "") == {"available": False, "why": "pmset -g log printed nothing"}
+    assert harness.power_log_evidence(*ts, read=lambda: "no dates here\n")["available"] is False
+
+    def failing():
+        raise OSError("no pmset")
+    assert harness.power_log_evidence(*ts, read=failing)["why"].startswith("pmset -g log failed: OSError")
+    assert harness.power_log_evidence(*ts, read=lambda: POWER_LOG)["available"] is True
+
+
+class StubLog:
+    def __init__(self):
+        self.records = []
+
+    def log(self, event, **fields):
+        self.records.append({"event": event, **fields})
+
+
+def test_the_container_monitor_keeps_its_events_and_records_its_count_and_error(tmp_path):
+    events = [{"action": "start", "ours": True, "time": 1, "mono": 5.0},
+              {"action": "start", "ours": False, "time": 2, "mono": 6.0}]
+    monitor = SimpleNamespace(events=events, error=None, stop=lambda: None)
+    batch = SimpleNamespace(containers=monitor, out=tmp_path, log=StubLog(), monitor_start_error=None)
+    harness.Batch.stop_container_monitor(batch)
+    assert [json.loads(line) for line in (tmp_path / "containers.jsonl").read_text().splitlines()] == events
+    assert batch.log.records == [{"event": "container_monitor", "error": None, "events": 2, "other_project_events": 1}]
+
+
+def test_a_monitor_that_never_started_is_recorded_as_such(tmp_path):
+    batch = SimpleNamespace(containers=None, out=tmp_path, log=StubLog(), monitor_start_error="OSError: docker")
+    harness.Batch.stop_container_monitor(batch)
+    assert batch.log.records[0]["error"] == "not started: OSError: docker"
+    assert not (tmp_path / "containers.jsonl").exists()
 
 
 def test_every_host_reading_records_the_containers_outside_this_project(tmp_path, monkeypatch):

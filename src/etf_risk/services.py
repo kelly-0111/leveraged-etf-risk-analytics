@@ -24,6 +24,10 @@ peaks, and other projects' containers sharing Docker's VM (spec §11).
 - others counts the running containers that do not belong to this Compose project. It
   prints the count only, never their names: they use the same VM's memory, so memory
   budgets are measured with none running.
+- ContainerEvents follows `docker events` for a whole session, so that another project's
+  container that starts or stops between two readings is seen too: each event keeps its time,
+  its action and whether it belongs to this project, never a name or an id. The result-cache
+  experiment and the recovery harness both use it.
 
 AI contribution: written with Claude Code (Opus 5.5). Tested with tests/test_services.py.
 """
@@ -35,6 +39,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -92,6 +97,71 @@ def other_containers() -> int:
     if out.returncode != 0:
         raise RuntimeError(f"docker ps failed with exit code {out.returncode}")
     return sum(1 for label in out.stdout.splitlines() if label.strip() != PROJECT)
+
+
+class ContainerEvents(threading.Thread):
+    """`docker events` for container events, from start() until stop(). Each event keeps its
+    time, its action's verb (never the command Docker may append) and whether it belongs to this project;
+    never a name or an id. error says
+    why the monitor saw nothing it should have: the command could not start, or its stream ended
+    before stop() (the daemon went away), so that a consumer treats the session as unmonitored."""
+
+    def __init__(self, project: str = PROJECT, command: list[str] | None = None):
+        super().__init__(daemon=True)
+        self.project = project
+        self.command = command or ["docker", "events", "--filter", "type=container", "--format", "{{json .}}"]
+        self.events: list[dict] = []
+        self.error: str | None = None
+        self._proc: subprocess.Popen | None = None
+        self._launched = threading.Event()        # set once the command was started, or failed to start
+
+    def run(self) -> None:
+        try:
+            self._proc = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        except OSError as error:
+            self.error = f"{type(error).__name__}: {error}"
+            return
+        finally:
+            self._launched.set()
+        for line in self._proc.stdout:
+            event = parse_container_event(line, self.project)
+            if event is not None:
+                event["mono"] = time.monotonic()
+                self.events.append(event)
+
+    def stop(self) -> None:
+        started = self.ident is not None
+        if started:
+            self._launched.wait(timeout=10)
+        if self._proc is not None:
+            if self._proc.poll() is None:
+                self._proc.terminate()
+                self._proc.wait(timeout=10)
+            elif self.error is None:
+                self.error = f"the event stream ended before the session did (exit {self._proc.returncode})"
+        elif self.error is None:
+            self.error = "the event stream never started"
+        if started:
+            self.join(timeout=10)
+
+    def count(self, start: float, end: float, *, ours: bool) -> int:
+        return sum(1 for e in self.events if start <= e["mono"] <= end and e["ours"] == ours)
+
+
+def parse_container_event(line: str, project: str) -> dict | None:
+    """One `docker events` line as the monitors keep it: the action's verb only, whether the
+    container is this project's, and the time. Docker appends a command to some actions
+    ("exec_create: <command>"), which for another project's container could reveal its command
+    line, so everything after the verb is dropped; so are names, ids and attributes."""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    attributes = (data.get("Actor") or {}).get("Attributes") or {}
+    action = data.get("Action") or data.get("status")
+    return {"action": action.split(":", 1)[0].strip() if isinstance(action, str) else None,
+            "ours": attributes.get("com.docker.compose.project") == project,
+            "time": data.get("time")}
 
 
 def mysql_ready(url: str) -> None:

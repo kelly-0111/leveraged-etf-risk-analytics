@@ -31,9 +31,13 @@ batch runs one plan on fresh containers (2.1-2.5):
 - then quiescence (4.4), the final snapshot with crosscheck.sql (4.5), and the services
   removed.
 Its records go to DIR (section 9): harness.jsonl (the harness's own events, among them the
-host's state at the start, before each job and at the end: memory, swap, memory pressure, power
-source, lid and the running containers outside this project; and the Spark scratch at the
-start), events/ (every process's log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
+host's state at the start, before each job and at the end: memory, swap in use, vm_stat's
+page-in, page-out, swap-in and swap-out counters, memory pressure, power source, lid and the
+running containers outside this project; the Spark scratch at the start; container_monitor, the
+whole-batch container monitor's count and error; and power_log, the sleep and wake entries of
+`pmset -g log` during the batch, or why there are none), containers.jsonl (every container event
+from the batch's start to its end: time, the action's verb and whether it is this project's, never a
+name), events/ (every process's log), jobs/ (the attempts' folders), reference/, logs/, crosscheck/*.csv, export/,
 status-check.txt, cleanup.txt (cleanup's dry-run listing), and plan.json. A failure in the setup
 is recorded as setup_error, with every planned job as not_run; a failure in the final steps as
 final_error. Either makes the exit code 1. The containers are removed only if this batch
@@ -386,19 +390,65 @@ def _command_output(*argv: str) -> str:
 
 def host_state(command=_command_output) -> dict:
     """The host as the protocol of docs/recovery-part-a.md (section 12) records it, at a batch's
-    start and end and before each job; never a gate. Memory available; swap in use and the bytes
-    swapped in and out so far (psutil), whose differences between readings give the swap
-    activity; macOS's memory-pressure level (kern.memorystatus_vm_pressure_level: 1 normal,
-    2 warning, 4 critical); the power source; whether the lid is closed. A value the host does not
-    give is None."""
+    start and end and before each job; never a gate. Memory available; swap in use (psutil, from
+    vm.swapusage); vm_stat's cumulative page-ins, page-outs, swap-ins and swap-outs in bytes
+    (pageins_bytes, pageouts_bytes, swapins_bytes, swapouts_bytes; etf_risk.vmstat), whose
+    differences between readings give the activity; macOS's memory-pressure level
+    (kern.memorystatus_vm_pressure_level: 1 normal, 2 warning, 4 critical); the power source;
+    whether the lid is closed. A value the host does not give is None.
+
+    Until 2026-10-27 this recorded psutil's sin and sout as swap_in_bytes and swap_out_bytes; on
+    macOS those are page-ins and page-outs (docs/host-counters-correction.md). Those names are no
+    longer written, so that no record holds two meanings under one name; the collector reads them
+    in older records as page counts."""
     import psutil
+    from etf_risk.vmstat import parse_vm_stat, vm_bytes
     memory, swap = psutil.virtual_memory(), psutil.swap_memory()
     pressure = command("sysctl", "-n", "kern.memorystatus_vm_pressure_level").strip()
-    return {"available_bytes": memory.available, "total_bytes": memory.total,
-            "swap_used_bytes": swap.used, "swap_in_bytes": swap.sin, "swap_out_bytes": swap.sout,
+    return {"available_bytes": memory.available, "total_bytes": memory.total, "swap_used_bytes": swap.used,
+            **vm_bytes(parse_vm_stat(command("vm_stat"))),
             "memory_pressure": int(pressure) if pressure.isdigit() else None,
             "power_source": parse_power_source(command("pmset", "-g", "batt")),
             "lid_closed": parse_lid_closed(command("ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"))}
+
+
+_POWER_LOG_ENTRY = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(Sleep|Wake|DarkWake)(?!\s+Request)\s",
+                              re.MULTILINE)
+_POWER_LOG_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})", re.MULTILINE)
+
+
+def parse_power_log(text: str, start: datetime, end: datetime) -> dict:
+    """From `pmset -g log`: its Sleep, Wake and DarkWake entries between start and end (aware
+    datetimes), each as its time and kind only. The reason text is never kept, since it can name
+    applications. Also the log's earliest entry, and whether the log reaches back to start: macOS
+    keeps about a week, and an entry it no longer holds is not evidence of no sleep."""
+    times = [datetime.strptime(t, "%Y-%m-%d %H:%M:%S %z") for t in _POWER_LOG_TIME.findall(text)]
+    entries = []
+    for when, kind in _POWER_LOG_ENTRY.findall(text):
+        at = datetime.strptime(when, "%Y-%m-%d %H:%M:%S %z")
+        if start <= at <= end:
+            entries.append({"ts": at.isoformat(), "kind": kind})
+    earliest = min(times, default=None)
+    return {"entries": entries, "log_starts": earliest.isoformat() if earliest else None,
+            "covers_batch": earliest is not None and earliest <= start}
+
+
+def power_log_evidence(start_ts: str, end_ts: str, read=None) -> dict:
+    """Sleep and wake evidence for a batch, from start_ts to end_ts (its clock_pair ts values):
+    available, and if so parse_power_log's result; if not, why. Evidence, never a gate. A batch
+    without it says so: missing evidence is not evidence of no sleep."""
+    def default_read() -> str:
+        return subprocess.run(["pmset", "-g", "log"], capture_output=True, text=True, timeout=120).stdout
+    try:
+        text = (read or default_read)()
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"available": False, "why": f"pmset -g log failed: {type(error).__name__}: {error}"[:300]}
+    if not text.strip():
+        return {"available": False, "why": "pmset -g log printed nothing"}
+    found = parse_power_log(text, datetime.fromisoformat(start_ts), datetime.fromisoformat(end_ts))
+    if found["log_starts"] is None:
+        return {"available": False, "why": "pmset -g log held no timestamped entry"}
+    return {"available": True, **found}
 
 
 # The batch
@@ -463,6 +513,9 @@ class Batch:
         self._publisher = None
         self.services_started = False                   # from compose up on, the batch removes what it started
         self.scratch_before: list[str] = []
+        self.containers = None                          # the whole-batch container monitor (container_monitor())
+        self.monitor_start_error: str | None = None
+        self.power_log_read = None                      # reads `pmset -g log` when None (power_log_evidence)
 
     # Commands and services
 
@@ -514,6 +567,33 @@ class Batch:
             return self.services.other_containers()
         except (OSError, RuntimeError, subprocess.SubprocessError):
             return None
+
+    def container_monitor(self):
+        """The whole-batch container monitor (section 12, condition 4): `docker events` from the
+        batch's start to its end, so that another project's container that starts or stops
+        between two readings is seen too."""
+        return self.services.ContainerEvents(self.services.PROJECT)
+
+    def stop_container_monitor(self) -> None:
+        """Stop the monitor and keep its events in containers.jsonl (time, action, ours; never a
+        name). The container_monitor event records how many there were and why the monitor
+        failed, if it did: the collector fails recovery times on any other project's event and
+        counts a monitor that failed, or none, as unknown."""
+        monitor = self.containers
+        if monitor is None:
+            why = getattr(self, "monitor_start_error", None) or "the monitor was never started"
+            self.log.log("container_monitor", error=f"not started: {why}", events=0, other_project_events=0)
+            return
+        try:
+            monitor.stop()
+        except Exception as error:                     # recorded; the collector counts it as unknown
+            monitor.error = monitor.error or f"{type(error).__name__}: {error}"
+        try:
+            (self.out / "containers.jsonl").write_text("".join(json.dumps(e) + "\n" for e in monitor.events))
+        except OSError as error:
+            monitor.error = monitor.error or f"containers.jsonl not written: {type(error).__name__}: {error}"
+        self.log.log("container_monitor", error=monitor.error, events=len(monitor.events),
+                     other_project_events=sum(1 for e in monitor.events if not e.get("ours")))
 
     def log_host(self, stage: str, **where) -> None:
         """A host reading (section 12): host_state() and the running containers outside this
@@ -1083,8 +1163,14 @@ class Batch:
         """The batch: start, every planned job until one is left unfinished or memory stops it,
         quiescence, the final snapshot, and the services removed. 1 if the setup or the final
         steps failed, else 0; a stop for a reason of its own (6.1) still ends with 0."""
+        start_clock = clock_pair()
         self.log.log("batch_started", purpose=self.purpose, plan_seed=self.plan["seed"], code=code_identity(),
-                     clock=clock_pair(), settings=asdict(self.settings), topic=self.topic)
+                     clock=start_clock, settings=asdict(self.settings), topic=self.topic)
+        try:
+            self.containers = self.container_monitor()
+            self.containers.start()
+        except Exception as error:                       # recorded at the end; the collector counts it as unknown
+            self.containers, self.monitor_start_error = None, f"{type(error).__name__}: {error}"[:300]
         self.scratch_before = spark_scratch(self.scratch_folders())
         self.log.log("spark_scratch", stage="start", entries=self.scratch_before)
         self.log_host("start")
@@ -1129,7 +1215,18 @@ class Batch:
                 if proc.poll() is None:
                     proc.kill()
             self.log_host("end")
-            self.log.log("batch_ended", clock=clock_pair(), code=code_identity(), stop_reason=self.stop_reason)
+            try:
+                self.stop_container_monitor()
+            except Exception as error:                   # never in the way of batch_ended and the cleanup
+                self.log.log("container_monitor", error=f"{type(error).__name__}: {error}"[:300], events=None,
+                             other_project_events=None)
+            end_clock = clock_pair()
+            try:
+                evidence = power_log_evidence(start_clock["ts"], end_clock["ts"], self.power_log_read)
+            except Exception as error:
+                evidence = {"available": False, "why": f"{type(error).__name__}: {error}"[:300]}
+            self.log.log("power_log", **evidence)
+            self.log.log("batch_ended", clock=end_clock, code=code_identity(), stop_reason=self.stop_reason)
             if self.services_started:                       # never containers this batch did not start
                 self.compose("down", "-v")
         return 1 if incomplete else 0

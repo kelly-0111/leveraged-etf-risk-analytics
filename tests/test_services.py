@@ -1,10 +1,13 @@
-"""etf_risk.services: memory peaks, the count of other projects' containers, and the
-readiness wait, with a fake docker on PATH and a fake clock, so neither Docker nor a
-service is needed.
+"""etf_risk.services: memory peaks, the count of other projects' containers, the
+readiness wait, and the whole-session container monitor, with a fake docker on PATH, a
+fake clock and stand-in event streams, so neither Docker nor a service is needed.
 
 AI contribution: written with Claude Code (Opus 5.5).
 """
+import json
 import os
+import sys
+import time
 
 import pytest
 
@@ -103,3 +106,74 @@ def test_the_job_services_stay_mysql_and_kafka_and_redis_is_apart():
     """tests/memory_check.py starts, measures and removes exactly SERVICES; the cache's Redis is
     not part of that check."""
     assert services.SERVICES == ("mysql", "kafka") and services.CACHE_SERVICES == ("redis",)
+
+
+# The whole-session container monitor, shared by the result-cache experiment and the recovery harness
+
+def _events(*pairs):
+    return "\n".join(json.dumps({"Action": a, "Actor": {"Attributes": {"com.docker.compose.project": p}}})
+                     for a, p in pairs)
+
+
+def test_the_monitor_records_each_event_with_whether_it_is_ours_and_stops_cleanly():
+    script = f"import sys, time; print({_events(('start', services.PROJECT), ('start', 'other'))!r}, flush=True); time.sleep(60)"
+    monitor = services.ContainerEvents(command=[sys.executable, "-c", script])
+    monitor.start()
+    deadline = time.monotonic() + 10
+    while len(monitor.events) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    monitor.stop()
+    assert [(e["action"], e["ours"]) for e in monitor.events] == [("start", True), ("start", False)]
+    assert monitor.error is None and all("mono" in e for e in monitor.events)
+
+
+def test_a_stream_that_ends_before_stop_is_an_error_so_the_session_counts_as_unmonitored():
+    monitor = services.ContainerEvents(command=[sys.executable, "-c", "pass"])
+    monitor.start()
+    monitor.join(timeout=10)                          # the stream has ended; the session has not
+    monitor.stop()
+    assert monitor.error.startswith("the event stream ended before the session did")
+
+
+def test_a_command_that_cannot_start_and_a_monitor_never_started_are_errors():
+    failing = services.ContainerEvents(command=["/nonexistent/docker-for-this-test", "events"])
+    failing.start()
+    failing.stop()
+    assert failing.error.startswith(("FileNotFoundError", "PermissionError", "OSError"))
+    never = services.ContainerEvents()
+    never.stop()
+    assert never.error == "the event stream never started"
+
+
+def test_the_result_cache_experiment_and_the_harness_share_the_monitor():
+    from etf_risk import cache_experiment
+    assert cache_experiment.ContainerEvents is services.ContainerEvents
+    assert cache_experiment.parse_container_event is services.parse_container_event
+
+
+PRIVATE = "s3cret-token-0f9a"     # a private-looking value in a command another project's container runs
+
+
+def test_an_events_command_suffix_is_never_recorded_only_its_verb():
+    line = json.dumps({"Action": f"exec_create: curl -H 'Authorization: Bearer {PRIVATE}' http://db:5432",
+                       "status": f"exec_create: curl -H 'Authorization: Bearer {PRIVATE}' http://db:5432",
+                       "Actor": {"ID": "abc123", "Attributes": {"name": "someone-else-1", "execID": "e1",
+                                                               "com.docker.compose.project": "elsewhere"}},
+                       "time": 7})
+    event = services.parse_container_event(line, services.PROJECT)
+    assert event == {"action": "exec_create", "ours": False, "time": 7}
+    assert PRIVATE not in json.dumps(event) and "curl" not in json.dumps(event)
+
+
+def test_the_monitor_keeps_no_command_suffix_in_what_it_records():
+    line = json.dumps({"Action": f"exec_start: sh -c 'echo {PRIVATE}'",
+                       "Actor": {"Attributes": {"com.docker.compose.project": "elsewhere"}}})
+    script = f"import time; print({line!r}, flush=True); time.sleep(60)"
+    monitor = services.ContainerEvents(command=[sys.executable, "-c", script])
+    monitor.start()
+    deadline = time.monotonic() + 10
+    while not monitor.events and time.monotonic() < deadline:
+        time.sleep(0.05)
+    monitor.stop()
+    assert [e["action"] for e in monitor.events] == ["exec_start"]
+    assert PRIVATE not in json.dumps(monitor.events)
