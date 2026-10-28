@@ -28,7 +28,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from transcript_privacy import Redactor
+from transcript_privacy import Redactor, jsonl_records
 
 
 def fenced(value: object) -> str:
@@ -96,7 +96,7 @@ def render_markdown(redacted_jsonl: str, session_id: str, number: int, sent: dat
         "Rules: `.claude/hooks/transcript_privacy.py`. The unredacted original stays local only.",
     ]
     entries = 0
-    for line in redacted_jsonl.splitlines():
+    for line in jsonl_records(redacted_jsonl):
         record = json.loads(line)
         if not is_message(record):
             continue
@@ -159,7 +159,8 @@ def prompt_time(prompt: dict) -> datetime:
 
 def archive(source: Path, session_id: str, project_dir: Path) -> list[Path]:
     root = project_dir / "docs" / "ai-usage"
-    lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # Bytes, not read_text(): its newline translation would also turn a lone CR into a line break.
+    lines = jsonl_records(source.read_bytes().decode("utf-8"))
     redactor = Redactor.for_project(project_dir)
     folders = []
     for number, (prompt, raw_lines) in enumerate(split_messages(lines), start=1):

@@ -115,3 +115,17 @@ def test_jsonl_records_stay_valid_and_reasoning_is_removed():
     assert assistant["message"]["content"][0] == {"type": "thinking", "thinking": "[REDACTED:model-reasoning]"}
     assert assistant["message"]["content"][1]["text"] == "Done."
     assert "Madison" not in "\n".join(lines) and "abc123" not in "\n".join(lines)
+
+
+def test_jsonl_keeps_unicode_line_separators_inside_strings():
+    """U+2028, U+2029 and U+0085 may appear unescaped in a JSON string; they must not split a record."""
+    records = [
+        {"type": "user", "message": {"content": "a b c\x85d, mail aw1@uni.edu"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "line separator"}]}},
+    ]
+    raw = json.dumps(records[0], ensure_ascii=False) + "\r\n" + json.dumps(records[1], ensure_ascii=False) + "\n"
+    out = redactor().jsonl(raw)
+    user, assistant = (json.loads(line) for line in out.split("\n") if line)
+    assert user["message"]["content"] == "a b c\x85d, mail [REDACTED:email]"
+    assert assistant == records[1]
+    assert " " in out and "\r" not in out  # kept literally; the CR of the CRLF line end is dropped

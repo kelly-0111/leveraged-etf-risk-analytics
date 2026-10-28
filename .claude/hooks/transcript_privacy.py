@@ -66,6 +66,13 @@ def marker(category: str) -> str:
     return f"[REDACTED:{category}]"
 
 
+def jsonl_records(text: str) -> list[str]:
+    """Non-blank JSONL records. Split on LF only: str.splitlines() also breaks on U+2028, U+2029
+    and U+0085, which JSON allows unescaped inside strings. The CR of a CRLF line end is dropped;
+    a CR inside a string is always escaped, so it is never part of the content."""
+    return [line.removesuffix("\r") for line in text.split("\n") if line.strip()]
+
+
 class Redactor:
     def __init__(self, identity: dict[str, list[str]], private_terms=(), private_files: dict[str, str] | None = None):
         """identity: category -> literal values (category "home" is shown as ~)."""
@@ -122,7 +129,7 @@ class Redactor:
         return {self.text(k): self.record(v) for k, v in obj.items()}
 
     def jsonl(self, raw: str) -> str:
-        out = [json.dumps(self.record(json.loads(line)), ensure_ascii=False) for line in raw.splitlines() if line.strip()]
+        out = [json.dumps(self.record(json.loads(line)), ensure_ascii=False) for line in jsonl_records(raw)]
         return "\n".join(out) + "\n"
 
     def _sub(self, pattern: re.Pattern, replacement: str, s: str, category: str) -> str:
