@@ -38,8 +38,9 @@ wait_for() {                                   # seconds, what, a condition eval
         sleep 1
     done
 }
-stop_processes() {
-    for p in $pids; do kill -INT $p 2>/dev/null || true; done
+stop_processes() {                             # SIGTERM: the same graceful stop as Ctrl-C (SIGINT, which a
+                                               # non-interactive shell's background job ignores)
+    for p in $pids; do kill -TERM $p 2>/dev/null || true; done
     for p in $pids; do wait $p 2>/dev/null || true; done
     pids=()
 }
@@ -74,8 +75,8 @@ job_cmd init-db
 job_cmd create-topic
 
 step "a reconciler and worker A, until worker A owns the partition"
-job_cmd reconciler > $OUT/reconciler.log 2>&1 & pids+=($!)
-job_cmd worker --worker-id A > $OUT/worker-A.log 2>&1 & pids+=($!)
+$PY -m etf_risk.jobs reconciler --output-root $OUT/jobs > $OUT/reconciler.log 2>&1 & pids+=($!)   # $! is the process
+$PY -m etf_risk.jobs worker --worker-id A --output-root $OUT/jobs > $OUT/worker-A.log 2>&1 & pids+=($!)
 wait_for 120 "worker A's partition" 'grep -q "\"event\": \"assigned\"" $OUT/jobs/events/A.jsonl 2>/dev/null'
 
 step "1. submit a calendar-year job on the snapshot full-2026-10-12"
