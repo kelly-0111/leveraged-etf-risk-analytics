@@ -10,6 +10,10 @@ A message starts at a prompt the user typed and ends at the last user /
 assistant record before the next prompt. Metadata written after that (hook
 records, context for the next prompt) belongs to the next message, so a
 finished message's files do not change once the next one starts.
+
+A transcript.jsonl or transcript.md that Git tracks is a published log, reviewed
+and possibly sanitized by hand, so it is never rewritten, whether it is clean or
+locally modified. The raw file is still written for every message.
 """
 
 # AI-assisted setup code. The hook idea was inspired by a CS 639 project's
@@ -22,6 +26,7 @@ finished message's files do not change once the next one starts.
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -74,6 +79,15 @@ def atomic_write_text(destination: Path, text: str) -> None:
             temp_name.unlink(missing_ok=True)
             raise
     temp_name.replace(destination)
+
+
+def tracked_files(root: Path) -> set[Path]:
+    """Files under root that Git tracks; empty if root does not exist or is not in a repository."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return set()
+    return {root / p for p in out.decode("utf-8").split("\0") if p}
 
 
 def write_if_changed(destination: Path, text: str) -> None:
@@ -162,6 +176,7 @@ def archive(source: Path, session_id: str, project_dir: Path) -> list[Path]:
     # Bytes, not read_text(): its newline translation would also turn a lone CR into a line break.
     lines = jsonl_records(source.read_bytes().decode("utf-8"))
     redactor = Redactor.for_project(project_dir)
+    published = tracked_files(root)  # never regenerated, see the module docstring
     folders = []
     for number, (prompt, raw_lines) in enumerate(split_messages(lines), start=1):
         sent = prompt_time(prompt)
@@ -171,8 +186,10 @@ def archive(source: Path, session_id: str, project_dir: Path) -> list[Path]:
         redactor.counts = Counter()  # per-message redaction summary
         shared = redactor.jsonl(raw)
         write_if_changed(folder / "transcript.raw.jsonl", raw)  # gitignored
-        write_if_changed(folder / "transcript.jsonl", shared)
-        write_if_changed(folder / "transcript.md", render_markdown(shared, session_id, number, sent, redactor.counts))
+        md = render_markdown(shared, session_id, number, sent, redactor.counts)
+        for name, text in (("transcript.jsonl", shared), ("transcript.md", md)):
+            if folder / name not in published:
+                write_if_changed(folder / name, text)
         folders.append(folder)
     return folders
 
