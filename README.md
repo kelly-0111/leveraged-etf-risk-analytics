@@ -449,6 +449,13 @@ done, and 36 extreme price moves, including AAPL on 2000-09-29, are
   - failure-injection (recovery) and paired-latency (cache) experiments, each with a protocol
     approved before its formal batch.
 
+## What I learned
+
+Spark is not always faster for a small workload. The pandas
+comparison helped me understand its overhead. I also learned to check execution
+plans and measure changes instead of assuming that more partitions or caching
+would improve performance.
+
 ## AI assistance
 
 Most of the code, tests and documentation were written with Claude Code (Opus
