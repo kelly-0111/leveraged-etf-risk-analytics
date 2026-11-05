@@ -8,6 +8,12 @@ windows, runs it in PySpark with full-scale checks, and analyzes the results
 with Spark SQL. The results describe historical windows of a few tickers; they
 are not forecasts, and the model ignores fees, financing and execution.
 
+## Why I built this
+
+I wanted to connect a financial question with the data engineering skills I
+learned in CS544. Daily compounding gave me a reason to build a Spark pipeline,
+analyze its output with SQL, and test different execution settings.
+
 ## Status
 
 | Part | Status |
